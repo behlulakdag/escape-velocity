@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- Mobil: zoom ve kaydırmayı kapat -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Slapjam Game</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      /* Dokunmatikte kaydırma, seçme, uzun basma menüsünü engelle */
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #game {
+      width: 100%;
+      height: 100%;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+
+  <!-- Phaser yerel olarak geliyor: CDN'e bağımlılık yok -->
+  <script src="lib/phaser.min.js"></script>
+
+  <!-- Sıra önemli: config ve yardımcılar önce, sahneler sonra, main en son -->
+  <script src="src/config.js"></script>
+  <script src="src/utils.js"></script>
+  <script src="src/scenes/BootScene.js"></script>
+  <script src="src/scenes/MenuScene.js"></script>
+  <script src="src/scenes/GameScene.js"></script>
+  <script src="src/scenes/GameOverScene.js"></script>
+  <script src="src/main.js"></script>
+</body>
+</html>
