@@ -11,6 +11,7 @@
 ## Done
 - itch draft page works: https://behlulakdag.itch.io/slapjam-test-build (HTML, played in browser, mobile friendly, portrait, fullscreen button, 405x720 embed). itch email verified.
 - Fixed build.ps1: Compress-Archive wrote backslash paths (src\main.js) into the zip, so every script 404'd on itch. Now writes "/" paths.
+- butler v15.32.0 installed at %USERPROFILE%\tools\butler and logged in. deploy.ps1 builds + pushes to the html5 channel (verified working on the test page). For the real game: create its itch page, pass -Target user/game, tick "played in browser" once.
 - RESEARCH.md: Slapjam #1 winners, lessons, mechanic templates
 - Template: portrait 720x1280, FIT scaling, touch input, Menu/Game/GameOver scenes, high score, fullscreen button
 - Example dodge game in GameScene (to be replaced)
