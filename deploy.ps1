@@ -16,4 +16,4 @@ if (-not (Test-Path $butler)) { throw "butler not found at $butler" }
 # After the very first push, tick "This file will be played in the browser" once on the itch edit page.
 & $butler push (Join-Path $PSScriptRoot "game-itch.zip") "${Target}:html5"
 if ($LASTEXITCODE -ne 0) { throw "butler push failed" }
-& $butler status $Target
+& $butler status "${Target}:html5"
