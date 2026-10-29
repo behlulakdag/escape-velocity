@@ -55,6 +55,8 @@ class GameScene extends Phaser.Scene {
     this.bestAltitudePx = 0;
     this.score = 0;
     this.zoneIndex = 0;
+    this.topSpeed = this.speed;   // run stats for the game over screen
+    this.maxChain = 0;
     this.trail = [];
     this.elapsed = 0;
     this.novaY = this.startY + TUNING.novaStartBelow;   // world y of the supernova front
@@ -79,12 +81,17 @@ class GameScene extends Phaser.Scene {
     this.nextPlanetY -= TUNING.minPlanetGap;
     this.fillPlanets();
 
+    ART.setPage(0);
+    this.bursts = [];
     this.createStarfield();
     this.bestGfx = this.add.graphics();
     this.worldGfx = this.add.graphics();
+    // Planet / asteroid / black hole Images are slotted in right above worldGfx (see ART.bodyImage),
+    // so this layer (nova, aim chevrons, target outline, ink bursts) always draws over them.
+    this.frontGfx = this.add.graphics();
     this.speedGfx = this.add.graphics().setScrollFactor(0);
     this.catchGfx = this.add.graphics();   // teaching ring around the planet to catch next
-    this.cardFxGfx = this.add.graphics();  // card effects: slipstream wisps, shockwave line
+    this.cardFxGfx = this.add.graphics();  // card effects: wind lines, shockwave line, card doodles
     this.cometGfx = this.add.graphics();
     this.introGfx = this.add.graphics();
     this.createBestMarker();
@@ -93,6 +100,8 @@ class GameScene extends Phaser.Scene {
     this.learnedCatch = hasLearnedCatch();
     this.hintStage = 0;   // 0: teach hold, 1: teach release, 2: teach catching the next planet, 3: done
     this.events.once('shutdown', () => this.scene.stop('Hud'));
+    // Menu / GameOver draw with the first page's ink, whatever page this run ended on.
+    this.events.once('shutdown', () => ART.setPage(0));
 
     this.input.on('pointerdown', () => this.pressHold());
     this.input.on('pointerup', () => this.releaseHold());
@@ -159,6 +168,7 @@ class GameScene extends Phaser.Scene {
     this.afterburnerT = 0;      // seconds of afterburner left
     this.overdriveFxT = 0;
     this.shockFx = null;        // { y, push, t }: shock line pushing the supernova down
+    this.cardDoodles = [];      // short ink doodles for card events (drawCardFx)
   }
 
   grabRange() {
@@ -238,6 +248,7 @@ class GameScene extends Phaser.Scene {
     this.sfx('wall');
     this.cameras.main.shake(120, 0.006);
     this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.shield.color, 16, 130);
+    this.cardDoodle('shield', this.comet.x, this.comet.y);
     this.jellyT = 0;
     return true;
   }
@@ -264,59 +275,72 @@ class GameScene extends Phaser.Scene {
     if (this.hud.flash) this.hud.flash(CARD_FAMILIES.shield.color, 0.16, 260, 0.16);
     this.cameras.main.shake(260, 0.016);
     this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.shield.color, 24, 220);
+    this.cardDoodle('rescue', this.comet.x, this.comet.y);
     this.freeze(FEEL.hitstopPerfect);
   }
 
   // Card visuals drawn by the scene itself (the comet's own looks live in art.js via artContext).
+  // Everything is ink doodles on the page; jitter seeds change at the boil rate (10/s), not per frame.
   drawCardFx(dt) {
     const g = this.cardFxGfx;
     g.clear();
     if (this.headless || this.isOver) return;
     const c = this.comet;
+    const t = this.time.now / 1000;
+    const bf = ART.boilFrame(t);
     const flying = !this.orbit && !this.scrape && this.cometVisible;
     const slip = this.mods.climbNoDecay && c.vy < 0;
     if (flying && (this.mods.flightDecayMul < 1 || slip)) {
-      // Aerodynamic / Slipstream: two wind wisps hugging the comet's flanks.
+      // Aerodynamic / Slipstream: dashed pencil wind lines hugging the comet's flanks.
       const len = Math.hypot(c.vx, c.vy) || 1;
       const ux = c.vx / len;
       const uy = c.vy / len;
-      const t = this.time.now / 1000;
-      const color = CARD_FAMILIES.flight.color;
+      const color = slip ? ART.ink : ART.crayon(CARD_FAMILIES.flight.color);
+      const rnd = artRandom(bf * 71 + 5);
       for (const side of [-1, 1]) {
         const pts = [];
         for (let i = 0; i <= 6; i++) {
           const k = i / 6;
           const back = 10 + k * (slip ? 130 : 95);
-          const off = side * (TUNING.cometRadius + 6 + k * 16) + Math.sin(t * 14 + k * 5 + side) * 4 * k;
+          const off = side * (TUNING.cometRadius + 8 + k * 16) + (rnd() - 0.5) * 5 * k;
           pts.push({ x: c.x - ux * back - uy * off, y: c.y - uy * back + ux * off });
         }
-        g.lineStyle(9, ART.outline, 0.45);
-        g.strokePoints(pts);
-        g.lineStyle(4, slip ? 0xffffff : color, 0.9);
-        g.strokePoints(pts);
+        // Two dashes per side, the second one curling outward a little.
+        g.lineStyle(7, ART.backing, 0.35);
+        g.strokePoints(pts.slice(0, 4), false);
+        g.lineStyle(3.5, color, 0.9);
+        g.strokePoints(pts.slice(0, 4), false);
+        g.lineStyle(2.5, color, 0.6);
+        g.strokePoints(pts.slice(4), false);
       }
     }
     if (this.shockFx) {
-      // Shockwave: a bright line slamming the supernova front down.
+      // Shockwave / Unbreakable: a heavy pen line slamming the supernova front down, with
+      // ink arrows pointing down and crayon hatching trailing above it.
       const s = this.shockFx;
+      // The line starts at the comet and slams down to where the front ends up, so it is seen
+      // even when the front itself is off the bottom of the screen.
+      if (s.from === undefined) s.from = Math.min(s.y, c.y + TUNING.cometRadius * 2);
       s.t += dt;
       const k = Math.min(1, s.t / GameScene.SHOCK_FX_TIME);
-      const y = s.y + s.push * (1 - (1 - k) * (1 - k));
+      const y = s.from + (s.y + s.push - s.from) * (1 - (1 - k) * (1 - k));
       const view = this.visibleBounds();
-      const a = 1 - k;
-      g.lineStyle(26, ART.outline, 0.5 * a);
-      g.lineBetween(view.left, y, view.right, y);
-      g.lineStyle(16, CARD_FAMILIES.shield.color, a);
-      g.lineBetween(view.left, y, view.right, y);
-      g.lineStyle(5, 0xffffff, a);
-      g.lineBetween(view.left, y, view.right, y);
-      for (let i = 0; i < 7; i++) {
-        const x = view.left + ((i + 0.5) / 7) * (view.right - view.left);
-        g.fillStyle(0xffffff, a);
-        g.fillTriangle(x - 14, y + 6, x + 14, y + 6, x, y + 34 + 20 * k);
-      }
+      ART.drawShockLine(g, view.left, view.right, y, 1 - k, ART.crayon(CARD_FAMILIES.shield.color), t);
       if (k >= 1) this.shockFx = null;
     }
+    this.cardDoodles = (this.cardDoodles || []).filter((d) => {
+      d.age += dt / d.duration;
+      if (d.age >= 1) return false;
+      ART.drawCardDoodle(g, d, t);
+      return true;
+    });
+  }
+
+  // One-off ink doodle for a card event: 'kick' | 'shatter' | 'shield' | 'rescue' (see ART.drawCardDoodle).
+  cardDoodle(kind, x, y, extra) {
+    if (this.headless) return;
+    if (!this.cardDoodles) this.cardDoodles = [];
+    this.cardDoodles.push(Object.assign({ kind, x, y, age: 0, duration: kind === 'rescue' ? 0.9 : 0.55, seed: Math.floor(Math.random() * 1e5) }, extra || {}));
   }
 
   // ---------- world ----------
@@ -372,20 +396,25 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  // Sketchbook background: a construction-paper page per zone (locked to the world, like a long
+  // drawing), cream ink stars at two depths, and a screen-space layer for page marks (streaks/rays).
   createStarfield() {
     if (!this.textures.exists('stars')) ART.makeStarTexture(this, 'stars');
-    this.cameras.main.setBackgroundColor(ZONES[0].sky);
+    if (!this.headless) ART.warmAll(this, 'l');
+    this.cameras.main.setBackgroundColor(ZONES[0].paper);
     // Oversized so the background still fills the screen when the camera zooms out.
     const w = GAME_WIDTH / TUNING.minZoom;
     const h = GAME_HEIGHT / TUNING.minZoom;
-    const ox = (GAME_WIDTH - w) / 2;
-    const oy = (GAME_HEIGHT - h) / 2;
-    // Optional extra layers made by ART.makeStarTexture (slowest nebula, fastest sparkles).
-    const layer = (key) => this.add.tileSprite(ox, oy, w, h, key).setOrigin(0).setScrollFactor(0);
-    this.starsNebula = this.textures.exists('stars_nebula') ? layer('stars_nebula') : null;
-    this.starsFar = layer('stars').setAlpha(0.5);
-    this.starsNear = layer('stars').setTileScale(1.6);
-    this.starsSparkle = this.textures.exists('stars_sparkle') ? layer('stars_sparkle') : null;
+    this.pageRect = { x: (GAME_WIDTH - w) / 2, y: (GAME_HEIGHT - h) / 2, w, h };
+    const layer = (key) => this.add.tileSprite(this.pageRect.x, this.pageRect.y, w, h, key).setOrigin(0).setScrollFactor(0);
+    this.paper = layer(ART.paperTexture(this, 0));
+    this.pageNext = null;
+    this.starsFar = layer('stars').setAlpha(0.3).setTileScale(0.7);
+    this.starsNear = layer('stars');
+    this.starsSparkle = layer('stars_sparkle').setAlpha(0.8);
+    this.pageFxGfx = this.add.graphics().setScrollFactor(0);
+    this.pageEdgeGfx = this.add.graphics().setScrollFactor(0);
+    this.pageFxFrame = -1;
   }
 
   // World-space rectangle the camera currently shows (zoom scales around the screen center).
@@ -481,6 +510,7 @@ class GameScene extends Phaser.Scene {
   // Consecutive PERFECTs build a chain: louder pop, bigger flash, more score.
   onPerfect() {
     this.perfectChain++;
+    this.maxChain = Math.max(this.maxChain, this.perfectChain);
     this.perfectPulseAt = this.time.now;
     const chain = this.perfectChain;
     this.score += perfectChainBonus(chain) * this.mods.chainScoreMul;
@@ -541,7 +571,10 @@ class GameScene extends Phaser.Scene {
   // ---------- loop ----------
 
   update(time, delta) {
-    if (this.isOver) return;
+    if (this.isOver) {
+      if (!this.headless) this.draw();   // let the final ink bursts finish (visual only)
+      return;
+    }
     const realDt = Math.min(delta / 1000, 0.05);
     if (this.introActive) return this.updateIntro(realDt);
     if (this.hintStage === 0 && this.hud.hintText && !this.hud.hintText.text) {
@@ -634,6 +667,7 @@ class GameScene extends Phaser.Scene {
     this.updateCamera(dt);
     this.reportCometScreen();
     this.speed = Math.max(this.speed, TUNING.minSpeed);
+    if (this.speed > this.topSpeed) this.topSpeed = this.speed;
     this.updateNova(dt);
     // The supernova is the only way to lose: speed is what keeps you ahead of it.
     if (this.comet.y + TUNING.cometRadius * 0.5 > this.novaY) {
@@ -670,19 +704,146 @@ class GameScene extends Phaser.Scene {
   checkZone() {
     const index = zoneIndexForAltitude(this.bestAltitude);
     if (index <= this.zoneIndex) return;
-    const from = ZONES[this.zoneIndex].sky;
-    const to = ZONES[index].sky;
     this.zoneIndex = index;
     this.zonePulseAt = this.time.now;
     this.hud.showBanner(ZONES[index].name, 'TOP SPEED ' + Math.round(this.speedCap() / 10) + ' km/s');
     this.sfx('zone', { index });
-    if (this.hud.flash) this.hud.flash(lerpColor(to, 0xffffff, 0.5), 0.12, 250);
-    this.tweens.addCounter({
-      from: 0, to: 1, duration: 1500,
-      onUpdate: (tw) => this.cameras.main.setBackgroundColor(lerpColor(from, to, tw.getValue())),
-    });
+    this.turnPage(index);
     this.shieldCharges = this.mods.heatShieldCharges;   // Heat Shield recharges every zone
     this.openCardPick();
+  }
+
+  // New zone = a new sketchbook page sliding down over the old one (no full-screen flash).
+  // Art only: gameplay for a new zone (cards, shield recharge) stays in checkZone, so the
+  // headless simulator still gets it.
+  turnPage(index) {
+    if (this.headless) return;
+    // The last page uses dark ink: warm those textures up a page early.
+    if (index === ZONES.length - 2) ART.warmAll(this, 'd');
+    if (this.pageNext) this.finishPageTurn();
+    const r = this.pageRect;
+    const paperKey = ART.paperTexture(this, index);
+    const next = this.add.tileSprite(r.x, r.y - r.h, r.w, r.h, paperKey).setOrigin(0).setScrollFactor(0);
+    // TileSprite.texture is its own internal copy (destroyed with it), so keep the source key.
+    next.paperKey = paperKey;
+    this.children.moveTo(next, this.children.getIndex(this.paper) + 1);
+    next.tilePositionX = this.paper.tilePositionX;
+    next.tilePositionY = this.paper.tilePositionY;
+    this.pageNext = next;
+    this.pageNextIndex = index;
+    this.pageTween = this.tweens.add({
+      targets: next, y: r.y, duration: 650, ease: 'Cubic.easeInOut',
+      onComplete: () => this.finishPageTurn(),
+    });
+  }
+
+  finishPageTurn() {
+    const next = this.pageNext;
+    if (!next) return;
+    if (this.pageTween) this.pageTween.stop();
+    this.pageNext = null;
+    this.paper.setTexture(next.paperKey);
+    next.destroy();
+    this.pageEdgeGfx.clear();
+    const z = ZONES[this.pageNextIndex];
+    ART.setPage(this.pageNextIndex);
+    this.cameras.main.setBackgroundColor(z.paper);
+    for (const s of [this.starsFar, this.starsNear, this.starsSparkle]) {
+      if (z.ink === SKETCH.cream) s.clearTint(); else s.setTint(z.ink);
+    }
+    this.pageFxFrame = -1;
+  }
+
+  // Torn paper edge + soft shadow under the page that is sliding in.
+  drawPageEdge() {
+    const g = this.pageEdgeGfx;
+    g.clear();
+    const next = this.pageNext;
+    if (!next) return;
+    const edgeY = next.y + next.height;
+    const r = this.pageRect;
+    g.fillStyle(0x000000, 0.28);
+    g.fillRect(r.x, edgeY, r.w, 18);
+    g.fillStyle(0x000000, 0.14);
+    g.fillRect(r.x, edgeY + 18, r.w, 20);
+    // Slightly ragged edge in the new page's color, then a pen line along it.
+    const z = ZONES[this.pageNextIndex];
+    const pts = [];
+    const rnd = artRandom(Math.floor(this.time.now / 100) * 7 + 3);
+    for (let x = r.x; x <= r.x + r.w + 30; x += 30) pts.push({ x, y: edgeY + (rnd() - 0.5) * 8 });
+    const poly = pts.slice();
+    poly.push({ x: r.x + r.w + 30, y: edgeY - 12 });
+    poly.push({ x: r.x, y: edgeY - 12 });
+    g.fillStyle(z.paper, 1);
+    g.fillPoints(poly, true);
+    const ink = z.ink === SKETCH.cream ? 0xf4ead0 : z.ink;
+    ART.pen(g, pts, false, 4, ink, 0.7, rnd);
+    // Curled corner at the bottom right: the back of the new page folding up, so the slide
+    // reads as a page being turned over (the back side is a paler version of the page color).
+    // Screen-space layers are still scaled by the camera zoom around the center: this is the
+    // visible right edge in this layer's coordinates.
+    const zoom = this.cameras.main.zoom;
+    const cs = 120 / zoom;
+    const cx = Math.min(r.x + r.w, GAME_WIDTH / 2 + GAME_WIDTH / (2 * zoom));
+    const back = lerpColor(z.paper, 0xffffff, 0.25);
+    // The corner (cx, edgeY) is folded over the line A-B onto C: the triangle A-corner-B shows
+    // the old page again, the flap A-B-C shows the back of the new page.
+    const A = { x: cx - cs, y: edgeY };
+    const B = { x: cx, y: edgeY - cs };
+    const C = { x: cx - cs * 0.82 + (rnd() - 0.5) * 3, y: edgeY - cs * 0.82 + (rnd() - 0.5) * 3 };
+    g.fillStyle(ZONES[ART.pageIndex].paper, 1);
+    g.fillTriangle(A.x, A.y - 13, cx + 2, edgeY + 2, B.x + 2, B.y);
+    g.fillStyle(0x000000, 0.3);
+    g.fillTriangle(A.x - 4, A.y, B.x, B.y - 4, C.x - 14, C.y - 12);
+    const curl = [A, B, C];
+    g.fillStyle(back, 1);
+    g.fillPoints(curl, true);
+    g.lineStyle(2, ink, 0.35);
+    for (let k = 1; k < 5; k++) {
+      const f = k / 5;
+      g.lineBetween(A.x + (B.x - A.x) * f, A.y + (B.y - A.y) * f, C.x + (A.x + B.x - 2 * C.x) * f * 0.15, C.y + (A.y + B.y - 2 * C.y) * f * 0.15);
+    }
+    ART.pen(g, curl, true, 3.5, ink, 0.85, rnd);
+  }
+
+  // Page marks redrawn at the boil rate: WARP SPEED ink streaks out of the center, the final
+  // page's gold pencil rays from above. Drawn in screen space, oversized for the zoom.
+  drawPageFx() {
+    const fx = ZONES[ART.pageIndex].fx;
+    const frame = Math.floor(this.time.now / 100);
+    if (frame === this.pageFxFrame) return;
+    this.pageFxFrame = frame;
+    const g = this.pageFxGfx;
+    g.clear();
+    const rnd = artRandom(frame * 13 + 5);
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    if (fx === 'streaks') {
+      for (let i = 0; i < 34; i++) {
+        const a = (i / 34) * Math.PI * 2 + (rnd() - 0.5) * 0.12;
+        const r0 = 260 + rnd() * 260;
+        const len = 120 + rnd() * 260;
+        const dash = rnd() < 0.5;
+        g.lineStyle(1.5 + rnd() * 2.5, 0xf4ead0, 0.12 + rnd() * 0.14);
+        if (dash) {
+          g.lineBetween(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0, cx + Math.cos(a) * (r0 + len * 0.45), cy + Math.sin(a) * (r0 + len * 0.45));
+          g.lineBetween(cx + Math.cos(a) * (r0 + len * 0.6), cy + Math.sin(a) * (r0 + len * 0.6), cx + Math.cos(a) * (r0 + len), cy + Math.sin(a) * (r0 + len));
+        } else {
+          g.lineBetween(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0, cx + Math.cos(a) * (r0 + len), cy + Math.sin(a) * (r0 + len));
+        }
+      }
+    } else if (fx === 'rays') {
+      const sx = cx;
+      const sy = -420;
+      for (let i = 0; i < 11; i++) {
+        const a = Math.PI / 2 + (i - 5) * 0.16 + (rnd() - 0.5) * 0.03;
+        for (let k = 0; k < 3; k++) {
+          const off = (k - 1) * 0.012;
+          g.lineStyle(3, 0xd9a43a, 0.18 + rnd() * 0.1);
+          g.lineBetween(sx + Math.cos(a + off) * 300, sy + Math.sin(a + off) * 300, sx + Math.cos(a + off) * (1500 + rnd() * 400), sy + Math.sin(a + off) * (1500 + rnd() * 400));
+        }
+      }
+    }
   }
 
   bounceWalls() {
@@ -718,6 +879,7 @@ class GameScene extends Phaser.Scene {
     this.cameras.main.shake(120, 0.008);
     this.burst(c.x, c.y, CARD_FAMILIES.flight.color, 14, 150);
     this.burst(c.x, c.y, 0xffffff, 6, 90);
+    this.cardDoodle('kick', c.x, c.y, { side: c.x < GAME_WIDTH / 2 ? -1 : 1 });
     this.zoomKick = Math.max(this.zoomKick, 0.04);
   }
 
@@ -752,6 +914,7 @@ class GameScene extends Phaser.Scene {
     this.cameras.main.shake(140, 0.01);
     this.burst(a.x, a.y, CARD_FAMILIES.shield.color, 12, 170);
     this.burst(a.x, a.y, 0xb8a28c, 10, 200);
+    this.cardDoodle('shatter', a.x, a.y, { r: a.radius });
     this.jellyT = 0;
   }
 
@@ -982,18 +1145,18 @@ class GameScene extends Phaser.Scene {
     const maxScreenY = GAME_HEIGHT - GameScene.COMET_BAND_BOTTOM;
     const screenY = (this.comet.y - cam.scrollY - GAME_HEIGHT / 2) * cam.zoom + GAME_HEIGHT / 2;
     if (screenY > maxScreenY) cam.scrollY += (screenY - maxScreenY) / cam.zoom;
-    this.starsFar.tilePositionY = cam.scrollY * 0.15;
-    this.starsNear.tilePositionY = cam.scrollY * 0.4;
-    this.starsFar.tilePositionX = cam.scrollX * 0.15;
-    this.starsNear.tilePositionX = cam.scrollX * 0.4;
-    if (this.starsNebula) {
-      this.starsNebula.tilePositionY = cam.scrollY * 0.05;
-      this.starsNebula.tilePositionX = cam.scrollX * 0.05;
+    // The paper is locked to the world (everything is drawn on it); stars sit at two depths.
+    for (const page of [this.paper, this.pageNext]) {
+      if (!page) continue;
+      page.tilePositionX = cam.scrollX;
+      page.tilePositionY = cam.scrollY;
     }
-    if (this.starsSparkle) {
-      this.starsSparkle.tilePositionY = cam.scrollY * 0.7;
-      this.starsSparkle.tilePositionX = cam.scrollX * 0.7;
-    }
+    this.starsFar.tilePositionX = cam.scrollX * 0.25;
+    this.starsFar.tilePositionY = cam.scrollY * 0.25;
+    this.starsNear.tilePositionX = cam.scrollX * 0.6;
+    this.starsNear.tilePositionY = cam.scrollY * 0.6;
+    this.starsSparkle.tilePositionX = cam.scrollX * 0.8;
+    this.starsSparkle.tilePositionY = cam.scrollY * 0.8;
   }
 
   // The HUD dims its bottom panel when the comet is near it.
@@ -1065,7 +1228,7 @@ class GameScene extends Phaser.Scene {
     // Right side under the line, below the flag: the stats block is top-left and the zone banner
     // is centered. Hidden near the top of the screen (see drawBestMarker) so it never overlaps the HUD.
     this.bestLabel = this.add.text(GAME_WIDTH - 24, this.bestY + 16, 'BEST ' + this.prevBestAlt + ' m', {
-      fontFamily: FONT, fontSize: '30px', color: '#5eff8f', stroke: '#1a1033', strokeThickness: 8,
+      fontFamily: FONT, fontSize: '30px', color: '#8fe39a', stroke: '#14121c', strokeThickness: 8,
     }).setOrigin(1, 0).setVisible(this.prevBestAlt > 0);
   }
 
@@ -1080,7 +1243,7 @@ class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: this.bestLabel, alpha: 0, scale: 1.6, duration: 600 });
   }
 
-  // Flag line across the world at the previous best height.
+  // Hand-drawn dashed pen line at the previous best height, with a crayon pennant.
   drawBestMarker(view) {
     const g = this.bestGfx;
     g.clear();
@@ -1089,36 +1252,37 @@ class GameScene extends Phaser.Scene {
     const labelScreenY = this.worldToScreen(0, y).y;
     this.bestLabel.setVisible(labelScreenY > GameScene.BEST_LABEL_MIN_Y && labelScreenY < GAME_HEIGHT - GameScene.COMET_BAND_BOTTOM);
     if (y < view.top - 60 || y > view.bottom + 60) return;
-    const t = this.time.now / 1000;
+    const bf = Math.floor(this.time.now / 100);
     const alpha = this.passedBest ? 0.35 : 1;
-    g.fillStyle(0x5eff8f, 0.1 * alpha);
-    g.fillRect(0, y - 14, GAME_WIDTH, 28);
-    // Dashed line with a dark outline under each dash, scrolling slowly, clipped to the play area.
-    const offset = (t * 40) % 48;
-    for (let x = offset - 48; x < GAME_WIDTH; x += 48) {
-      const x0 = Math.max(0, x);
-      const x1 = Math.min(GAME_WIDTH, x + 28);
-      if (x1 <= x0) continue;
-      g.fillStyle(ART.outline, 0.8 * alpha);
-      const ox0 = Math.max(0, x0 - 2);
-      g.fillRect(ox0, y - 5, Math.min(GAME_WIDTH, x1 + 2) - ox0, 10);
-      g.fillStyle(0x5eff8f, alpha);
-      g.fillRect(x0, y - 3, x1 - x0, 6);
+    const green = SKETCH.green;
+    // Dashes stay put (drawn on the page); only their wobble boils.
+    for (let x = 0; x < GAME_WIDTH; x += 44) {
+      const r = artRandom(x * 7 + bf * 131);
+      const x0 = x + r() * 6;
+      const x1 = Math.min(GAME_WIDTH, x + 26 + r() * 8);
+      const y0 = y + (r() - 0.5) * 5;
+      const y1 = y + (r() - 0.5) * 5;
+      g.lineStyle(10, SKETCH.shadowInk, 0.5 * alpha);
+      g.lineBetween(x0, y0, x1, y1);
+      g.lineStyle(5 + r() * 2, green, alpha);
+      g.lineBetween(x0, y0, x1, y1);
     }
-    // Flag on a pole at the right side.
+    // Pennant on a pen-drawn pole at the right side.
     const px = GAME_WIDTH - 70;
-    const wave = Math.sin(t * 6) * 6;
-    g.fillStyle(ART.outline, alpha);
-    g.fillRect(px - 5, y - 92, 10, 92);
-    g.fillCircle(px, y - 94, 10);
-    g.fillTriangle(px + 3, y - 92, px + 3, y - 46, px + 60 + wave, y - 69 + wave * 0.3);
-    g.fillStyle(0xfff1c1, alpha);
-    g.fillRect(px - 2, y - 90, 4, 90);
-    g.fillCircle(px, y - 94, 6);
-    g.fillStyle(0x5eff8f, alpha);
-    g.fillTriangle(px + 5, y - 87, px + 5, y - 51, px + 50 + wave, y - 69 + wave * 0.3);
-    g.fillStyle(0xffffff, 0.5 * alpha);
-    g.fillTriangle(px + 5, y - 87, px + 5, y - 74, px + 28 + wave * 0.5, y - 78);
+    const r = artRandom(bf * 17 + 5);
+    const wave = Math.sin(this.time.now / 1000 * 6) * 5;
+    const pole = [{ x: px, y }, { x: px + (r() - 0.5) * 3, y: y - 46 }, { x: px + (r() - 0.5) * 3, y: y - 94 }];
+    ART.pen(g, pole, false, 5, ART.ink, alpha, r);
+    const flag = [
+      { x: px + 3, y: y - 92 + (r() - 0.5) * 3 },
+      { x: px + 58 + wave, y: y - 72 + wave * 0.3 + (r() - 0.5) * 4 },
+      { x: px + 3, y: y - 52 + (r() - 0.5) * 3 },
+    ];
+    g.fillStyle(green, 0.9 * alpha);
+    g.fillPoints(flag.map((p) => ({ x: p.x + 3, y: p.y + 2 })), true);
+    g.lineStyle(2.5, 0x3d8f4a, 0.8 * alpha);
+    for (let k = 0; k < 4; k++) g.lineBetween(px + 10 + k * 9, y - 86 + k * 3, px + 6 + k * 9, y - 60 - k * 2);
+    ART.pen(g, flag, true, 3.5, ART.ink, alpha, r);
   }
 
   // ---------- speed lines (screen space) ----------
@@ -1163,13 +1327,12 @@ class GameScene extends Phaser.Scene {
       s.x -= ux * s.speed * dt;
       s.y -= uy * s.speed * dt;
       const k = s.life / s.maxLife;
-      const a = Math.sin(k * Math.PI) * (0.25 + intensity * 0.45);
-      const x2 = s.x + ux * s.length;
-      const y2 = s.y + uy * s.length;
-      g.lineStyle(7, 0x8fe3ff, a * 0.35);
-      g.lineBetween(toX(s.x), toY(s.y), toX(x2), toY(y2));
-      g.lineStyle(2.5, 0xffffff, a);
-      g.lineBetween(toX(s.x + ux * s.length * 0.2), toY(s.y + uy * s.length * 0.2), toX(x2), toY(y2));
+      const a = Math.sin(k * Math.PI) * (0.3 + intensity * 0.5);
+      // Dashed pen speed lines: two dashes per streak in the page's ink.
+      const L = s.length;
+      g.lineStyle(3, ART.ink, a);
+      g.lineBetween(toX(s.x), toY(s.y), toX(s.x + ux * L * 0.5), toY(s.y + uy * L * 0.5));
+      g.lineBetween(toX(s.x + ux * L * 0.66), toY(s.y + uy * L * 0.66), toX(s.x + ux * L), toY(s.y + uy * L));
       return true;
     });
   }
@@ -1240,68 +1403,85 @@ class GameScene extends Phaser.Scene {
     this.sfx('launch');
   }
 
-  // Swelling star (before the blast), then expanding shock rings (after it).
+  // Swelling crayon star (before the blast), then expanding ink scribble rings (after it).
   drawIntro() {
     const g = this.introGfx;
     g.clear();
     const x = GAME_WIDTH / 2;
     const y = this.startY;
     const t = this.time.now / 1000;
+    const bf = Math.floor(t * 10);
+    const rnd = artRandom(bf * 53 + 7);
     if (this.introActive && this.explodeT < 0) {
       const s = Math.min(1, this.introT / GameScene.INTRO_EXPLODE);
       const ease = s * s;
-      const pulse = Math.sin(t * (8 + 34 * s)) * 7 * s;
-      const r = 46 + 120 * ease + pulse;
-      const core = lerpColor(0xffb347, 0xffffff, ease);
-      g.fillStyle(0xff9a2e, 0.08 + 0.1 * s);
-      g.fillCircle(x, y, r * 2.3);
-      g.fillStyle(0xffe14d, 0.12 + 0.12 * s);
-      g.fillCircle(x, y, r * 1.6);
-      // Spiky corona, two counter-rotating layers.
-      for (const layer of [{ k: 1.42, spin: 0.6, color: 0xff9a2e, n: 12 }, { k: 1.22, spin: -1.1, color: 0xffe14d, n: 9 }]) {
-        const pts = [];
-        for (let i = 0; i < layer.n * 2; i++) {
-          const a = t * layer.spin + (i / (layer.n * 2)) * Math.PI * 2;
-          const rr = i % 2 ? r * 1.02 : r * layer.k;
-          pts.push({ x: x + Math.cos(a) * rr, y: y + Math.sin(a) * rr });
-        }
-        g.fillStyle(layer.color, 0.9);
-        g.fillPoints(pts, true);
+      const shake = (rnd() - 0.5) * 8 * s;
+      const r = 46 + 120 * ease + shake;
+      // Spiky pen-drawn corona: one zigzag loop, points re-rolled with the boil.
+      const spikes = [];
+      const nS = 14;
+      for (let i = 0; i < nS * 2; i++) {
+        // Uneven spikes with jittered angles, so it never reads as a clip-art sun.
+        const a = ((i + (rnd() - 0.5) * 0.5) / (nS * 2)) * Math.PI * 2 + bf * 0.02;
+        const rr = i % 2 ? r * (0.98 + rnd() * 0.1) : r * (1.12 + rnd() * rnd() * 0.9);
+        spikes.push({ x: x + Math.cos(a) * rr, y: y + Math.sin(a) * rr });
       }
-      g.fillStyle(ART.outline, 1);
-      g.fillCircle(x, y, r + 7);
-      g.fillStyle(core, 1);
-      g.fillCircle(x, y, r);
-      g.fillStyle(0xff6a2e, 0.25 * (1 - ease));
-      for (let i = 0; i < 4; i++) {
-        const a = t * 0.8 + i * 1.7;
-        g.fillCircle(x + Math.cos(a) * r * 0.5, y + Math.sin(a) * r * 0.45, r * (0.16 + 0.05 * i));
+      g.fillStyle(SKETCH.orange, 1);
+      g.fillPoints(spikes, true);
+      ART.pen(g, spikes, true, 4, ART.ink, 1, rnd);
+      const body = ART.wobblyLoop(x, y, r, r * 0.96, 16, 0.08, rnd, rnd());
+      g.fillStyle(SKETCH.yellow, 1);
+      g.fillPoints(body.map((p) => ({ x: p.x + 4, y: p.y + 3 })), true);
+      ART.hatchCircle(g, x + r * 0.1, y + r * 0.15, r * 0.85, -0.9, 9, 4, SKETCH.orange, 0.75, rnd);
+      // It gets whiter (cream crayon) as it is about to blow.
+      if (ease > 0.2) ART.hatchCircle(g, x - r * 0.15, y - r * 0.2, r * 0.6 * ease, 0.7, 8, 4, 0xfff6dc, ease, rnd);
+      ART.pen(g, body, true, 6, ART.ink, 1, rnd);
+      // This star IS the supernova about to be born: it already wears the villain's scowl,
+      // eyes squeezing tighter as it swells.
+      const line = 0x3a0d10;
+      const er = r * 0.17;
+      const ey = y - r * 0.08;
+      for (const side of [-1, 1]) {
+        const ex = x + side * r * 0.33;
+        const eye = ART.wobblyLoop(ex, ey, er, er * (1 - 0.45 * ease), 9, 0.15, rnd, rnd());
+        g.fillStyle(0xfff3d6, 1);
+        g.fillPoints(eye, true);
+        ART.pen(g, eye, true, 3.5, line, 1, rnd);
+        g.fillStyle(line, 1);
+        g.fillCircle(ex - side * er * 0.25, ey + er * 0.1, er * 0.45);
+        g.lineStyle(7, line, 1);
+        g.lineBetween(ex - side * er * 1.3, ey - er * 1.05, ex + side * er * 1.2, ey - er * 1.9 + (rnd() - 0.5) * 3);
       }
-      g.fillStyle(0xffffff, 0.75);
-      g.fillCircle(x - r * 0.32, y - r * 0.32, r * 0.34);
-      g.fillStyle(0xffffff, 0.5 * ease);
-      g.fillCircle(x, y, r * 0.95);
+      const mouth = [];
+      for (let k = 0; k <= 6; k++) mouth.push({ x: x - r * 0.28 + k * r * 0.093, y: y + r * 0.36 + (k % 2 ? -r * 0.07 : 0) + (rnd() - 0.5) * 2 });
+      g.lineStyle(5, line, 1);
+      g.strokePoints(mouth, false);
     }
     if (this.explodeT >= 0 && this.explodeT < 1.4) {
       const k = this.explodeT / 1.4;
       const rings = [
-        { speed: 1500, width: 26, color: 0xfff1c1 },
-        { speed: 1000, width: 18, color: 0xffe14d },
-        { speed: 650, width: 12, color: 0xff9a2e },
+        { speed: 1500, width: 10, color: ART.ink },
+        { speed: 1000, width: 12, color: SKETCH.yellow },
+        { speed: 650, width: 12, color: SKETCH.orange },
       ];
       for (const ring of rings) {
         const rr = 60 + ring.speed * this.explodeT * (1 - k * 0.35);
         const w = ring.width * (1 - k) + 2;
-        g.lineStyle(w + 8, ART.outline, 0.5 * (1 - k));
-        g.strokeCircle(x, y, rr);
-        g.lineStyle(w, ring.color, 1 - k);
-        g.strokeCircle(x, y, rr);
+        ART.dashedRing(g, x, y, rr, 22, rnd() * 6, w + 6, SKETCH.shadowInk, 0.35 * (1 - k), rnd);
+        ART.dashedRing(g, x, y, rr, 22, rnd() * 6, w, ring.color, 1 - k, rnd);
       }
-      // Fireball core: warm and small, so the blast never washes the screen out.
-      g.fillStyle(0xff9a2e, 0.55 * (1 - k) * (1 - k));
-      g.fillCircle(x, y, 150 * (1 - k) + 20);
-      g.fillStyle(0xffe14d, 0.6 * (1 - k) * (1 - k));
-      g.fillCircle(x, y, 80 * (1 - k) + 10);
+      // Shrinking crayon fireball scribble (small: the blast never washes the screen out).
+      const fr = 120 * (1 - k) + 14;
+      const blob = ART.wobblyLoop(x, y, fr, fr, 14, 0.3, rnd, rnd());
+      g.fillStyle(SKETCH.orange, (1 - k) * 0.9);
+      g.fillPoints(blob, true);
+      ART.hatchCircle(g, x, y, fr * 0.7, -0.9, 10, 4, SKETCH.yellow, 1 - k, rnd);
+      ART.pen(g, blob, true, 4, ART.ink, 1 - k, rnd);
+      for (let i = 0; i < 6; i++) {
+        const a = i * 1.05 + 0.3;
+        const d = 80 + this.explodeT * 700;
+        ART.asterisk(g, x + Math.cos(a) * d, y + Math.sin(a) * d, 14 * (1 - k) + 4, i % 2 ? SKETCH.yellow : ART.ink, 1 - k, 4, rnd);
+      }
     }
   }
 
@@ -1335,16 +1515,22 @@ class GameScene extends Phaser.Scene {
       afterburner: this.mods.afterburnerSeconds > 0 ? this.afterburnerT / this.mods.afterburnerSeconds : 0,
       shieldReady: this.shieldCharges > 0,
       grabRangeBonus: grabRangeForSpeed(this.speed) * (this.mods.grabRangeMul - 1),
+      grabRange: this.grabRange(),   // the real grab reach (speed + Gravity Well), for the dashed ring
     };
   }
 
   draw() {
+    if (this.headless) return;   // the simulator needs no art (it would only cost time)
     const g = this.worldGfx;
+    const front = this.frontGfx;
     g.clear();
+    front.clear();
+    ART.tick(this);
     const assist = this.currentAssist();
     const ctx = this.artContext(assist);
+    ctx.front = front;
     const view = this.visibleBounds();
-    ART.drawWalls(g, view);
+    ART.drawWalls(g, view, ctx);
     this.drawBestMarker(view);
     const grab = this.isHolding ? null : this.nearestGrabbablePlanet();
     for (const h of this.blackHoles) ART.drawBlackHole(g, h, ctx);
@@ -1355,20 +1541,33 @@ class GameScene extends Phaser.Scene {
     }
     for (const a of this.asteroids) if (!a.dead) ART.drawAsteroid(g, a, ctx);
     // The supernova is born when the opening star explodes.
-    if (!this.introActive || this.explodeT >= 0) ART.drawNova(g, this.novaY, view, ctx);
-    if (this.orbit) this.drawAimGuide(g, assist, ctx);
+    if (!this.introActive || this.explodeT >= 0) ART.drawNova(front, this.novaY, view, ctx);
+    if (this.orbit && !this.isOver) this.drawAimGuide(front, assist, ctx);
+    this.drawBursts(front, ctx.time);
     this.drawCatchRing();
     const frameDt = this.hitstop > 0 ? 0 : Math.min(this.game.loop.delta / 1000, 0.05);
     this.drawCardFx(frameDt * (this.cardPick ? GameScene.CARD_TIME_SCALE : 1));
-    this.updateSpeedLines(frameDt);
+    this.updateSpeedLines(this.isOver ? 0 : frameDt);
+    this.drawPageEdge();
+    this.drawPageFx();
     this.cometGfx.clear();
     if (this.cometVisible) ART.drawComet(this.cometGfx, this.comet, this.trail, ctx);
     this.drawIntro();
     this.updateHud();
   }
 
+  drawBursts(g, t) {
+    const now = this.time.now;
+    this.bursts = this.bursts.filter((b) => {
+      b.age = (now - b.born) / b.duration;
+      if (b.age >= 1) return false;
+      ART.drawBurst(g, b, t);
+      return true;
+    });
+  }
+
   // Onboarding: until the first real mid-flight catch, the planet you are flying at gets a
-  // pulsing ring at the edge of its grab zone that brightens as you approach ("hold here").
+  // green crayon ring at the edge of its grab zone, plus a pen loop closing onto it ("hold here").
   drawCatchRing() {
     const g = this.catchGfx;
     g.clear();
@@ -1379,21 +1578,13 @@ class GameScene extends Phaser.Scene {
     const gap = this.distanceTo(p) - zone;
     const near = Phaser.Math.Clamp(1 - gap / 600, 0.5, 1);
     const t = this.time.now / 1000;
+    const rnd = artRandom(Math.floor(t * 10) * 23 + 9);
     const k = (t * 1.6) % 1;   // shrinking pulse: from outside the zone onto its edge
     const pulseR = zone + 70 * (1 - k);
-    g.lineStyle(10, ART.outline, 0.35 * near * k);
-    g.strokeCircle(p.x, p.y, pulseR);
-    g.lineStyle(5, 0x5eff8f, 0.85 * near * k);
-    g.strokeCircle(p.x, p.y, pulseR);
-    // Steady dashed edge of the grab zone.
-    const dashes = 28;
-    g.lineStyle(5, 0x5eff8f, 0.55 * near);
-    for (let i = 0; i < dashes; i++) {
-      const a0 = (i / dashes) * Math.PI * 2 + t * 0.6;
-      g.beginPath();
-      g.arc(p.x, p.y, zone, a0, a0 + (Math.PI * 2) / dashes * 0.55);
-      g.strokePath();
-    }
+    const loop = ART.wobblyLoop(p.x, p.y, pulseR, pulseR, 32, 10 / pulseR, rnd, rnd());
+    ART.pen(g, loop, true, 10, SKETCH.shadowInk, 0.3 * near * k, rnd);
+    ART.pen(g, loop, true, 5, SKETCH.green, 0.85 * near * k, rnd);
+    ART.dashedRing(g, p.x, p.y, zone, 28, Math.floor(t * 10) * 0.03, 5, SKETCH.green, 0.6 * near, rnd);
   }
 
   // Closest planet above the comet (catch-ring fallback when the fling had no assist target).
@@ -1418,19 +1609,15 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  // reach: max travel distance in px (default 110).
+  // Ink doodle burst (drawn by ART.drawBurst on the front layer). reach: max travel in px (default 110).
+  // Fewer strokes than the count asked for: effects should mean something, not fill the screen.
   burst(x, y, color, count, reach) {
-    if (this.headless) return;   // thousands of tweens would only slow the simulator
-    const far = reach || 110;
-    for (let i = 0; i < count; i++) {
-      const dot = this.add.circle(x, y, Phaser.Math.Between(4, 9), color).setStrokeStyle(2, ART.outline, 0.6);
-      const a = Math.random() * Math.PI * 2;
-      const d = Phaser.Math.Between(Math.round(far * 0.36), far);
-      this.tweens.add({
-        targets: dot, x: x + Math.cos(a) * d, y: y + Math.sin(a) * d, alpha: 0, scale: 0.3,
-        duration: Phaser.Math.Between(250, 450), onComplete: () => dot.destroy(),
-      });
-    }
+    if (this.headless) return;
+    this.bursts.push({
+      x, y, color, reach: reach || 110,
+      count: Math.max(5, Math.min(12, Math.ceil(count * 0.6))),
+      born: this.time.now, duration: 420, age: 0, seed: Math.floor(Math.random() * 100000),
+    });
   }
 
   updateHud() {
@@ -1456,7 +1643,13 @@ class GameScene extends Phaser.Scene {
     // The simulator must never reach GameOver: it would save the bot's score as the real best.
     if (this.headless) return;
     this.time.delayedCall(800, () => {
-      this.scene.start('GameOver', { score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude, bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt), cards: this.ownedCards.slice() });
+      this.scene.start('GameOver', {
+        score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude,
+        bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt),
+        topSpeedKmh: Math.round(this.topSpeed / 10), maxChain: this.maxChain,
+        zoneIndex: this.zoneIndex, seconds: Math.floor(this.elapsed),
+        cards: this.ownedCards.slice(),
+      });
     });
   }
 }

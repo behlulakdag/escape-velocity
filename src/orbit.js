@@ -178,13 +178,15 @@ function nextPlanetLayout(prevSide, altitude, worldWidth, rand) {
 // run short-term goals beyond the raw number.
 // maxSpeed: the speed cap (px/s, readout = /10 km/s) when the zone starts. Between zones the cap
 // rises smoothly, so the number keeps climbing for the whole run.
+// Visual fields (art only, see src/art.js): each zone is a new sketchbook page.
+// sky/paper = paper color, ink = pen color on that page, fx = extra marks drawn on the page.
 const ZONES = [
-  { from: 0, name: 'LIFTOFF', sky: 0x2b1d5c, maxSpeed: 2400 },
-  { from: 500, name: 'ORBIT', sky: 0x1f3a7a, maxSpeed: 2650 },
-  { from: 1500, name: 'HYPERSONIC', sky: 0x5a1f7a, maxSpeed: 2950 },
-  { from: 3000, name: 'WARP SPEED', sky: 0x13606a, maxSpeed: 3300 },
-  { from: 5000, name: 'HYPERSPACE', sky: 0x7a1f4a, maxSpeed: 3700 },
-  { from: 8000, name: 'ESCAPE VELOCITY', sky: 0x7a5a12, maxSpeed: 4100 },
+  { from: 0, name: 'LIFTOFF', sky: 0x1d2747, paper: 0x1d2747, ink: 0xf4ead0, fx: 'none', maxSpeed: 2400 },
+  { from: 500, name: 'ORBIT', sky: 0x123f45, paper: 0x123f45, ink: 0xf4ead0, fx: 'none', maxSpeed: 2650 },
+  { from: 1500, name: 'HYPERSONIC', sky: 0x4a1a22, paper: 0x4a1a22, ink: 0xf4ead0, fx: 'heat', maxSpeed: 2950 },
+  { from: 3000, name: 'WARP SPEED', sky: 0x121116, paper: 0x121116, ink: 0xf4ead0, fx: 'streaks', maxSpeed: 3300 },
+  { from: 5000, name: 'HYPERSPACE', sky: 0x2e1d4f, paper: 0x2e1d4f, ink: 0xf4ead0, fx: 'grid', maxSpeed: 3700 },
+  { from: 8000, name: 'ESCAPE VELOCITY', sky: 0xefdcae, paper: 0xefdcae, ink: 0x2a2018, fx: 'rays', maxSpeed: 4100 },
 ];
 
 // Speed cap at an altitude (meters): interpolates between zone caps, then creeps up to TUNING.maxSpeed.
