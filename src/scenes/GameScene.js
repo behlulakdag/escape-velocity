@@ -9,6 +9,24 @@ function loadBestAltitude() {
   }
 }
 
+// Set once the player catches a planet mid-flight on their own; after that the onboarding
+// auto catch and the catch hint never come back, so only the very first run is assisted.
+const LEARNED_CATCH_KEY = 'escape_velocity_learned_catch';
+
+function hasLearnedCatch() {
+  try {
+    return localStorage.getItem(LEARNED_CATCH_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+function saveLearnedCatch() {
+  try {
+    localStorage.setItem(LEARNED_CATCH_KEY, '1');
+  } catch (e) { /* storage blocked: the player just gets the tutorial again */ }
+}
+
 function saveBestAltitude(meters) {
   try {
     if (meters > loadBestAltitude()) localStorage.setItem(BEST_ALTITUDE_KEY, String(meters));
@@ -70,6 +88,7 @@ class GameScene extends Phaser.Scene {
     this.createBestMarker();
     this.scene.launch('Hud');
     this.hud = this.scene.get('Hud');
+    this.learnedCatch = hasLearnedCatch();
     this.hintStage = 0;   // 0: teach hold, 1: teach release, 2: teach catching the next planet, 3: done
     this.events.once('shutdown', () => this.scene.stop('Hud'));
 
@@ -239,7 +258,7 @@ class GameScene extends Phaser.Scene {
     if (assist) {
       this.assistedFlings++;
       // Onboarding: the first few assisted flings catch their target even without a hold.
-      if (autoCatchAllowed(this.assistedFlings, this.elapsed)) this.autoCatchTarget = assist.planet;
+      if (!this.learnedCatch && autoCatchAllowed(this.assistedFlings, this.elapsed)) this.autoCatchTarget = assist.planet;
     }
     // Leave along the tangent; an assisted release then curves onto its target over a
     // fraction of a second instead of snapping direction on the release frame.
@@ -254,7 +273,10 @@ class GameScene extends Phaser.Scene {
     this.orbit = null;
     this.orbitPlanet = null;
     this.capTime = 0;
-    if (this.hintStage === 1 || this.hintStage === 2) {
+    if (this.hintStage === 1 && this.learnedCatch) {
+      this.hintStage = 3;
+      this.hud.hideHint();
+    } else if (this.hintStage === 1 || this.hintStage === 2) {
       // 'RELEASE to fling!' is done; now teach the second half of the loop.
       this.hintStage = 2;
       this.hud.showHint('HOLD to catch it!');
@@ -586,9 +608,11 @@ class GameScene extends Phaser.Scene {
       if (auto) {
         this.hud.showHint('TAP to fling!');
       } else {
-        // First real mid-flight catch: the loop is learned.
+        // First real mid-flight catch: the loop is learned, for this and every later run.
         this.hintStage = 3;
         this.hud.hideHint();
+        if (!this.headless && !this.learnedCatch) saveLearnedCatch();
+        this.learnedCatch = true;
       }
     }
   }
