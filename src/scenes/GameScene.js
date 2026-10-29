@@ -12,7 +12,9 @@ class GameScene extends Phaser.Scene {
     this.orbitPlanet = null;
     this.speed = TUNING.startSpeed;
     this.startY = GAME_HEIGHT - 260;
-    this.bestAltitude = 0;
+    this.bestAltitude = 0;     // meters
+    this.bestAltitudePx = 0;
+    this.score = 0;
     this.zoneIndex = 0;
     this.trail = [];
 
@@ -201,7 +203,12 @@ class GameScene extends Phaser.Scene {
     // Every mistake costs speed; running out of speed is the only way to lose.
     if (this.speed < TUNING.minSpeed) return this.gameOver('TOO SLOW!');
 
-    this.bestAltitude = Math.max(this.bestAltitude, Math.floor(altitude / 10));
+    if (altitude > this.bestAltitudePx) {
+      // Only new height scores, multiplied by how fast you got there.
+      this.score += ((altitude - this.bestAltitudePx) / 10) * speedMultiplier(this.speed);
+      this.bestAltitudePx = altitude;
+      this.bestAltitude = Math.floor(altitude / 10);
+    }
     this.checkZone();
     this.fillPlanets();
     this.recordTrail();
@@ -417,7 +424,7 @@ class GameScene extends Phaser.Scene {
 
   updateHud() {
     if (!this.hud.scoreText) return;   // HUD scene still starting
-    this.hud.setStats(this.bestAltitude, this.bestAltitude, this.speed);
+    this.hud.setStats(Math.floor(this.score), this.bestAltitude, this.speed);
   }
 
   gameOver(reason) {
@@ -428,7 +435,7 @@ class GameScene extends Phaser.Scene {
     this.cameras.main.flash(200, 255, 255, 255);
     this.burst(this.comet.x, this.comet.y, 0xff9a2e, 22);
     this.time.delayedCall(800, () => {
-      this.scene.start('GameOver', { score: this.bestAltitude, reason });
+      this.scene.start('GameOver', { score: Math.floor(this.score), altitude: this.bestAltitude, reason });
     });
   }
 }

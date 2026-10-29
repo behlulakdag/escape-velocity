@@ -120,3 +120,9 @@ test('zones start at 0 and are found by altitude', () => {
   assert.strictEqual(o.zoneIndexForAltitude(1e9), o.ZONES.length - 1);
   for (let i = 1; i < o.ZONES.length; i++) assert.ok(o.ZONES[i].from > o.ZONES[i - 1].from);
 });
+
+test('speed multiplier goes x1 at minimum to x5 at top speed', () => {
+  assert.strictEqual(o.speedMultiplier(o.TUNING.minSpeed), 1);
+  assert.strictEqual(o.speedMultiplier(o.TUNING.maxSpeed), 5);
+  assert.ok(o.speedMultiplier(1400) > o.speedMultiplier(600));
+});

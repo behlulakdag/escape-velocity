@@ -148,6 +148,12 @@ function zoneIndexForAltitude(meters) {
   return index;
 }
 
+// Score multiplier x1..x5 by speed: climbing fast is worth more than climbing slow,
+// so the game always pushes you toward risky, fast play.
+function speedMultiplier(speed) {
+  return 1 + Math.min(4, Math.floor(speedFraction(speed) * 5));
+}
+
 function flightDecay(altitude) {
   return Math.min(
     TUNING.maxFlightDecay,
@@ -190,5 +196,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, PLANET_SIZES, ZONES, zoneIndexForAltitude, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

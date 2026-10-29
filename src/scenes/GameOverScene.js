@@ -6,6 +6,7 @@ class GameOverScene extends Phaser.Scene {
   init(data) {
     this.finalScore = data.score || 0;
     this.reason = data.reason || 'GAME OVER';
+    this.altitude = data.altitude || 0;
   }
 
   create() {
@@ -18,13 +19,19 @@ class GameOverScene extends Phaser.Scene {
       color: '#ff4d6d',
     }).setOrigin(0.5);
 
-    this.add.text(cx, 520, this.finalScore + ' m', {
+    this.add.text(cx, 460, this.altitude + ' m', {
+      fontFamily: FONT,
+      fontSize: '36px',
+      color: '#c9bfff',
+    }).setOrigin(0.5);
+
+    this.add.text(cx, 530, String(this.finalScore), {
       fontFamily: FONT,
       fontSize: '60px',
       color: COLORS.text,
     }).setOrigin(0.5);
 
-    this.add.text(cx, 610, isRecord ? 'NEW BEST!' : 'BEST: ' + loadHighScore() + ' m', {
+    this.add.text(cx, 610, isRecord ? 'NEW BEST!' : 'BEST: ' + loadHighScore(), {
       fontFamily: FONT,
       fontSize: '40px',
       color: isRecord ? '#ffc83d' : '#bbbbbb',

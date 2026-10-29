@@ -21,7 +21,7 @@ class MenuScene extends Phaser.Scene {
 
     const best = loadHighScore();
     if (best > 0) {
-      this.add.text(cx, 600, 'BEST: ' + best + ' m', {
+      this.add.text(cx, 600, 'BEST: ' + best, {
         fontFamily: FONT,
         fontSize: '40px',
         color: COLORS.text,
