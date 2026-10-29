@@ -22,6 +22,8 @@ const TUNING = {
   maxOrbitSpin: 5,        // rad/s cap on visible orbit rotation so high speed stays readable
   assistMaxBelow: 40,     // assist never steers toward planets further below than this
   minZoom: 0.68,          // camera zoom at top speed
+  perfectAngle: 0.12,     // release within ~7 degrees of the assist line = PERFECT
+  perfectBonus: 140,
   hitGrace: 120,          // a hit never leaves you closer than this to minSpeed
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,

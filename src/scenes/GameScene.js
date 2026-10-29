@@ -107,6 +107,11 @@ class GameScene extends Phaser.Scene {
     if (!this.orbit || this.isOver) return;
     const v = tangentVelocity(this.orbit, this.speed);
     const assist = this.currentAssist();
+    if (assist && assist.angle < TUNING.perfectAngle) {
+      this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.perfectBonus);
+      this.popText('PERFECT!', '#ffe14d');
+      this.cameras.main.flash(120, 255, 225, 77);
+    }
     if (assist) {
       const dx = assist.aimX - this.comet.x;
       const dy = assist.aimY - this.comet.y;
@@ -380,7 +385,8 @@ class GameScene extends Phaser.Scene {
       dy = v.vy;
       length = 520;
     }
-    const color = assist ? 0x5eff8f : 0xffffff;
+    // White = no target, green = will reach a planet, gold = PERFECT window.
+    const color = !assist ? 0xffffff : assist.angle < TUNING.perfectAngle ? 0xffe14d : 0x5eff8f;
     const dots = Math.floor(length / 34);
     for (let i = 1; i <= dots; i++) {
       const t = i / dots;
