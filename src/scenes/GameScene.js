@@ -20,7 +20,7 @@ class GameScene extends Phaser.Scene {
     this.planets = [];
     this.nextPlanetY = this.startY - 560;
     // First planet straight ahead so the very first hold always works.
-    this.addPlanet(GAME_WIDTH / 2 + 150, this.nextPlanetY, 70);
+    this.addPlanet(GAME_WIDTH / 2 + 150, this.nextPlanetY, 80);
     this.nextPlanetY -= 420;
     this.fillPlanets();
 
@@ -60,10 +60,10 @@ class GameScene extends Phaser.Scene {
     const viewTop = this.cameras.main.scrollY;
     while (this.nextPlanetY > viewTop - GAME_HEIGHT) {
       const altitude = this.startY - this.nextPlanetY;
-      const radius = Phaser.Math.Between(48, 90);
+      const radius = Phaser.Math.Between(60, 100);
       const x = Phaser.Math.Between(110 + radius / 2, GAME_WIDTH - 110 - radius / 2);
       this.addPlanet(x, this.nextPlanetY, radius);
-      const gap = Math.min(620, 380 + altitude * 0.02);
+      const gap = Math.min(600, 340 + altitude * 0.015);
       this.nextPlanetY -= Phaser.Math.Between(gap - 60, gap + 80);
     }
     const viewBottom = viewTop + GAME_HEIGHT;
@@ -100,8 +100,17 @@ class GameScene extends Phaser.Scene {
     this.isHolding = false;
     if (!this.orbit || this.isOver) return;
     const v = tangentVelocity(this.orbit, this.speed);
-    this.comet.vx = v.vx;
-    this.comet.vy = v.vy;
+    const assist = this.currentAssist();
+    if (assist) {
+      const dx = assist.aimX - this.comet.x;
+      const dy = assist.aimY - this.comet.y;
+      const len = Math.hypot(dx, dy);
+      this.comet.vx = (dx / len) * this.speed;
+      this.comet.vy = (dy / len) * this.speed;
+    } else {
+      this.comet.vx = v.vx;
+      this.comet.vy = v.vy;
+    }
     const kick = speedFraction(this.speed);
     this.cameras.main.shake(120, 0.004 + kick * 0.01);
     this.burst(this.comet.x, this.comet.y, speedColor(kick), 10);
@@ -111,6 +120,13 @@ class GameScene extends Phaser.Scene {
       this.hintStage = 2;
       this.tweens.add({ targets: this.hintText, alpha: 0, duration: 400 });
     }
+  }
+
+  // Where a release right now would be steered to (null = straight along the tangent).
+  currentAssist() {
+    if (!this.orbit) return null;
+    const v = tangentVelocity(this.orbit, 1);
+    return pickAssistTarget(this.comet.x, this.comet.y, v.vx, v.vy, this.planets, this.orbitPlanet);
   }
 
   nearestGrabbablePlanet() {
@@ -138,6 +154,8 @@ class GameScene extends Phaser.Scene {
       if (planet) {
         this.orbit = startOrbit(planet.x, planet.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, planet.radius);
         this.orbitPlanet = planet;
+        this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.catchBonus);
+        this.popText('+SPEED', '#5eff8f');
         this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
         if (this.hintStage === 0) {
           this.hintStage = 1;
@@ -152,7 +170,15 @@ class GameScene extends Phaser.Scene {
       this.speed = step.speed;
       this.comet.x = this.orbitPlanet.x + Math.cos(this.orbit.angle) * this.orbit.radius;
       this.comet.y = this.orbitPlanet.y + Math.sin(this.orbit.angle) * this.orbit.radius;
-      if (step.crashed) return this.gameOver('CRASHED!');
+      if (step.crashed) {
+        // Scraping the surface throws the comet off its orbit and costs speed instead of ending the run.
+        const v = tangentVelocity(this.orbit, this.speed);
+        this.comet.vx = v.vx;
+        this.comet.vy = v.vy;
+        this.orbit = null;
+        this.orbitPlanet = null;
+        this.loseSpeed(TUNING.hitKeep);
+      }
     } else {
       this.speed -= flightDecay(altitude) * dt;
       // Keep direction, apply the decayed speed.
@@ -162,16 +188,13 @@ class GameScene extends Phaser.Scene {
       this.comet.x += this.comet.vx * dt;
       this.comet.y += this.comet.vy * dt;
       this.bounceWalls();
-      for (const p of this.planets) {
-        if (Phaser.Math.Distance.Between(this.comet.x, this.comet.y, p.x, p.y) < p.radius + TUNING.cometRadius * 0.7) {
-          return this.gameOver('CRASHED!');
-        }
-      }
-      if (this.speed < TUNING.minSpeed) return this.gameOver('TOO SLOW!');
+      this.bouncePlanets();
     }
 
     this.updateCamera(dt);
-    if (this.comet.y > this.cameras.main.scrollY + GAME_HEIGHT + 80) return this.gameOver('LOST IN SPACE!');
+    this.bounceFloor();
+    // Every mistake costs speed; running out of speed is the only way to lose.
+    if (this.speed < TUNING.minSpeed) return this.gameOver('TOO SLOW!');
 
     this.bestAltitude = Math.max(this.bestAltitude, Math.floor(altitude / 10));
     this.fillPlanets();
@@ -189,6 +212,51 @@ class GameScene extends Phaser.Scene {
       this.cameras.main.shake(90, 0.006);
       this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
     }
+  }
+
+  bouncePlanets() {
+    for (const p of this.planets) {
+      const dx = this.comet.x - p.x;
+      const dy = this.comet.y - p.y;
+      const dist = Math.hypot(dx, dy);
+      const minDist = p.radius + TUNING.cometRadius * 0.7;
+      if (dist < minDist) {
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const dot = this.comet.vx * nx + this.comet.vy * ny;
+        this.comet.vx -= 2 * dot * nx;
+        this.comet.vy -= 2 * dot * ny;
+        this.comet.x = p.x + nx * (minDist + 2);
+        this.comet.y = p.y + ny * (minDist + 2);
+        this.loseSpeed(TUNING.hitKeep);
+        return;
+      }
+    }
+  }
+
+  // The bottom of the screen is a floor: falling behind bounces you back up, at a cost.
+  bounceFloor() {
+    const floor = this.cameras.main.scrollY + GAME_HEIGHT - TUNING.cometRadius;
+    if (this.comet.y > floor && !this.orbit) {
+      this.comet.y = floor;
+      this.comet.vy = -Math.abs(this.comet.vy);
+      this.loseSpeed(TUNING.floorBounceKeep);
+    }
+  }
+
+  loseSpeed(keep) {
+    this.speed *= keep;
+    this.cameras.main.shake(160, 0.012);
+    this.cameras.main.flash(90, 255, 77, 109);
+    this.burst(this.comet.x, this.comet.y, 0xff4d6d, 10);
+    this.popText('-' + Math.round((1 - keep) * 100) + '% SPEED', '#ff4d6d');
+  }
+
+  popText(label, color) {
+    const t = this.add.text(this.comet.x, this.comet.y - 50, label, {
+      fontFamily: FONT, fontSize: '40px', color, stroke: '#1a1033', strokeThickness: 8,
+    }).setOrigin(0.5).setDepth(50);
+    this.tweens.add({ targets: t, y: t.y - 90, alpha: 0, duration: 700, onComplete: () => t.destroy() });
   }
 
   // Camera only climbs; it eases toward keeping the comet in the lower part of the screen.
@@ -212,15 +280,22 @@ class GameScene extends Phaser.Scene {
     const g = this.worldGfx;
     g.clear();
     const grab = this.isHolding ? null : this.nearestGrabbablePlanet();
-    for (const p of this.planets) this.drawPlanet(g, p, p === grab || p === this.orbitPlanet);
-    if (this.orbit) this.drawAimGuide(g);
+    const assist = this.currentAssist();
+    for (const p of this.planets) {
+      this.drawPlanet(g, p, p === grab || p === this.orbitPlanet, assist && assist.planet === p);
+    }
+    if (this.orbit) this.drawAimGuide(g, assist);
     this.drawComet();
   }
 
-  drawPlanet(g, p, highlighted) {
-    // Grab zone: dashed ring so players learn where holding works.
+  drawPlanet(g, p, highlighted, isTarget) {
+    // Grab zone: dashed ring so players learn where holding works. Green = release now.
     const zone = p.radius + TUNING.grabRange;
-    g.lineStyle(4, 0xffffff, highlighted ? 0.55 : 0.14);
+    if (isTarget) {
+      g.fillStyle(0x5eff8f, 0.12);
+      g.fillCircle(p.x, p.y, zone);
+    }
+    g.lineStyle(isTarget ? 7 : 4, isTarget ? 0x5eff8f : 0xffffff, isTarget ? 0.9 : highlighted ? 0.55 : 0.14);
     for (let a = 0; a < Math.PI * 2; a += Math.PI / 18) {
       g.beginPath();
       g.arc(p.x, p.y, zone, a, a + Math.PI / 36);
@@ -243,11 +318,31 @@ class GameScene extends Phaser.Scene {
     for (const c of p.craters) g.fillCircle(p.x + Math.cos(c.a) * c.d, p.y + Math.sin(c.a) * c.d, c.r);
   }
 
-  drawAimGuide(g) {
-    const v = tangentVelocity(this.orbit, 1);
-    g.fillStyle(0xffffff, 0.8);
-    for (let i = 1; i <= 7; i++) {
-      g.fillCircle(this.comet.x + v.vx * i * 42, this.comet.y + v.vy * i * 42, 7 - i * 0.6);
+  // Long dotted line showing where a release goes; turns green when it will reach a planet.
+  drawAimGuide(g, assist) {
+    let dx;
+    let dy;
+    let length;
+    if (assist) {
+      dx = assist.aimX - this.comet.x;
+      dy = assist.aimY - this.comet.y;
+      length = Math.hypot(dx, dy);
+      dx /= length;
+      dy /= length;
+    } else {
+      const v = tangentVelocity(this.orbit, 1);
+      dx = v.vx;
+      dy = v.vy;
+      length = 520;
+    }
+    const color = assist ? 0x5eff8f : 0xffffff;
+    const dots = Math.floor(length / 34);
+    for (let i = 1; i <= dots; i++) {
+      const t = i / dots;
+      g.fillStyle(0x1a1033, 0.6);
+      g.fillCircle(this.comet.x + dx * i * 34, this.comet.y + dy * i * 34, 9 - t * 4);
+      g.fillStyle(color, assist ? 1 : 0.85 - t * 0.6);
+      g.fillCircle(this.comet.x + dx * i * 34, this.comet.y + dy * i * 34, 6 - t * 3);
     }
   }
 
