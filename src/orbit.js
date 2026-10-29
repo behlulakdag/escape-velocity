@@ -3,7 +3,7 @@
 const TUNING = {
   cometRadius: 28,
   startSpeed: 620,
-  minSpeed: 220,          // the comet never drops below this; the supernova is what kills you
+  minSpeed: 140,          // the comet never drops below this; the supernova is what kills you
   maxSpeed: 2400,
   flightDecay: 40,        // px/s lost per second while flying
   flightDecayPerKm: 6,    // extra decay per 1000 px of altitude (difficulty ramp)
@@ -38,7 +38,7 @@ const TUNING = {
   blackHoleTurn: 6,       // max rad/s the pull can bend your path (at the core); the hole is not solid
   hitGrace: 120,          // a hit never leaves you closer than this to minSpeed
   novaStartBelow: 300,    // how far below the comet the supernova starts
-  novaBaseSpeed: 130,     // px/s the wave climbs at the start
+  novaBaseSpeed: 160,     // px/s the wave climbs at the start
   novaRamp: 5,            // extra px/s every second
   novaMaxSpeed: 950,
   novaLeash: 250,         // the wave is never further than this below the visible screen (falling back = death)
