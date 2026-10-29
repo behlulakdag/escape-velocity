@@ -170,6 +170,8 @@ class GameScene extends Phaser.Scene {
     this.inputGuard = false;    // swallows the release of the finger that tapped a card
     this.shieldCharges = 0;     // Heat Shield charges left in this zone
     this.rescuesLeft = 0;       // Unbreakable
+    this.secondWindUsed = false; // one-time SECOND WIND (any run, no card needed)
+    this.catches = 0;            // planets caught this run (SECOND WIND needs a few)
     this.afterburnerT = 0;      // seconds of afterburner left
     this.overdriveFxT = 0;
     this.shockFx = null;        // { y, push, t }: shock line pushing the supernova down
@@ -250,7 +252,6 @@ class GameScene extends Phaser.Scene {
     this.shieldCharges--;
     this.popText('SHIELD!', GameScene.hex(CARD_FAMILIES.shield.color), { size: 44 });
     this.sfx('shield');
-    this.sfx('wall');
     this.cameras.main.shake(120, 0.006);
     this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.shield.color, 16, 130);
     this.cardDoodle('shield', this.comet.x, this.comet.y);
@@ -276,10 +277,36 @@ class GameScene extends Phaser.Scene {
     this.breakChain();
     this.popText('UNBREAKABLE!', GameScene.hex(CARD_FAMILIES.shield.color), { size: 64, duration: 1200 });
     this.sfx('rescue');
-    this.sfx('closecall');
     if (this.hud.flash) this.hud.flash(CARD_FAMILIES.shield.color, 0.16, 260, 0.16);
     this.cameras.main.shake(260, 0.016);
     this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.shield.color, 24, 220);
+    this.cardDoodle('rescue', this.comet.x, this.comet.y);
+    this.freeze(FEEL.hitstopPerfect);
+  }
+
+  // SECOND WIND: once per run, the first supernova catch below HYPERSONIC flings the comet back up
+  // (a weaker Unbreakable), so a learning player still sees the first card pick and HYPERSONIC.
+  secondWind() {
+    this.secondWindUsed = true;
+    this.orbit = null;
+    this.orbitPlanet = null;
+    this.scrape = null;
+    this.homing = null;
+    this.capTime = 0;
+    this.speed = Math.max(this.speed, TUNING.secondWindSpeed);
+    this.comet.vx = 0;
+    this.comet.vy = -this.speed;
+    const from = this.novaY;
+    this.novaY = this.comet.y + TUNING.secondWindPush;
+    this.shockFx = { y: from, push: this.novaY - from, t: 0 };
+    this.closeArmed = false;
+    this.breakChain();
+    // Priority 3 = the HUD's high priority: it goes below the comet, never queued behind a banner.
+    this.popText('SECOND WIND!', '#5eff8f', { size: 60, duration: 1100, priority: 3 });
+    this.sfx('secondwind');
+    if (this.hud.flash) this.hud.flash(0x5eff8f, 0.14, 240, 0.14);
+    this.cameras.main.shake(220, 0.012);
+    this.burst(this.comet.x, this.comet.y, 0x5eff8f, 20, 200);
     this.cardDoodle('rescue', this.comet.x, this.comet.y);
     this.freeze(FEEL.hitstopPerfect);
   }
@@ -526,10 +553,9 @@ class GameScene extends Phaser.Scene {
       this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.fling.color, 10, 200);
     }
     const heat = Math.min(1, (chain - 1) / 5);
-    // One line for the whole release: the speed bonus is part of the PERFECT, never its own pop.
-    const label = (chain > 1 ? 'PERFECT x' + chain + '!' : 'PERFECT!') + ' +SPEED';
-    const color = '#' + lerpColor(0xffe14d, 0xffffff, heat).toString(16).padStart(6, '0');
-    this.popText(label, color, { size: 44 + Math.min(chain, 6) * 8, stroke: heat > 0.5 ? '#c2410c' : '#1a1033' });
+    // Only the first PERFECT of a chain pops; later ones tick the HUD combo counter, and the
+    // chain milestones (5 / 10 / 25...) get their own stamp, so the feedback never repeats.
+    if (chain === 1) this.popText('PERFECT!', '#ffe14d', { size: 48 });
     this.sfx('perfect', { chain });
     // Gentle overlay instead of a solid camera flash, so the comet stays visible at high chains.
     if (this.hud.flash) this.hud.flash(0xffe14d, 0.08 + heat * 0.06, 150 + heat * 60, 0.14);
@@ -537,6 +563,21 @@ class GameScene extends Phaser.Scene {
     this.burst(this.comet.x, this.comet.y, 0xffe14d, 8 + Math.min(chain, 6) * 3, 160);
     this.freeze(FEEL.hitstopPerfect);
     if (this.hud.setChain) this.hud.setChain(chain);
+    if (chain > 1 && !this.headless && this.hud.comboTick) this.hud.comboTick(chain);
+    const level = chainMilestoneLevel(chain);
+    if (level > 0) this.chainMilestone(level);
+  }
+
+  // NICE! / BLAZING! / UNSTOPPABLE!: a speed bonus scaled by level plus a HUD stamp.
+  chainMilestone(level) {
+    const chain = this.perfectChain;
+    this.addSpeed(milestoneSpeedBonus(level));
+    this.sfx('milestone', { level, chain });
+    if (this.headless) return;
+    if (this.hud.showMilestone) this.hud.showMilestone(CHAIN_MILESTONE_NAMES[level], level);
+    this.cameras.main.shake(160 + level * 40, 0.006 + level * 0.003);
+    this.burst(this.comet.x, this.comet.y, level >= 3 ? 0xff9a2e : 0xffe14d, 10 + level * 4, 160 + level * 30);
+    this.zoomKick = Math.max(this.zoomKick, 0.03 + level * 0.015);
   }
 
   breakChain() {
@@ -680,7 +721,8 @@ class GameScene extends Phaser.Scene {
     this.updateNova(dt);
     // The supernova is the only way to lose: speed is what keeps you ahead of it.
     if (this.comet.y + TUNING.cometRadius * 0.5 > this.novaY) {
-      if (this.rescuesLeft > 0) this.rescueFromNova();
+      if (secondWindAllowed(this.secondWindUsed, this.bestAltitude, this.catches)) this.secondWind();
+      else if (this.rescuesLeft > 0) this.rescueFromNova();
       else return this.gameOver('SUPERNOVA!');
     }
     this.checkCloseCall();
@@ -754,6 +796,7 @@ class GameScene extends Phaser.Scene {
     // The last page uses dark ink: warm those textures up a page early.
     if (index === ZONES.length - 2) ART.warmAll(this, 'd');
     if (this.pageNext) this.finishPageTurn();
+    this.sfx('pageturn', { index });
     const r = this.pageRect;
     const paperKey = ART.paperTexture(this, index);
     const next = this.add.tileSprite(r.x, r.y - r.h, r.w, r.h, paperKey).setOrigin(0).setScrollFactor(0);
@@ -884,8 +927,8 @@ class GameScene extends Phaser.Scene {
     if (this.comet.x < r || this.comet.x > GAME_WIDTH - r) {
       this.comet.x = Phaser.Math.Clamp(this.comet.x, r, GAME_WIDTH - r);
       this.comet.vx = -this.comet.vx;
-      this.sfx('wall');
       if (this.mods.wallKick) return this.wallKick();
+      this.sfx('wall');
       this.speed *= TUNING.wallBounceKeep;
       this.cameras.main.shake(90, 0.006);
       this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
@@ -944,7 +987,6 @@ class GameScene extends Phaser.Scene {
   shatterAsteroid(a) {
     this.addSpeed(CARD_TUNING.armorBonus);
     this.sfx('shatter');
-    this.sfx('wall');
     this.popText('SHATTER! +SPEED', GameScene.hex(CARD_FAMILIES.shield.color), { size: 38 });
     this.cameras.main.shake(140, 0.01);
     this.burst(a.x, a.y, CARD_FAMILIES.shield.color, 12, 170);
@@ -1000,7 +1042,7 @@ class GameScene extends Phaser.Scene {
         p.wobble = 0.7;
         // A Wall Kick that sends you straight into a planet stays a bonus: the bump is free.
         if (this.kickGraceT > 0) return;
-        this.loseSpeed(TUNING.hitKeep);
+        this.loseSpeed(planetHitKeep(this.zoneIndex));
         return;
       }
     }
@@ -1042,7 +1084,7 @@ class GameScene extends Phaser.Scene {
     this.comet.x += nx * 2;
     this.comet.y += ny * 2;
     s.planet.wobble = 0.7;
-    this.loseSpeed(TUNING.hitKeep);
+    this.loseSpeed(planetHitKeep(this.zoneIndex));
   }
 
   // Starts orbiting planet. auto: onboarding catch without a hold (quiet pop, still counts).
@@ -1054,6 +1096,7 @@ class GameScene extends Phaser.Scene {
     this.autoCatchTarget = null;
     this.flightTarget = null;
     this.capTime = 0;
+    this.catches++;
     this.addSpeed(TUNING.catchBonus);
     const close = orbitCloseness(this.orbit.targetRadius, planet.radius) > 0.7;
     const teal = GameScene.hex(CARD_FAMILIES.orbit.color);
@@ -1676,6 +1719,7 @@ class GameScene extends Phaser.Scene {
     this.novaY = this.deathNovaY + (this.deathAt.y - 160 - this.deathNovaY) * (1 - (1 - k) * (1 - k));
     if (before < GameScene.DEATH_CLOSE && this.deathT >= GameScene.DEATH_CLOSE) {
       this.cometVisible = false;
+      this.sfx('jaws');
       this.cameras.main.shake(300, 0.02);
       if (this.hud.flash) this.hud.flash(0xff9a2e, 0.18, 220, 0.18);
       this.burst(this.deathAt.x, this.deathAt.y, 0xff9a2e, 22, 200);

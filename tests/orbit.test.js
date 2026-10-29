@@ -269,3 +269,33 @@ test('orbitStep boost multiplies the orbit gain and the close-orbit bonus', () =
   assert.ok(Math.abs(close - expected) < 1e-9);
   assert.ok(close > base);
 });
+
+test('chain milestones: 5 NICE, 10 BLAZING, 25 and every +25 UNSTOPPABLE, nothing else', () => {
+  assert.strictEqual(o.chainMilestoneLevel(5), 1);
+  assert.strictEqual(o.chainMilestoneLevel(10), 2);
+  for (const c of [25, 50, 75, 100]) assert.strictEqual(o.chainMilestoneLevel(c), 3, String(c));
+  for (const c of [0, 1, 2, 4, 6, 9, 11, 15, 20, 24, 26, 30, 49, 51]) assert.strictEqual(o.chainMilestoneLevel(c), 0, String(c));
+  assert.deepStrictEqual(o.CHAIN_MILESTONE_NAMES.slice(1), ['NICE!', 'BLAZING!', 'UNSTOPPABLE!']);
+});
+
+test('milestone speed bonus grows with the level and is 0 without one', () => {
+  assert.strictEqual(o.milestoneSpeedBonus(0), 0);
+  const b = [1, 2, 3].map(o.milestoneSpeedBonus);
+  assert.ok(b[0] > 0 && b[1] > b[0] && b[2] > b[1]);
+});
+
+test('planet bumps cost 15% in the first two zones and 30% after', () => {
+  assert.strictEqual(o.planetHitKeep(0), 0.85);
+  assert.strictEqual(o.planetHitKeep(1), 0.85);
+  for (const z of [2, 3, 4, 5]) assert.strictEqual(o.planetHitKeep(z), o.TUNING.hitKeep);
+});
+
+test('second wind: once per run, below HYPERSONIC, only after a few catches', () => {
+  const n = o.TUNING.secondWindMinCatches;
+  assert.strictEqual(o.secondWindAllowed(false, 300, n), true);
+  assert.strictEqual(o.secondWindAllowed(true, 300, n), false, 'already used');
+  assert.strictEqual(o.secondWindAllowed(false, 1500, n), false, 'HYPERSONIC reached');
+  assert.strictEqual(o.secondWindAllowed(false, 1499, n), true);
+  assert.strictEqual(o.secondWindAllowed(false, 300, n - 1), false, 'idle player never earns it');
+  assert.strictEqual(o.secondWindAllowed(false, 300, 0), false);
+});

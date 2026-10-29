@@ -4,7 +4,9 @@
 //   playtestSummary(['random', 'careful', 'skilled'], 10)
 // Styles: random = releases at a random time (confused new player), careful = releases on the
 // first green aim, skilled = waits for the gold PERFECT window (gives up after 2.5s), idle = never touches,
-// holder = holds the whole run and never lets go (panic player; overspeed flings it on).
+// holder = holds the whole run and never lets go (panic player; overspeed flings it on),
+// mid = a mid-skill human: holds only once within ~110px of a planet's surface, after a 10-15 frame
+// reaction delay, and lets go on the first green aim once 150-400ms (random) into the orbit (never waits for gold).
 // Upgrade cards: on every zone entry the headless scene picks a random card at once (reported as cards / avgCards).
 (() => {
   let clock = performance.now();
@@ -23,6 +25,8 @@
     let hits = 0;
     let closeCalls = 0;
     let maxChain = 0;
+    let secondWinds = 0;
+    let milestones = 0;
     s.gameOver = function (r) { reason = r; return proto.gameOver.call(this, r); };
     // Headless GameScene picks a random card itself on zone entry (no CardScene); log when.
     let firstPickAt = null;
@@ -32,12 +36,14 @@
       return proto.pickCard.call(this, id);
     };
     s.rescueFromNova = function () { rescues++; return proto.rescueFromNova.call(this); };
+    s.secondWind = function () { secondWinds++; return proto.secondWind.call(this); };
+    s.chainMilestone = function (level) { milestones++; return proto.chainMilestone.call(this, level); };
     // window.simNoCards = true runs the base game without cards, for comparison.
     if (window.simNoCards) s.openCardPick = function () {};
+    // Only the first PERFECT of a chain pops now, so count them where they happen.
+    s.onPerfect = function () { perfects++; proto.onPerfect.call(this); maxChain = Math.max(maxChain, this.perfectChain); };
     s.popText = function (label, color, opts) {
-      if (label.startsWith('PERFECT')) perfects++;
       if (label === 'CLOSE CALL!') closeCalls++;
-      maxChain = Math.max(maxChain, this.perfectChain);
       if (label === 'WARP!') warps++;
       if (label.startsWith('-')) hits++;
       return proto.popText.call(this, label, color, opts);
@@ -45,12 +51,35 @@
     let left = null;
     let held = 0;
     let releaseAfter = 0;
+    let reactFrames = -1;     // mid: frames left before the delayed hold lands
+    let greenSince = -1;      // mid: ms of orbit when the aim first turned green
+    let greenWait = 0;
     let maxSpeed = 0;
     let frames = 0;
     while (!s.isOver && frames < maxSeconds * 60) {
       frames++;
       if (style === 'holder') {
         s.isHolding = true;
+      } else if (style === 'mid' && !s.orbit) {
+        // Reacts to how close a planet looks, not to the real grab zone, and only after a delay.
+        let near = null;
+        for (const p of s.planets) {
+          if (p === left) continue;
+          if (s.distanceTo(p) - p.radius < 110) { near = p; break; }
+        }
+        if (near && !s.isHolding && reactFrames < 0) reactFrames = 10 + Math.floor(Math.random() * 6);
+        if (!near && !s.scrape) { reactFrames = -1; s.isHolding = false; }
+        if (reactFrames >= 0 && --reactFrames < 0) s.isHolding = true;
+        held = 0;
+        greenSince = -1;
+      } else if (style === 'mid') {
+        left = s.orbitPlanet;
+        held += 16.67;
+        reactFrames = -1;
+        // Decides to let go 150-400ms into the orbit, then lets go on the first green aim.
+        if (greenSince < 0) { greenSince = 0; greenWait = 150 + Math.random() * 250; }
+        // A human eventually lets go even without a green line.
+        if ((s.currentAssist() && held > greenWait) || held > 3000) s.releaseHold();
       } else if (!s.orbit) {
         const p = s.nearestGrabbablePlanet();
         s.isHolding = style !== 'idle' && !!(p && p !== left);
@@ -74,8 +103,11 @@
     delete s.popText;
     delete s.pickCard;
     delete s.rescueFromNova;
+    delete s.secondWind;
+    delete s.onPerfect;
+    delete s.chainMilestone;
     delete s.openCardPick;
-    return { style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues };
+    return { style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
   };
 
   window.playtestSummary = (styles, runsEach) => {
@@ -93,6 +125,11 @@
         avgCards: Math.round((runs.reduce((n, r) => n + r.cards.length, 0) / runs.length) * 10) / 10,
         medianFirstPick: median(runs.filter((r) => r.firstPickAt !== null).map((r) => r.firstPickAt)),
         rescues: runs.reduce((n, r) => n + r.rescues, 0),
+        secondWinds: runs.reduce((n, r) => n + r.secondWinds, 0),
+        milestones: runs.reduce((n, r) => n + r.milestones, 0),
+        reachedCard: runs.filter((r) => r.firstPickAt !== null).length + '/' + runs.length,
+        reached1500: runs.filter((r) => r.alt >= 1500).length + '/' + runs.length,
+        medianSeconds: median(runs.map((r) => r.seconds)),
       };
     }
     // Leave the game as a player would find it: no headless Game scene left running in the background.

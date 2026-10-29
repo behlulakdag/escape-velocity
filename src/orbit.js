@@ -58,6 +58,12 @@ const TUNING = {
   overspeedUp: -0.6,      // the overspeed fling only happens while the tangent points this much upward
   autoCatchFlings: 3,     // the first assisted flings of a run catch their target by themselves...
   autoCatchSeconds: 20,   // ...but only this early in the run
+  earlyHitKeep: 0.85,     // planet bumps in the first zones only cost 15% (hitKeep later)
+  earlyHitZones: 2,       // zones 0..earlyHitZones-1 (LIFTOFF, ORBIT) use earlyHitKeep
+  secondWindBefore: 1500, // meters: the one-time SECOND WIND only saves runs below HYPERSONIC
+  secondWindMinCatches: 3, // ...and only runs that caught this many planets (an idle player never earns it)
+  secondWindSpeed: 820,   // min speed after it (Unbreakable uses 1000)
+  secondWindPush: 400,    // px below the comet the supernova is pushed (Unbreakable: 520)
 };
 
 // Rotation direction from the comet's position relative to the planet and its velocity,
@@ -229,6 +235,18 @@ function autoCatchAllowed(flingNumber, seconds) {
   return flingNumber >= 1 && flingNumber <= TUNING.autoCatchFlings && seconds < TUNING.autoCatchSeconds;
 }
 
+// Speed kept after bumping a planet in zone zoneIndex: softer early, so one mistake does not
+// end a learning run before the first card / HYPERSONIC.
+function planetHitKeep(zoneIndex) {
+  return zoneIndex < TUNING.earlyHitZones ? TUNING.earlyHitKeep : TUNING.hitKeep;
+}
+
+// One-time SECOND WIND: the first supernova catch of a run below secondWindBefore meters is survived,
+// if the player has been playing (catches = planets caught this run), so idling never earns it.
+function secondWindAllowed(used, meters, catches) {
+  return !used && meters < TUNING.secondWindBefore && catches >= TUNING.secondWindMinCatches;
+}
+
 function zoneIndexForAltitude(meters) {
   let index = 0;
   for (let i = 0; i < ZONES.length; i++) if (meters >= ZONES[i].from) index = i;
@@ -333,12 +351,30 @@ const FEEL = {
   slowMoScale: 0.35,
   hitstopPerfect: 0.065,   // seconds of freeze on PERFECT
   hitstopGrab: 0.035,
+  milestoneSpeedBase: 40,  // milestone speed bonus = base + this * level (NICE 120, BLAZING 200, UNSTOPPABLE 280)
+  milestoneSpeed: 80,
 };
 
 // Score bonus for the chain-th consecutive PERFECT (chain starts at 1).
 function perfectChainBonus(chain) {
   if (chain < 1) return 0;
   return Math.min(FEEL.chainBonusMax, FEEL.chainBonus * chain);
+}
+
+// PERFECT chain milestones: chain 5 = NICE! (1), 10 = BLAZING! (2), 25 and every +25 = UNSTOPPABLE! (3).
+// Returns 0 for every other chain, so ordinary PERFECTs stay quiet.
+const CHAIN_MILESTONE_NAMES = ['', 'NICE!', 'BLAZING!', 'UNSTOPPABLE!'];
+
+function chainMilestoneLevel(chain) {
+  if (chain === 5) return 1;
+  if (chain === 10) return 2;
+  if (chain >= 25 && chain % 25 === 0) return 3;
+  return 0;
+}
+
+// Instant speed for reaching a milestone (px/s): grows with the level.
+function milestoneSpeedBonus(level) {
+  return level > 0 ? FEEL.milestoneSpeed * level + FEEL.milestoneSpeedBase : 0;
 }
 
 // Close call tracker: arms when the supernova gap drops under closeCallEnter and fires
@@ -368,5 +404,5 @@ function cometStretch(fraction, accel) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
