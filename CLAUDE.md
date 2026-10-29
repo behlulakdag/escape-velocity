@@ -39,11 +39,4 @@
 Theme: Speed
 Game: ESCAPE VELOCITY. You are a burning comet; speed is your life, score and visuals.
 Core mechanic: hold near a planet to lock into orbit and gain speed (gravity assist; closer orbit = faster), release to fling along the tangent. A rising supernova wave is the only way to lose.
-Art direction (user decision, Oct 29): CLEAN CARTOON, AUTHORED. Keep the familiar clean cartoon look (thick dark outlines, bright readable colors, Lilita One font) but make it look deliberately designed by a person, never generic or AI-generated. (A hand-drawn sketchbook / line-boil style was tried and rejected by the user: too strange.)
-- Faces ONLY on the comet (hero) and the supernova (villain). Planets are worlds with features (mountains/bumps on the silhouette, craters, rings, small moons, tiny details); asteroids are rocks; black holes are swirls. No faces on them.
-- Story lighting: everything is lit warm orange from the supernova below (rim light on the lower side) and cool from above. One consistent light direction.
-- Each zone has its own small, limited palette (sky, stars, planet colors) so every zone feels like a new place, escalating in intensity; zone transitions are short and local, never a full-screen wash.
-- Shapes have character: slightly irregular silhouettes and varied outline weight instead of perfect compass circles. No jitter/line boil.
-- Effects are few and meaningful; no sparkle or glow spam.
-- HUD/UI: our own simple style that matches the game (bold Lilita One numbers with outline/shadow, minimal shapes).
-- AVOID (these read as AI/template): glossy gradient panels, pill-shaped label tags ("SCORE", "BONUS"), icon+label UI-kit plates, progress bars, sparkle/glow spam, smiley faces on everything, generic purple-space gradients, perfect geometric circles everywhere.
+Art direction (user decision, Oct 29, final): the CURRENT committed look is approved by the user and testers - keep it as is (bright cartoon space, thick dark outlines 0x1a1033, characters with faces, Lilita One font). New UI/art must match it. Tried and rejected: a hand-drawn sketchbook/line-boil restyle (too strange) and glossy UI-kit HUD plates (pill tags like SCORE/BONUS, gradient panels, icons, progress bars: looked AI-made). Avoid both.
