@@ -232,19 +232,18 @@ const ART = {
     const look = ctx.comet ? ART.lookAt(p.x, p.y, ctx.comet.x, ctx.comet.y) : { x: 0, y: -1, dist: 9999 };
     const zone = R + TUNING.grabRange;
 
-    // Grab zone: dashed ring so players learn where holding works. Green = release now.
+    // The release target only gets a soft rim glow hugging the planet (green, gold for PERFECT):
+    // a big filled zone read like a debug hitbox. The grab-zone ring shows only when you could grab.
     if (isTarget) {
-      // ctx.aimKind (optional) lets the zone turn gold together with a PERFECT aim line.
       const perfect = ctx.aimKind === 'perfect';
-      const zoneColor = perfect ? ART.gold : ART.green;
-      const pulse = 0.5 + 0.5 * Math.sin(t * (perfect ? 14 : 8));
-      g.fillStyle(zoneColor, 0.08 + pulse * (perfect ? 0.1 : 0.07));
-      g.fillCircle(p.x, p.y, zone);
-      ART.dashedRing(g, p.x, p.y, zone, 28, t * (perfect ? 1.6 : 0.8), perfect ? 9 : 7, zoneColor, 0.95);
-      // PERFECT: a second thin inner ring so the zone reads as "special", not just recolored.
-      if (perfect) ART.dashedRing(g, p.x, p.y, zone - 14, 20, -t * 1.2, 4, 0xffffff, 0.35 + pulse * 0.3);
-    } else {
-      ART.dashedRing(g, p.x, p.y, zone, 28, t * 0.25, highlighted ? 5 : 4, 0xffffff, highlighted ? 0.55 : 0.13);
+      const glow = perfect ? ART.gold : ART.green;
+      const pulse = 0.5 + 0.5 * Math.sin(t * (perfect ? 12 : 7));
+      g.lineStyle(18, glow, 0.16 + pulse * 0.14);
+      g.strokeCircle(p.x, p.y, R + 16);
+      g.lineStyle(5, glow, 0.75 + pulse * 0.25);
+      g.strokeCircle(p.x, p.y, R + 12);
+    } else if (highlighted && !orbiting) {
+      ART.dashedRing(g, p.x, p.y, zone, 28, t * 0.25, 4, 0xffffff, 0.3);
     }
 
     let mood = 'idle';
@@ -636,47 +635,39 @@ const ART = {
 
   // ---------- aim guide ----------
 
-  // Dotted release line from (x, y) along unit direction (dx, dy).
+  // Small direction arrow just ahead of the comet: three chevrons sliding along unit direction
+  // (dx, dy), showing where a release goes without drawing a line across the screen.
   // kind: 'none' = no target (white), 'target' = will reach a planet (green), 'perfect' = gold.
+  // length is unused now (kept for the caller's signature).
   drawAimGuide(g, x, y, dx, dy, length, kind, ctx) {
     const t = ctx.time;
     const color = kind === 'perfect' ? ART.gold : kind === 'target' ? ART.green : 0xffffff;
-    const spacing = 34;
-    const dots = Math.floor(length / spacing);
-    // Dots pulse in a wave that marches toward the target.
-    const phase = t * (kind === 'none' ? 6 : 12);
-    for (let i = 1; i <= dots; i++) {
-      const f = i / dots;
-      const px = x + dx * i * spacing;
-      const py = y + dy * i * spacing;
-      const pulse = 1 + 0.4 * Math.max(0, Math.sin(phase - i * 0.6));
-      const base = kind === 'none' ? 7 - f * 3 : kind === 'perfect' ? 10 - f * 2 : 8 - f * 2;
-      g.fillStyle(ART.outline, kind === 'none' ? 0.5 : 0.75);
-      g.fillCircle(px, py, (base + 3) * pulse);
+    const nx = -dy;
+    const ny = dx;
+    const start = TUNING.cometRadius + 22;
+    const slide = (t * (kind === 'none' ? 1.5 : 3)) % 1;   // chevrons march outward
+    const size = kind === 'none' ? 11 : 15;
+    for (let i = 0; i < 3; i++) {
+      const f = (i + slide) / 3;
+      const d = start + f * 66;
+      const cx = x + dx * d;
+      const cy = y + dy * d;
+      const fade = Math.sin(f * Math.PI);                  // fade in near the comet, out at the tip
+      const s = size * (0.85 + 0.3 * f);
+      const pts = [
+        { x: cx - dx * s + nx * s, y: cy - dy * s + ny * s },
+        { x: cx, y: cy },
+        { x: cx - dx * s - nx * s, y: cy - dy * s - ny * s },
+      ];
+      g.lineStyle(13, ART.outline, 0.7 * fade);
+      g.strokePoints(pts, false);
       let c = color;
-      if (kind === 'perfect') c = lerpColor(ART.gold, 0xffffff, 0.5 + 0.5 * Math.sin(t * 22 - i * 0.9));
-      g.fillStyle(c, kind !== 'none' ? 1 : 0.9 - f * 0.6);
-      g.fillCircle(px, py, base * pulse);
+      if (kind === 'perfect') c = lerpColor(ART.gold, 0xffffff, 0.5 + 0.5 * Math.sin(t * 20 - i));
+      g.lineStyle(7, c, (kind === 'none' ? 0.6 : 1) * fade);
+      g.strokePoints(pts, false);
     }
-    if (kind === 'none') return;
-    const endX = x + dx * length;
-    const endY = y + dy * length;
-    const ring = 18 + Math.sin(t * 10) * 4;
-    g.lineStyle(9, ART.outline, 0.8);
-    g.strokeCircle(endX, endY, ring);
-    g.lineStyle(5, color, 1);
-    g.strokeCircle(endX, endY, ring);
     if (kind === 'perfect') {
-      // Shimmer: sparkles dancing around the line and a spinning star at the end.
-      for (let k = 0; k < 5; k++) {
-        const f = ((t * 1.3 + k * 0.2) % 1);
-        const sx = x + dx * length * f + -dy * Math.sin(t * 9 + k * 2) * 22;
-        const sy = y + dy * length * f + dx * Math.sin(t * 9 + k * 2) * 22;
-        ART.sparkle(g, sx, sy, 9 * (1 - Math.abs(f - 0.5)), t * 4 + k, 0xffffff, 0.95);
-      }
-      ART.sparkle(g, endX, endY, 30, t * 3, ART.outline, 0.7);
-      ART.sparkle(g, endX, endY, 24, t * 3, ART.gold, 1);
-      ART.sparkle(g, endX, endY, 10, t * 3, 0xffffff, 1);
+      ART.sparkle(g, x + dx * (start + 80), y + dy * (start + 80), 14, t * 4, 0xffffff, 0.9);
     }
   },
 
