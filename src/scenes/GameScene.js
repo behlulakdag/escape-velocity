@@ -145,6 +145,10 @@ class GameScene extends Phaser.Scene {
     this.prevBestAlt = loadBestAltitude();
     this.passedBest = false;
     this.explodeT = -1;         // seconds since the intro star exploded, -1 = not yet
+    this.deathT = -1;           // real seconds into the death beat (jaws close), -1 = alive
+    this.kickGraceT = 0;        // seconds after a Wall Kick in which a planet bump costs nothing
+    this.lastPopAt = -1e9;      // time.now of the last pop sent (low-priority pops wait for quiet)
+    this.hudPage = -1;          // page index the HUD was last told about (hud.setPage)
     // The scene instance is reused between runs, so this must be reset or later runs skip launch().
     this.launched = false;
   }
@@ -162,6 +166,7 @@ class GameScene extends Phaser.Scene {
     this.ownedCards = [];
     this.mods = cardMods(this.ownedCards);
     this.cardPick = null;       // { choices, realT } while the pick is on screen
+    this.pickDelay = -1;        // real seconds until the zone's card pick opens, -1 = none pending
     this.inputGuard = false;    // swallows the release of the finger that tapped a card
     this.shieldCharges = 0;     // Heat Shield charges left in this zone
     this.rescuesLeft = 0;       // Unbreakable
@@ -471,7 +476,7 @@ class GameScene extends Phaser.Scene {
       // Slingshot: every release adds a share of the current speed.
       this.addSpeed(this.speed * this.mods.releaseBonus);
       this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.fling.color, 8, 120);
-      if (!perfect) this.popText('SLINGSHOT!', GameScene.hex(CARD_FAMILIES.fling.color), { size: 32, duration: 500 });
+      if (!perfect) this.popText('SLINGSHOT!', GameScene.hex(CARD_FAMILIES.fling.color), { size: 32, duration: 500, low: true });
     }
     if (overspeed) {
       this.noGrabPlanet = this.orbitPlanet;
@@ -518,11 +523,11 @@ class GameScene extends Phaser.Scene {
     if (this.mods.chainSpeed > 0 && chain > 1) {
       // Chain Reaction: every PERFECT after the first adds more speed, the longer the chain.
       this.addSpeed(this.mods.chainSpeed * Math.min(chain - 1, CARD_TUNING.chainSpeedMaxSteps));
-      this.popText('CHAIN BOOST!', GameScene.hex(CARD_FAMILIES.fling.color), { size: 30, duration: 600 });
       this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.fling.color, 10, 200);
     }
     const heat = Math.min(1, (chain - 1) / 5);
-    const label = chain > 1 ? 'PERFECT x' + chain + '!' : 'PERFECT!';
+    // One line for the whole release: the speed bonus is part of the PERFECT, never its own pop.
+    const label = (chain > 1 ? 'PERFECT x' + chain + '!' : 'PERFECT!') + ' +SPEED';
     const color = '#' + lerpColor(0xffe14d, 0xffffff, heat).toString(16).padStart(6, '0');
     this.popText(label, color, { size: 44 + Math.min(chain, 6) * 8, stroke: heat > 0.5 ? '#c2410c' : '#1a1033' });
     this.sfx('perfect', { chain });
@@ -571,17 +576,20 @@ class GameScene extends Phaser.Scene {
   // ---------- loop ----------
 
   update(time, delta) {
+    const realDt = Math.min(delta / 1000, 0.05);
     if (this.isOver) {
-      if (!this.headless) this.draw();   // let the final ink bursts finish (visual only)
+      if (this.headless) return;
+      if (this.deathT >= 0) this.updateDeathBeat(realDt);
+      this.draw();   // let the final ink bursts finish (visual only)
       return;
     }
-    const realDt = Math.min(delta / 1000, 0.05);
     if (this.introActive) return this.updateIntro(realDt);
     if (this.hintStage === 0 && this.hud.hintText && !this.hud.hintText.text) {
       this.hud.showHint('HOLD near a planet');
       this.hud.showBanner('ESCAPE THE SUPERNOVA!', '', { duration: 1500 });
     }
     this.updateFeelTimers(realDt);
+    this.updatePickDelay(realDt);
     if (this.hitstop > 0) {
       this.hitstop -= realDt;
       this.draw();
@@ -602,6 +610,7 @@ class GameScene extends Phaser.Scene {
     const dt = realDt * timeScale;
     const altitude = this.startY - this.comet.y;
     this.afterburnerT = Math.max(0, this.afterburnerT - dt);
+    this.kickGraceT = Math.max(0, this.kickGraceT - dt);
 
     if (this.noGrabPlanet && this.distanceTo(this.noGrabPlanet) > this.noGrabPlanet.radius + this.grabRange()) {
       this.noGrabPlanet = null;
@@ -710,7 +719,31 @@ class GameScene extends Phaser.Scene {
     this.sfx('zone', { index });
     this.turnPage(index);
     this.shieldCharges = this.mods.heatShieldCharges;   // Heat Shield recharges every zone
+    // Banner and page turn get the stage first; the cards come in once they have been read.
+    // The simulator has no UI to wait for, so it picks at once.
+    if (this.headless) this.openCardPick();
+    else this.pickDelay = GameScene.PICK_DELAY;
+  }
+
+  // Real-time countdown (runs through hitstop and slow motion) to the zone's card pick.
+  updatePickDelay(realDt) {
+    if (this.pickDelay < 0) return;
+    this.pickDelay -= realDt;
+    if (this.pickDelay > 0) return;
+    this.pickDelay = -1;
+    if (this.hud.hideBanner) this.hud.hideBanner();   // the card header takes the banner's place
     this.openCardPick();
+  }
+
+  // Tells the HUD which page it is drawn over (dark ink on the cream page). A turning page counts
+  // once its edge is past the middle of the screen, where the banner and pops sit.
+  syncHudPage() {
+    if (!this.hud.setPage || !this.hud.scoreText) return;
+    let page = ART.pageIndex;
+    if (this.pageNext && this.pageNext.y + this.pageNext.height > GAME_HEIGHT / 2) page = this.pageNextIndex;
+    if (page === this.hudPage) return;
+    this.hudPage = page;
+    this.hud.setPage(page);
   }
 
   // New zone = a new sketchbook page sliding down over the old one (no full-screen flash).
@@ -871,11 +904,13 @@ class GameScene extends Phaser.Scene {
       ux = away * Math.sqrt(1 - uy * uy);
     }
     this.homing = null;
+    this.kickGraceT = GameScene.KICK_GRACE;
     this.addSpeed(CARD_TUNING.wallKickBonus);
     c.vx = ux * this.speed;
     c.vy = uy * this.speed;
     this.sfx('wallkick');
-    this.popText('WALL KICK!', GameScene.hex(CARD_FAMILIES.flight.color), { size: 40 });
+    // Repeats every bounce, so it must not push PERFECT chain pops off the line (priority 1 = low).
+    this.popText('WALL KICK!', GameScene.hex(CARD_FAMILIES.flight.color), { size: 40, priority: 1 });
     this.cameras.main.shake(120, 0.008);
     this.burst(c.x, c.y, CARD_FAMILIES.flight.color, 14, 150);
     this.burst(c.x, c.y, 0xffffff, 6, 90);
@@ -935,7 +970,7 @@ class GameScene extends Phaser.Scene {
         this.comet.vx = w.vx;
         this.comet.vy = w.vy;
         h.warped = true;
-        this.popText('WARP!', '#c77dff');
+        this.popText('WARP!', '#c77dff', { low: true });
         this.sfx('warp');
         this.cameras.main.shake(120, 0.006);
         this.burst(this.comet.x, this.comet.y, 0xc77dff, 10);
@@ -963,6 +998,8 @@ class GameScene extends Phaser.Scene {
         this.comet.x = p.x + nx * (minDist + 2);
         this.comet.y = p.y + ny * (minDist + 2);
         p.wobble = 0.7;
+        // A Wall Kick that sends you straight into a planet stays a bonus: the bump is free.
+        if (this.kickGraceT > 0) return;
         this.loseSpeed(TUNING.hitKeep);
         return;
       }
@@ -1026,11 +1063,11 @@ class GameScene extends Phaser.Scene {
       this.burst(c.x, c.y, CARD_FAMILIES.orbit.color, 14, 170);
       this.zoomKick = Math.max(this.zoomKick, 0.04);
     }
-    if (auto) this.popText('AUTO CATCH', '#c9c3e6', { size: 30, duration: 600 });
+    if (auto) this.popText('AUTO CATCH', '#c9c3e6', { size: 30, duration: 600, low: true });
     else if (close && this.mods.closeOrbitMul > 1) this.popText('TIGHT SPIN!', teal, { size: 44 });
-    else if (close) this.popText('CLOSE ORBIT!', '#ffe14d');
-    else if (this.mods.catchBurst > 0) this.popText('SPEED BURST!', teal);
-    else this.popText('+SPEED', '#5eff8f');
+    else if (close) this.popText('CLOSE ORBIT! +SPEED', '#ffe14d');
+    else if (this.mods.catchBurst > 0) this.popText('SPEED BURST!', teal, { low: true });
+    else this.popText('+SPEED', '#5eff8f', { low: true });
     this.sfx('grab', { close });
     this.burst(c.x, c.y, 0xffffff, 6);
     planet.wobble = 1;
@@ -1068,11 +1105,18 @@ class GameScene extends Phaser.Scene {
     this.popText('-' + Math.round((1 - keep) * 100) + '% SPEED', '#ff4d6d');
   }
 
-  // opts: { size (px), stroke, duration (ms) }. Drawn by the HUD in screen space, so it stays
+  // opts: { size (px), stroke, duration (ms), low }. Drawn by the HUD in screen space, so it stays
   // readable at any zoom and is not left behind (and dragged onto the bottom HUD) at high speed.
+  // One pop per event; low: a routine pop that is skipped when another pop went out just before,
+  // so a catch right after a PERFECT release never stacks a second line. The HUD ranks the rest.
   popText(label, color, opts) {
     if (this.headless || !this.hud.scoreText) return;   // simulator, or HUD scene still starting
+    // The card pick owns the screen; the card name pops after it closes (cardPick is cleared first).
+    if (this.cardPick || this.isOver) return;
     opts = opts || {};
+    const now = this.time.now;
+    if (opts.low && now - this.lastPopAt < GameScene.LOW_POP_QUIET) return;
+    this.lastPopAt = now;
     const f = speedFraction(this.speed);
     // Spawn ahead of the comet along its flight direction, where the player is looking.
     let ux = this.comet.vx;
@@ -1092,6 +1136,7 @@ class GameScene extends Phaser.Scene {
       duration: (opts.duration || 700) * (1 - 0.35 * f),
       x: p.x + (ux / len) * ahead,
       y: p.y + (uy / len) * ahead - 50,
+      priority: opts.priority,
     });
   }
 
@@ -1553,7 +1598,9 @@ class GameScene extends Phaser.Scene {
     this.cometGfx.clear();
     if (this.cometVisible) ART.drawComet(this.cometGfx, this.comet, this.trail, ctx);
     this.drawIntro();
+    this.drawDeathBeat();
     this.updateHud();
+    this.syncHudPage();
   }
 
   drawBursts(g, t) {
@@ -1620,6 +1667,27 @@ class GameScene extends Phaser.Scene {
     });
   }
 
+  // Death beat timeline (real time): jaws close, then the snap (shake, flash, scribble burst).
+  updateDeathBeat(realDt) {
+    const before = this.deathT;
+    this.deathT += realDt;
+    // The fire front surges up past the comet as the jaws close.
+    const k = Math.min(1, this.deathT / GameScene.DEATH_CLOSE);
+    this.novaY = this.deathNovaY + (this.deathAt.y - 160 - this.deathNovaY) * (1 - (1 - k) * (1 - k));
+    if (before < GameScene.DEATH_CLOSE && this.deathT >= GameScene.DEATH_CLOSE) {
+      this.cometVisible = false;
+      this.cameras.main.shake(300, 0.02);
+      if (this.hud.flash) this.hud.flash(0xff9a2e, 0.18, 220, 0.18);
+      this.burst(this.deathAt.x, this.deathAt.y, 0xff9a2e, 22, 200);
+      this.burst(this.deathAt.x, this.deathAt.y, 0xffd23f, 16, 140);
+    }
+  }
+
+  drawDeathBeat() {
+    if (this.deathT < 0) return;
+    ART.drawDeathJaws(this.introGfx, this.deathAt.x, this.deathAt.y, this.deathT / GameScene.DEATH_CLOSE, this.time.now / 1000);
+  }
+
   updateHud() {
     if (!this.hud.scoreText) return;   // HUD scene still starting
     this.hud.setStats(Math.floor(this.score), this.bestAltitude, this.speed);
@@ -1635,14 +1703,21 @@ class GameScene extends Phaser.Scene {
     }
     const newBestAltitude = this.bestAltitude > this.prevBestAlt;
     if (!this.headless && newBestAltitude) saveBestAltitude(this.bestAltitude);
+    this.pickDelay = -1;
+    if (this.hud && this.hud.clearPops) this.hud.clearPops();
     this.sfx('gameover', { reason });
-    this.draw();
-    this.cameras.main.shake(300, 0.02);
-    if (this.hud.flash) this.hud.flash(0xff9a2e, 0.18, 220, 0.18);
-    this.burst(this.comet.x, this.comet.y, 0xff9a2e, 22);
     // The simulator must never reach GameOver: it would save the bot's score as the real best.
     if (this.headless) return;
-    this.time.delayedCall(800, () => {
+    // Death beat: the supernova's jaws snap shut over the comet, a crayon scribble bursts out of
+    // them, a short hold, then the game over page (whose RETRY stays instant).
+    this.deathT = 0;
+    this.deathAt = { x: this.comet.x, y: this.comet.y };
+    this.deathNovaY = this.novaY;
+    this.isHolding = false;
+    this.hud.hideHint();   // a 'TAP to fling!' left over the jaws would read as a second chance
+    this.draw();
+    this.cameras.main.shake(260, 0.012);
+    this.time.delayedCall((GameScene.DEATH_CLOSE + GameScene.DEATH_HOLD) * 1000, () => {
       this.scene.start('GameOver', {
         score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude,
         bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt),
@@ -1672,5 +1747,14 @@ GameScene.RESCUE_PUSH = 520;
 // Wall Kick: the bounce leaves at least this steeply upward (unit vy).
 GameScene.WALL_KICK_UP = -0.8;
 GameScene.SHOCK_FX_TIME = 0.5;
+// Wall Kick: seconds after the kick in which bumping a planet costs no speed (and pops nothing).
+GameScene.KICK_GRACE = 0.45;
+// Zone entry: real seconds between the zone banner / page turn and the card pick.
+GameScene.PICK_DELAY = 1.2;
+// ms after any pop in which routine (low) pops are skipped.
+GameScene.LOW_POP_QUIET = 600;
+// Death beat (seconds, real time): jaws closing, then the hold before the game over page.
+GameScene.DEATH_CLOSE = 0.3;
+GameScene.DEATH_HOLD = 0.55;
 
 GameScene.hex = (color) => '#' + color.toString(16).padStart(6, '0');

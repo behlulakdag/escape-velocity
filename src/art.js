@@ -440,13 +440,16 @@ const ART = {
   },
 
   paperTextureAs(scene, key, paper, fx, seed) {
-    return ART.canvasTexture(scene, key, 512, 512, (c, S) => {
+    // The heat page is a bigger tile: its sparse marks would show an obvious repeat at 512.
+    const size = fx === 'heat' ? 768 : 512;
+    return ART.canvasTexture(scene, key, size, size, (c, S) => {
       const rnd = artRandom(9001 + seed * 77);
       c.fillStyle = SKC.css(paper);
       c.fillRect(0, 0, S, S);
       const light = paper > 0x999999 && ((paper >> 16) & 255) > 180;   // the cream page
       // Soft blotches: paper is never one flat color.
-      for (let i = 0; i < 26; i++) {
+      const areaK = (S * S) / (512 * 512);   // keep blotch and fiber density the same on bigger tiles
+      for (let i = 0; i < 26 * areaK; i++) {
         const x = rnd() * S;
         const y = rnd() * S;
         const r = 40 + rnd() * 90;
@@ -470,25 +473,44 @@ const ART = {
         }
       }
       if (fx === 'heat') {
-        // Heat squiggles drawn with a red-orange pencil.
-        for (let i = 0; i < 24; i++) {
-          const x = rnd() * S;
-          const y = rnd() * S;
-          const len = 40 + rnd() * 70;
+        // A few heat marks in red-orange pencil, scattered on a bigger tile so the repeat never
+        // reads as a pattern: wavy dashes, rising curls and little doubled "~~" lines, each its
+        // own length, slant and pressure.
+        const marks = 7;
+        for (let i = 0; i < marks; i++) {
+          // One mark per cell of a loose 7-cell stagger, jittered inside its cell (sparse, never clumped).
+          const x = ((i * 0.381 + 0.13) % 1) * S + (rnd() - 0.5) * S * 0.12;
+          const y = (i / marks) * S + rnd() * S * 0.1;
+          const kind = i % 3;
           const col = rnd() < 0.5 ? SKETCH.orange : SKETCH.red;
-          const amp = 3 + rnd() * 4;
-          const freq = 0.18 + rnd() * 0.12;
-          const alpha = 0.38 + rnd() * 0.2;
+          const alpha = 0.3 + rnd() * 0.18;
+          const len = kind === 1 ? 34 + rnd() * 30 : 40 + rnd() * 60;
+          const amp = 2.5 + rnd() * 4;
+          const freq = 0.16 + rnd() * 0.14;
+          const tilt = kind === 1 ? -Math.PI / 2 + (rnd() - 0.5) * 0.5 : (rnd() - 0.5) * 0.6;
+          const width = 1.8 + rnd() * 1.4;
+          const lines = kind === 2 ? 2 : 1;
           SKC.wrapped(S, x, y, (px, py) => {
             c.strokeStyle = SKC.css(col, alpha);
-            c.lineWidth = 2.6;
+            c.lineWidth = width;
             c.lineCap = 'round';
-            c.beginPath();
-            for (let k = 0; k <= len; k += 4) {
-              const yy = py + Math.sin(k * freq) * amp;
-              if (k === 0) c.moveTo(px + k, yy); else c.lineTo(px + k, yy);
+            const ca = Math.cos(tilt);
+            const sa = Math.sin(tilt);
+            for (let l = 0; l < lines; l++) {
+              const off = l * (9 + amp);
+              const shrink = l ? 0.7 : 1;
+              c.beginPath();
+              for (let k = 0; k <= len * shrink; k += 4) {
+                // A rising curl grows its wiggle as it climbs, like heat haze.
+                const a = kind === 1 ? amp * (0.4 + k / len) : amp;
+                const u = k + l * 6;
+                const v = Math.sin(k * freq) * a + off;
+                const xx = px + u * ca - v * sa;
+                const yy = py + u * sa + v * ca;
+                if (k === 0) c.moveTo(xx, yy); else c.lineTo(xx, yy);
+              }
+              c.stroke();
             }
-            c.stroke();
           });
         }
       }
@@ -503,7 +525,7 @@ const ART = {
       }
       c.putImageData(img, 0, 0);
       // Fibers: short light and dark curls pressed into the paper.
-      for (let i = 0; i < 240; i++) {
+      for (let i = 0; i < 240 * areaK; i++) {
         const x = rnd() * S;
         const y = rnd() * S;
         const len = 5 + rnd() * 16;
@@ -609,7 +631,10 @@ const ART = {
       r += (jr() - 0.5) * jitter;
       sil.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
     }
-    const inkW = 3 + R * 0.022;
+    // On the cream page (dark ink) warm bodies sit close to the paper's tone: a heavier outline
+    // and a graphite drop shadow keep them standing off the page.
+    const onCream = ink === SKETCH.dark;
+    const inkW = (3 + R * 0.022) * (onCream ? 1.45 : 1);
     const tilt = -0.22;
     const ringPts = (rx, ry, from, to) => {
       const pts = [];
@@ -636,6 +661,10 @@ const ART = {
     };
     if (D.ring) drawRing(Math.PI, Math.PI * 2);
 
+    if (onCream) {
+      SKC.fill(c, sil.map((p) => ({ x: p.x + R * 0.07, y: p.y + R * 0.1 })), SKETCH.dark, 0.2);
+      SKC.hatch(c, sil.map((p) => ({ x: p.x + R * 0.1, y: p.y + R * 0.14 })), { angle: 0.8, spacing: 6, width: 2, color: SKETCH.dark, alpha: 0.35, rnd: jr, skip: 0.2 });
+    }
     // Misregistered under-fill, so the planet hides the stars behind it.
     const ox = (jr() - 0.5) * R * 0.09;
     const oy = (jr() - 0.5) * R * 0.09;
@@ -975,6 +1004,82 @@ const ART = {
     ART.pen(g, mouth, true, 4, SKETCH.deepRed, 1, rnd);
   },
 
+  // Death beat: the supernova's jaws snap shut over (x, y), then a crayon scribble bursts out of
+  // them. k: 0..1 while closing, past 1 during the hold (k - 1 = hold time in close-time units).
+  drawDeathJaws(g, x, y, k, t) {
+    const bf = ART.boilFrame(t);
+    const rnd = artRandom(bf * 59 + 11);
+    const shut = Math.min(1, k);
+    // Ease in, so the bite accelerates and lands with a snap; a tiny rebound after it lands.
+    const bite = shut * shut * shut;
+    const rebound = k > 1 ? Math.sin(Math.min(1, (k - 1) * 2.5) * Math.PI) * 10 : 0;
+    const gap = 170 * (1 - bite) + rebound;
+    const W = 150;                 // half width of the mouth
+    const lip = 0x3a0d10;          // the nova face's line color
+    const tooth = 0xfff3d6;
+    for (const side of [-1, 1]) { // -1 = upper jaw, 1 = lower jaw
+      const edgeY = y + side * gap * 0.5;
+      // Jaw body: a fat crescent bulging away from the bite line, its back a flame-ish wobble.
+      const back = [];
+      const n = 14;
+      for (let i = 0; i <= n; i++) {
+        const u = i / n;
+        const bx = x - W + u * W * 2;
+        const bulge = Math.sin(u * Math.PI) * (90 + (i % 2 ? 18 * rnd() : 0));
+        back.push({ x: bx + (rnd() - 0.5) * 6, y: edgeY + side * (bulge + 18) });
+      }
+      const body = back.slice();
+      body.push({ x: x + W + 10, y: edgeY });
+      body.push({ x: x - W - 10, y: edgeY });
+      g.fillStyle(SKETCH.red, 1);
+      g.fillPoints(body.map((p) => ({ x: p.x, y: p.y + side * 10 })), true);   // crayon flame rim
+      g.fillStyle(lip, 1);
+      g.fillPoints(body, true);
+      ART.pen(g, back, false, 6, SKETCH.orange, 0.95, rnd);
+      // Zigzag teeth along the bite line, pointing at the other jaw (offset half a tooth, so the
+      // two rows interlock when they meet).
+      const nT = 6;
+      const tw = (W * 2) / nT;
+      for (let i = 0; i < nT; i++) {
+        const tx = x - W + tw * (i + (side > 0 ? 0.5 : 0));
+        if (tx + tw > x + W + 4) continue;
+        const len = 30 + (i % 2) * 8;
+        const tri = [
+          { x: tx + 3, y: edgeY },
+          { x: tx + tw * 0.5 + (rnd() - 0.5) * 4, y: edgeY - side * len },
+          { x: tx + tw - 3, y: edgeY },
+        ];
+        g.fillStyle(tooth, 1);
+        g.fillPoints(tri, true);
+        ART.pen(g, tri, true, 3, lip, 1, rnd);
+      }
+      ART.pen(g, [{ x: x - W - 10, y: edgeY }, { x: x + W + 10, y: edgeY }], false, 4, SKETCH.deepRed, 1, rnd);
+    }
+    if (k < 1) return;
+    // The snap: a crayon scribble bursting out of the closed jaws, plus a ring of ink asterisks.
+    const h = Math.min(1, (k - 1) / 1.6);
+    const grow = 1 - (1 - h) * (1 - h);
+    const fade = 1 - h * h * 0.7;
+    const cols = [SKETCH.yellow, SKETCH.orange, SKETCH.red];
+    for (let s = 0; s < 3; s++) {
+      const sr = artRandom(s * 131 + bf * 7 + 3);
+      const pts = [];
+      const loops = 26;
+      for (let i = 0; i < loops; i++) {
+        const a = i * 2.39 + sr() * 0.8 + s;
+        const r = (40 + 150 * grow) * (0.35 + sr() * 0.65);
+        pts.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r * 0.8 });
+      }
+      ART.pen(g, pts, false, 9, ART.backing, 0.35 * fade, sr);
+      ART.pen(g, pts, false, 5.5 - s, cols[s], fade, sr);
+    }
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + 0.4;
+      const r = 90 + 120 * grow;
+      ART.asterisk(g, x + Math.cos(a) * r, y + Math.sin(a) * r * 0.85, 10 + 6 * (1 - h), i % 2 ? SKETCH.yellow : SKETCH.orange, fade, 3, rnd);
+    }
+  },
+
   // ---------- hazards ----------
 
   asteroidTexture(scene, design, variant) {
@@ -1179,6 +1284,7 @@ const ART = {
     // Tail: colored-pencil strands that converge toward the end, plus cross strokes.
     if (n > 2) {
       const wide = 1 + 0.35 * burn;
+      const onCream = ART.inkMode === 'd';
       const strands = [
         { off: -0.85 * wide, c: tint(SKETCH.red, 0x3a5fd8), w: 5, reach: 0.75 },
         { off: 0.85 * wide, c: tint(SKETCH.red, 0x3a5fd8), w: 5, reach: 0.7 },
@@ -1195,6 +1301,21 @@ const ART = {
         let ty = a.y - b.y;
         const len = Math.hypot(tx, ty) || 1;
         normals.push({ x: -ty / len, y: tx / len });
+      }
+      if (onCream) {
+        // Cream page: the warm strands would melt into the paper, so the tail gets a dark
+        // pencil edge on both sides first (the strands are drawn over its inner half).
+        for (const side of [-1, 1]) {
+          const m = Math.max(2, Math.floor(n * 0.8));
+          const pts = [];
+          for (let i = 0; i < m; i++) {
+            const f = 1 - i / m;
+            const spread = side * wide * r * (0.35 + 0.75 * f) * 1.08 + (rnd() - 0.5) * 3;
+            pts.push({ x: trail[i].x + normals[i].x * spread, y: trail[i].y + normals[i].y * spread });
+          }
+          g.lineStyle(4.5, SKETCH.dark, 0.85);
+          g.strokePoints(pts, false);
+        }
       }
       for (const s of strands) {
         const m = Math.max(2, Math.floor(n * s.reach));
@@ -1593,237 +1714,6 @@ const ART = {
       ART.pen(g, head, false, 10, ART.backing, 0.45 * a, rnd);
       ART.pen(g, head, false, 6.5, ink, a, rnd);
     }
-  },
-
-  // ---------- upgrade card icons ----------
-
-  // Strokes one path twice: thick dark outline under the colored line (the game's ink look).
-  inkStroke(g, width, color, drawPath) {
-    g.lineStyle(width + 7, ART.outline, 1);
-    drawPath();
-    g.lineStyle(width, color, 1);
-    drawPath();
-  },
-
-  inkPoly(g, pts, color, outlineWidth) {
-    g.fillStyle(color, 1);
-    g.fillPoints(pts, true);
-    g.lineStyle(outlineWidth, ART.outline, 1);
-    g.strokePoints(pts, true);
-  },
-
-  inkCircle(g, x, y, r, color, outlineWidth) {
-    g.fillStyle(ART.outline, 1);
-    g.fillCircle(x, y, r + outlineWidth);
-    g.fillStyle(color, 1);
-    g.fillCircle(x, y, r);
-  },
-
-  arrowHead(g, x, y, angle, size, color, ow) {
-    const pts = [
-      { x: x + Math.cos(angle) * size, y: y + Math.sin(angle) * size },
-      { x: x + Math.cos(angle + 2.4) * size * 0.85, y: y + Math.sin(angle + 2.4) * size * 0.85 },
-      { x: x + Math.cos(angle - 2.4) * size * 0.85, y: y + Math.sin(angle - 2.4) * size * 0.85 },
-    ];
-    ART.inkPoly(g, pts, color, ow);
-  },
-
-  // Card glyph `key` centered on (x, y), fitting a size x size box, in `color` with ink outlines
-  // and white accents. Shared by the pick cards, the HUD row and the game over list.
-  drawCardIcon(g, key, x, y, size, color) {
-    const r = size / 2;
-    const w = Math.max(3, r * 0.16);          // main stroke width
-    const ow = Math.max(2.5, r * 0.09);       // outline width for filled shapes
-    const light = lerpColor(color, 0xffffff, 0.55);
-    const P = (px, py) => ({ x: x + px * r, y: y + py * r });
-    switch (key) {
-      case 'well': {
-        // Planet pulling everything in: ring + four arrows pointing at it.
-        ART.inkStroke(g, w * 0.7, light, () => g.strokeCircle(x, y, r * 0.82));
-        for (let i = 0; i < 4; i++) {
-          const a = Math.PI / 4 + (i * Math.PI) / 2;
-          ART.arrowHead(g, x + Math.cos(a) * r * 0.6, y + Math.sin(a) * r * 0.6, a + Math.PI, r * 0.2, color, ow);
-        }
-        ART.inkCircle(g, x, y, r * 0.3, color, ow);
-        g.fillStyle(0xffffff, 0.8);
-        g.fillCircle(x - r * 0.1, y - r * 0.1, r * 0.09);
-        break;
-      }
-      case 'spin': {
-        // Tiny planet with a tight orbit arrow wrapping it.
-        const a0 = -Math.PI * 0.35;
-        const a1 = Math.PI * 1.25;
-        const orbitR = r * 0.62;
-        ART.inkStroke(g, w, color, () => { g.beginPath(); g.arc(x, y, orbitR, a0, a1, false); g.strokePath(); });
-        ART.arrowHead(g, x + Math.cos(a1) * orbitR, y + Math.sin(a1) * orbitR, a1 + Math.PI / 2, r * 0.3, color, ow);
-        ART.inkCircle(g, x, y, r * 0.26, light, ow);
-        ART.sparkle(g, x + Math.cos(a0) * orbitR, y + Math.sin(a0) * orbitR, r * 0.22, 0, 0xffffff, 1);
-        break;
-      }
-      case 'overdrive': {
-        // Speedometer pinned at the top end.
-        const cy = y + r * 0.22;
-        const gr = r * 0.72;
-        ART.inkStroke(g, w * 1.1, light, () => { g.beginPath(); g.arc(x, cy, gr, Math.PI, Math.PI * 2, false); g.strokePath(); });
-        g.lineStyle(w * 1.1, 0xff4d2e, 1);
-        g.beginPath(); g.arc(x, cy, gr, Math.PI * 1.7, Math.PI * 2, false); g.strokePath();
-        const na = -Math.PI * 0.18;
-        ART.inkStroke(g, w * 0.9, color, () => g.lineBetween(x, cy, x + Math.cos(na) * gr * 0.85, cy + Math.sin(na) * gr * 0.85));
-        ART.inkCircle(g, x, cy, r * 0.14, color, ow);
-        ART.inkStroke(g, w * 0.7, color, () => g.lineBetween(x - gr * 0.9, cy + r * 0.4, x + gr * 0.9, cy + r * 0.4));
-        break;
-      }
-      case 'sling': {
-        // Slingshot fork launching a ball up.
-        ART.inkStroke(g, w * 1.1, color, () => {
-          g.lineBetween(x, y + r * 0.85, x, y + r * 0.2);
-          g.lineBetween(x, y + r * 0.22, x - r * 0.5, y - r * 0.35);
-          g.lineBetween(x, y + r * 0.22, x + r * 0.5, y - r * 0.35);
-        });
-        g.lineStyle(w * 0.5, 0xffffff, 1);
-        g.lineBetween(x - r * 0.5, y - r * 0.35, x, y - r * 0.05);
-        g.lineBetween(x + r * 0.5, y - r * 0.35, x, y - r * 0.05);
-        ART.inkCircle(g, x, y - r * 0.68, r * 0.2, light, ow);
-        g.lineStyle(w * 0.45, 0xffffff, 0.9);
-        g.lineBetween(x - r * 0.12, y - r * 0.36, x - r * 0.12, y - r * 0.2);
-        g.lineBetween(x + r * 0.12, y - r * 0.36, x + r * 0.12, y - r * 0.2);
-        break;
-      }
-      case 'perfect': {
-        // Bullseye with a star in the center and crosshair ticks.
-        ART.inkStroke(g, w * 0.8, color, () => g.strokeCircle(x, y, r * 0.66));
-        ART.inkStroke(g, w * 0.8, light, () => g.strokeCircle(x, y, r * 0.38));
-        ART.inkStroke(g, w * 0.7, color, () => {
-          g.lineBetween(x, y - r * 0.98, x, y - r * 0.78);
-          g.lineBetween(x, y + r * 0.98, x, y + r * 0.78);
-          g.lineBetween(x - r * 0.98, y, x - r * 0.78, y);
-          g.lineBetween(x + r * 0.98, y, x + r * 0.78, y);
-        });
-        ART.sparkle(g, x, y, r * 0.3, 0, ART.outline, 1);
-        ART.sparkle(g, x, y, r * 0.22, 0, 0xffffff, 1);
-        break;
-      }
-      case 'chain': {
-        // Three stacked chevrons growing upward: each PERFECT pushes harder.
-        for (let i = 0; i < 3; i++) {
-          const cy = y + r * (0.55 - i * 0.48);
-          const hw = r * (0.42 + i * 0.13);
-          const c = i === 2 ? 0xffffff : i === 1 ? light : color;
-          ART.inkStroke(g, w * 1.05, c, () => g.strokePoints([
-            { x: x - hw, y: cy + hw * 0.55 }, { x, y: cy - hw * 0.15 }, { x: x + hw, y: cy + hw * 0.55 },
-          ], false));
-        }
-        break;
-      }
-      case 'aero': {
-        // Streamlined teardrop slicing up-right with speed lines behind.
-        const a = -Math.PI / 4;
-        const ux = Math.cos(a);
-        const uy = Math.sin(a);
-        const pts = [];
-        for (let k = 0; k <= 10; k++) {
-          const t = Math.PI / 2 + (k / 10) * Math.PI;   // back half circle
-          pts.push({ x: x - ux * r * 0.1 + Math.cos(t + a) * r * 0.36, y: y - uy * r * 0.1 + Math.sin(t + a) * r * 0.36 });
-        }
-        pts.push({ x: x + ux * r * 0.78, y: y + uy * r * 0.78 });
-        ART.inkStroke(g, w * 0.6, light, () => {
-          for (let i = -1; i <= 1; i++) {
-            const ox = -uy * i * r * 0.3;
-            const oy = ux * i * r * 0.3;
-            const back = 0.5 + (i === 0 ? 0.08 : 0);
-            g.lineBetween(x - ux * r * back + ox, y - uy * r * back + oy, x - ux * r * (back + 0.36) + ox, y - uy * r * (back + 0.36) + oy);
-          }
-        });
-        ART.inkPoly(g, pts, color, ow);
-        g.fillStyle(0xffffff, 0.85);
-        g.fillCircle(x - r * 0.05, y - r * 0.17, r * 0.1);
-        break;
-      }
-      case 'afterburner': {
-        // Two-tone jet flame.
-        const outer = [P(0, -0.92), P(0.32, -0.42), P(0.5, 0.1), P(0.42, 0.55), P(0, 0.85), P(-0.42, 0.55), P(-0.5, 0.1), P(-0.22, -0.2), P(-0.16, -0.55)];
-        ART.inkPoly(g, outer, color, ow);
-        const inner = [P(0.02, -0.32), P(0.22, 0.1), P(0.22, 0.45), P(0, 0.62), P(-0.22, 0.45), P(-0.2, 0.12)];
-        g.fillStyle(0xffffff, 1);
-        g.fillPoints(inner, true);
-        break;
-      }
-      case 'wallkick': {
-        // Wall on the left, arrow bouncing off it upward, burst at the kick point.
-        const wx = x - r * 0.6;
-        g.fillStyle(ART.outline, 1);
-        g.fillRect(wx - r * 0.2 - ow, y - r * 0.9 - ow, r * 0.26 + ow * 2, r * 1.8 + ow * 2);
-        g.fillStyle(light, 1);
-        g.fillRect(wx - r * 0.2, y - r * 0.9, r * 0.26, r * 1.8);
-        g.lineStyle(Math.max(2, ow * 0.7), ART.outline, 1);
-        for (let i = 1; i < 4; i++) g.lineBetween(wx - r * 0.2, y - r * 0.9 + i * r * 0.45, wx + r * 0.06, y - r * 0.9 + i * r * 0.45);
-        const kick = P(-0.3, 0.15);
-        const end = P(0.55, -0.62);
-        ART.inkStroke(g, w, color, () => g.strokePoints([P(0.35, 0.8), kick, end], false));
-        ART.arrowHead(g, end.x, end.y, Math.atan2(end.y - kick.y, end.x - kick.x), r * 0.3, color, ow);
-        ART.sparkle(g, kick.x + r * 0.02, kick.y, r * 0.32, 0.4, ART.outline, 1);
-        ART.sparkle(g, kick.x + r * 0.02, kick.y, r * 0.24, 0.4, 0xffffff, 1);
-        break;
-      }
-      case 'heatshield': {
-        // Heater shield with a white flame emblem.
-        const shield = [P(-0.66, -0.7), P(0, -0.86), P(0.66, -0.7), P(0.62, 0.05), P(0.36, 0.55), P(0, 0.86), P(-0.36, 0.55), P(-0.62, 0.05)];
-        ART.inkPoly(g, shield, color, ow * 1.2);
-        g.fillStyle(lerpColor(color, ART.outline, 0.25), 1);
-        g.fillPoints([P(0, -0.8), P(0.6, -0.66), P(0.56, 0.05), P(0.32, 0.52), P(0, 0.8)], true);
-        g.fillStyle(0xffffff, 1);
-        g.fillPoints([P(0, -0.45), P(0.2, -0.12), P(0.24, 0.18), P(0, 0.42), P(-0.24, 0.18), P(-0.14, -0.06), P(-0.04, 0.06)], true);
-        break;
-      }
-      case 'armor': {
-        // Asteroid cracking in two with shards flying off.
-        const left = [P(-0.08, -0.62), P(-0.48, -0.5), P(-0.7, -0.05), P(-0.52, 0.45), P(-0.14, 0.6), P(-0.02, 0.18), P(-0.18, -0.12)];
-        const right = [P(0.08, -0.66), P(0.5, -0.46), P(0.7, 0.02), P(0.46, 0.5), P(0.04, 0.62), P(0.14, 0.2), P(-0.02, -0.12)];
-        ART.inkPoly(g, left.map(p => ({ x: p.x - r * 0.08, y: p.y })), 0xa78fb8, ow);
-        ART.inkPoly(g, right.map(p => ({ x: p.x + r * 0.08, y: p.y })), 0xa78fb8, ow);
-        g.fillStyle(0x7a6290, 1);
-        g.fillCircle(x - r * 0.42, y + r * 0.12, r * 0.12);
-        g.fillCircle(x + r * 0.42, y - r * 0.18, r * 0.1);
-        ART.inkPoly(g, [P(-0.05, -0.98), P(0.12, -0.78), P(-0.12, -0.74)], color, ow * 0.8);
-        ART.inkPoly(g, [P(0.82, -0.62), P(0.98, -0.4), P(0.74, -0.42)], color, ow * 0.8);
-        ART.inkPoly(g, [P(-0.84, 0.56), P(-0.66, 0.74), P(-0.9, 0.8)], color, ow * 0.8);
-        ART.inkStroke(g, w * 0.5, color, () => {
-          g.lineBetween(x - r * 0.2, y + r * 0.72, x - r * 0.3, y + r * 0.92);
-          g.lineBetween(x + r * 0.2, y + r * 0.72, x + r * 0.3, y + r * 0.92);
-        });
-        break;
-      }
-      case 'shockwave': {
-        // Comet on top, shock arcs blasting downward (toward the supernova).
-        const cy = y - r * 0.62;
-        for (let i = 0; i < 3; i++) {
-          const ar = r * (0.5 + i * 0.32);
-          ART.inkStroke(g, w * (1.05 - i * 0.18), i === 0 ? 0xffffff : i === 1 ? light : color, () => {
-            g.beginPath(); g.arc(x, cy, ar, Math.PI * 0.22, Math.PI * 0.78, false); g.strokePath();
-          });
-        }
-        ART.inkCircle(g, x, cy, r * 0.22, color, ow);
-        g.fillStyle(0xffffff, 0.85);
-        g.fillCircle(x - r * 0.07, cy - r * 0.07, r * 0.07);
-        break;
-      }
-      default:
-        ART.sparkle(g, x, y, r * 0.7, 0, color, 1);
-    }
-  },
-
-  // Round icon badge: ink rim, family ring, dark tinted disc, glyph, shine. HUD row and lists.
-  drawCardBadge(g, key, x, y, size, color) {
-    const r = size / 2;
-    g.fillStyle(ART.outline, 1);
-    g.fillCircle(x, y + 2, r + 4);
-    g.fillStyle(color, 1);
-    g.fillCircle(x, y, r);
-    g.fillStyle(lerpColor(color, ART.outline, 0.62), 1);
-    g.fillCircle(x, y, r * 0.84);
-    ART.drawCardIcon(g, key, x, y, size * 0.72, color);
-    g.fillStyle(0xffffff, 0.35);
-    g.fillEllipse(x - r * 0.3, y - r * 0.55, r * 0.7, r * 0.22);
   },
 
   // ---------- background ----------
