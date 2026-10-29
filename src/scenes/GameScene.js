@@ -20,8 +20,9 @@ class GameScene extends Phaser.Scene {
     this.planets = [];
     this.nextPlanetY = this.startY - 560;
     // First planet straight ahead so the very first hold always works.
-    this.addPlanet(GAME_WIDTH / 2 + 150, this.nextPlanetY, 80);
-    this.nextPlanetY -= 420;
+    this.addPlanet(GAME_WIDTH / 2 + 150, this.nextPlanetY, 85);
+    this.planetSide = 1;
+    this.nextPlanetY -= TUNING.minPlanetGap;
     this.fillPlanets();
 
     this.createStarfield();
@@ -55,16 +56,14 @@ class GameScene extends Phaser.Scene {
     });
   }
 
-  // Keeps planets generated a screen ahead; gaps grow with altitude.
+  // Keeps planets generated a screen ahead.
   fillPlanets() {
     const viewTop = this.cameras.main.scrollY;
     while (this.nextPlanetY > viewTop - GAME_HEIGHT) {
-      const altitude = this.startY - this.nextPlanetY;
-      const radius = Phaser.Math.Between(60, 100);
-      const x = Phaser.Math.Between(110 + radius / 2, GAME_WIDTH - 110 - radius / 2);
-      this.addPlanet(x, this.nextPlanetY, radius);
-      const gap = Math.min(600, 340 + altitude * 0.015);
-      this.nextPlanetY -= Phaser.Math.Between(gap - 60, gap + 80);
+      const layout = nextPlanetLayout(this.planetSide, this.startY - this.nextPlanetY, GAME_WIDTH, Math.random);
+      this.addPlanet(layout.x, this.nextPlanetY, layout.radius);
+      this.planetSide = layout.side;
+      this.nextPlanetY -= layout.gap;
     }
     const viewBottom = viewTop + GAME_HEIGHT;
     this.planets = this.planets.filter((p) => p.y - p.radius < viewBottom + 400);

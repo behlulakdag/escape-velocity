@@ -79,3 +79,24 @@ test('a hit costs speed but never drops you to game over', () => {
   assert.strictEqual(o.speedAfterHit(mid, 0.5), o.TUNING.minSpeed + o.TUNING.hitGrace);
   assert.ok(o.speedAfterHit(o.TUNING.minSpeed + 1, 0.1) >= o.TUNING.minSpeed);
 });
+
+test('planet layout zigzags, stays on screen and spreads out with altitude', () => {
+  let seed = 1;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  let side = 1;
+  let switches = 0;
+  const sizes = new Set();
+  for (let i = 0; i < 200; i++) {
+    const l = o.nextPlanetLayout(side, i * 500, 720, rand);
+    assert.ok(l.x - l.radius >= 80 && l.x + l.radius <= 640, 'planet must fit with room to orbit');
+    if (l.side !== side) switches++;
+    side = l.side;
+    sizes.add(l.radius);
+  }
+  assert.ok(switches > 120, 'mostly alternates sides');
+  assert.strictEqual(sizes.size, o.PLANET_SIZES.length, 'all sizes appear');
+  const low = o.nextPlanetLayout(1, 0, 720, () => 0.5).gap;
+  const high = o.nextPlanetLayout(1, 1e7, 720, () => 0.5).gap;
+  assert.strictEqual(low, o.TUNING.minPlanetGap);
+  assert.strictEqual(high, o.TUNING.maxPlanetGap);
+});

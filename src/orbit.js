@@ -20,6 +20,9 @@ const TUNING = {
   hitKeep: 0.7,           // speed kept after hitting a planet
   floorBounceKeep: 0.8,   // speed kept after falling to the bottom of the screen
   hitGrace: 120,          // a hit never leaves you closer than this to minSpeed
+  minPlanetGap: 520,      // vertical distance between planets at the start
+  maxPlanetGap: 760,
+  planetGapPerPx: 0.012,
 };
 
 // Rotation direction from the comet's position relative to the planet and its velocity,
@@ -95,6 +98,35 @@ function speedAfterHit(speed, keep) {
   return Math.max(speed * keep, Math.min(speed, TUNING.minSpeed + TUNING.hitGrace));
 }
 
+// Next planet in the column: alternates sides (zigzag) so the path reads clearly,
+// mixes small (fast, risky orbits) and big (safe) planets, and spaces them further
+// apart as altitude grows. rand() returns [0, 1).
+const PLANET_SIZES = [
+  { radius: 38, weight: 2 },   // small: tight orbit, spins you up quickly
+  { radius: 62, weight: 3 },
+  { radius: 85, weight: 3 },
+  { radius: 110, weight: 1 },  // big: wide, safe orbit
+];
+
+function nextPlanetLayout(prevSide, altitude, worldWidth, rand) {
+  let total = 0;
+  for (const s of PLANET_SIZES) total += s.weight;
+  let pick = rand() * total;
+  let radius = PLANET_SIZES[0].radius;
+  for (const s of PLANET_SIZES) {
+    pick -= s.weight;
+    if (pick < 0) { radius = s.radius; break; }
+  }
+  // Mostly switch sides; sometimes stay, so the rhythm is not fully predictable.
+  const side = rand() < 0.8 ? -prevSide : prevSide;
+  const margin = 90 + radius;
+  const laneCenter = side < 0 ? worldWidth * 0.28 : worldWidth * 0.72;
+  const x = Math.max(margin, Math.min(worldWidth - margin, laneCenter + (rand() - 0.5) * 140));
+  const baseGap = Math.min(TUNING.maxPlanetGap, TUNING.minPlanetGap + Math.max(0, altitude) * TUNING.planetGapPerPx);
+  const gap = baseGap + (rand() - 0.5) * 120;
+  return { x, radius, side, gap };
+}
+
 function flightDecay(altitude) {
   return Math.min(
     TUNING.maxFlightDecay,
@@ -137,5 +169,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, startOrbit, pickAssistTarget, speedAfterHit, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, PLANET_SIZES, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
