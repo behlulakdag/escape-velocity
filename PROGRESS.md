@@ -31,6 +31,10 @@
 - [x] Agent round (feel/audio/art in parallel + 2 reviewers, then 3 fixers + QA 20/20): hitstop, PERFECT chain, close call slow-mo, best-altitude flag, speed lines, look-ahead camera, squash/stretch, star-explosion intro (RETRY skips it), procedural audio + reactive music + mute, characters with faces (comet, planets, angry supernova), themed menu/game over, screen-space pops, gentle flashes
 - [x] Player critic scores: Fun 3.5, Visual 4, Theme 4.5
 - [ ] Critic top fixes: teach re-grab + auto-catch first flings; forgiving catch at speed; cut text clutter; lower full-screen flashes/intro white-out; keep speed escalating past 240 km/s (zone names match); keep comet out of bottom HUD; only grab planets at/above the comet
+- [x] Bundled Lilita One font; onboarding auto catch only until the player catches once (localStorage flag)
+- [x] Art direction: current look is final (sketchbook and glossy UI-kit restyles were tried and rejected; stashed)
+- [x] Roguelite upgrade cards (src/cards.js, CardScene): 12 cards / 4 families / set bonuses, pick 1 of 3 at every zone from 500 m, 6% slow-mo while picking, +5% supernova speed per card. Critic: Fun 4 (was 3.5), Visual 4, Theme 4.5
+- [ ] Card polish from critic: pick 1.2s after zone banner, pop lane (no pile-up over comet), visible tells for passive cards (Aerodynamic, Overdrive, Tail Armor), legendaries that change behaviour, game over build shown at once, shield cards more reachable, Shockwave line visible, balance per-card nova cost
 - [ ] Listen to audio on a real phone (never heard yet)
 - [ ] itch page: GIF of PERFECT chain, controls line, menu cover
 - [ ] Design pass (art), then sound/music (user wants these last)
