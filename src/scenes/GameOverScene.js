@@ -5,25 +5,26 @@ class GameOverScene extends Phaser.Scene {
 
   init(data) {
     this.finalScore = data.score || 0;
+    this.reason = data.reason || 'GAME OVER';
   }
 
   create() {
     const cx = GAME_WIDTH / 2;
     const isRecord = saveHighScore(this.finalScore);
 
-    this.add.text(cx, 360, 'GAME OVER', {
+    this.add.text(cx, 360, this.reason, {
       fontFamily: FONT,
-      fontSize: '96px',
+      fontSize: '76px',
       color: '#ff4d6d',
     }).setOrigin(0.5);
 
-    this.add.text(cx, 520, 'SCORE: ' + this.finalScore, {
+    this.add.text(cx, 520, this.finalScore + ' m', {
       fontFamily: FONT,
       fontSize: '60px',
       color: COLORS.text,
     }).setOrigin(0.5);
 
-    this.add.text(cx, 610, isRecord ? 'NEW BEST!' : 'BEST: ' + loadHighScore(), {
+    this.add.text(cx, 610, isRecord ? 'NEW BEST!' : 'BEST: ' + loadHighScore() + ' m', {
       fontFamily: FONT,
       fontSize: '40px',
       color: isRecord ? '#ffc83d' : '#bbbbbb',

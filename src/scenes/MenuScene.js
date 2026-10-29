@@ -6,14 +6,14 @@ class MenuScene extends Phaser.Scene {
   create() {
     const cx = GAME_WIDTH / 2;
 
-    this.add.text(cx, 380, 'GAME TITLE', {
+    this.add.text(cx, 380, 'ESCAPE\nVELOCITY', {
       fontFamily: FONT,
       fontSize: '88px',
       color: COLORS.text,
       align: 'center',
     }).setOrigin(0.5);
 
-    this.add.text(cx, 480, 'Slapjam #2', {
+    this.add.text(cx, 520, 'Speed is your life', {
       fontFamily: FONT,
       fontSize: '36px',
       color: '#ffc83d',
@@ -21,7 +21,7 @@ class MenuScene extends Phaser.Scene {
 
     const best = loadHighScore();
     if (best > 0) {
-      this.add.text(cx, 600, 'BEST: ' + best, {
+      this.add.text(cx, 600, 'BEST: ' + best + ' m', {
         fontFamily: FONT,
         fontSize: '40px',
         color: COLORS.text,
@@ -30,10 +30,11 @@ class MenuScene extends Phaser.Scene {
 
     makeButton(this, cx, 800, 'PLAY', () => this.scene.start('Game'));
 
-    this.add.text(cx, 1150, 'Drag left / right to dodge', {
+    this.add.text(cx, 1150, 'HOLD near a planet to orbit & speed up\nRELEASE to fling', {
       fontFamily: FONT,
       fontSize: '30px',
       color: '#bbbbbb',
+      align: 'center',
     }).setOrigin(0.5);
 
     addFullscreenButton(this);
