@@ -43,6 +43,15 @@ class BootScene extends Phaser.Scene {
   create() {
     // Generate the background textures once so every scene can reuse them.
     if (!this.textures.exists('stars')) ART.makeStarTexture(this, 'stars');
-    this.scene.start('Menu');
+    // Phaser bakes text into canvases, so the font must be ready before any text is drawn.
+    // Give up after 2s and fall back to Arial Black rather than hang on a slow phone.
+    let started = false;
+    const go = () => { if (!started) { started = true; this.scene.start('Menu'); } };
+    if (document.fonts && document.fonts.load) {
+      document.fonts.load('48px "Lilita One"').then(go, go);
+      this.time.delayedCall(2000, go);
+    } else {
+      go();
+    }
   }
 }

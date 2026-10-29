@@ -11,7 +11,8 @@ const COLORS = {
   textDark: '#1a0f2e',
 };
 
-const FONT = 'Arial Black, Arial, sans-serif';
+// Lilita One (OFL, assets/fonts) is bundled locally; Arial Black is the fallback until it loads.
+const FONT = '"Lilita One", "Arial Black", Arial, sans-serif';
 
 // localStorage anahtarı (her oyun için farklı yap, yoksa başka itch oyunlarıyla çakışabilir)
 const STORAGE_KEY = 'escape_velocity_best_score';
