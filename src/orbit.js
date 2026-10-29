@@ -27,6 +27,7 @@ const TUNING = {
   asteroidFromMeters: 600,
   asteroidChance: 0.45,
   asteroidKeep: 0.85,
+  asteroidRoam: 170,      // how far up/down from its spawn height an asteroid may drift
   blackHoleFromMeters: 1800,
   blackHoleChance: 0.3,
   blackHoleRadius: 34,

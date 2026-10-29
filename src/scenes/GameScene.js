@@ -87,9 +87,12 @@ class GameScene extends Phaser.Scene {
     }
     if (meters > TUNING.asteroidFromMeters && Math.random() < TUNING.asteroidChance) {
       const radius = Phaser.Math.Between(24, 36);
+      // Any starting direction plus a slow curve, so each rock drifts on its own path.
       this.asteroids.push({
-        x: Phaser.Math.Between(80, GAME_WIDTH - 80), y, radius,
-        vx: Phaser.Math.Between(90, 170) * (Math.random() < 0.5 ? -1 : 1),
+        x: Phaser.Math.Between(80, GAME_WIDTH - 80), y, homeY: y, radius,
+        heading: Math.random() * Math.PI * 2,
+        speed: Phaser.Math.Between(90, 170),
+        turn: Phaser.Math.FloatBetween(0.4, 1.1) * (Math.random() < 0.5 ? -1 : 1),
         rot: 0,
         shape: Array.from({ length: 9 }, () => 0.72 + Math.random() * 0.38),
       });
@@ -274,9 +277,17 @@ class GameScene extends Phaser.Scene {
 
   updateAsteroids(dt) {
     for (const a of this.asteroids) {
-      a.x += a.vx * dt;
-      a.rot += a.vx * 0.004 * dt;
-      if (a.x < a.radius || a.x > GAME_WIDTH - a.radius) a.vx = -a.vx;
+      a.heading += a.turn * dt;
+      let vx = Math.cos(a.heading) * a.speed;
+      let vy = Math.sin(a.heading) * a.speed;
+      // Bounce off the side walls, and stay within a band around the spawn height so rocks
+      // keep guarding the gap between their two planets instead of drifting away.
+      if ((a.x < a.radius && vx < 0) || (a.x > GAME_WIDTH - a.radius && vx > 0)) vx = -vx;
+      if ((a.y < a.homeY - TUNING.asteroidRoam && vy < 0) || (a.y > a.homeY + TUNING.asteroidRoam && vy > 0)) vy = -vy;
+      a.heading = Math.atan2(vy, vx);
+      a.x += vx * dt;
+      a.y += vy * dt;
+      a.rot += a.turn * 1.5 * dt;
       if (!a.dead && Phaser.Math.Distance.Between(a.x, a.y, this.comet.x, this.comet.y) < a.radius + TUNING.cometRadius * 0.8) {
         a.dead = true;
         this.burst(a.x, a.y, 0xb8a28c, 14);
