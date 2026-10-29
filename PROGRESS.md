@@ -20,9 +20,14 @@
 - [x] Prototype: hold near planet = orbit + gain speed, release = fling. Speed decays in flight; too slow / crash / fall off screen = game over. Score = altitude (m).
 - [x] Pure orbit math in src/orbit.js, tests: `node --test tests/orbit.test.js` (7 pass)
 - [x] Bot playtest: survived 25s, 1911 m with ASAP releases (speed stays ~700). Extra loops double speed -> risk/reward works.
-- [ ] Feel tuning on a real phone
-- [ ] Polish: ring in front of planet, stronger aim guide, speed lines, sound, music
-- [ ] Hazards later (asteroids), near-miss / perfect fling bonus
+- [x] Easier: aim assist (green line), mistakes cost speed instead of killing, hits never drop below minSpeed+120
+- [x] Zigzag planets with 4 sizes and wider gaps; orbit spin cap; camera zooms out with speed (HUD in HudScene)
+- [x] Zones (LIFTOFF..ESCAPE VELOCITY), score x1-x5 by speed, gold PERFECT window
+- [x] Asteroids (600 m+, any direction, curving) and non-solid black holes (1800 m+, bend path, core warps ~60deg)
+- [x] build.ps1 cache-busts scripts (?v=build) so phones load new code after each update
+- [x] Headless sim (tests/playtest-bot.js), 10 runs each: random 5-32s, careful 20-74s, skilled 23-102s (highest score)
+- [ ] User phone test of this round
+- [ ] Design pass (art), then sound/music (user wants these last)
 - [ ] Real itch page "Escape Velocity" (currently deploying to the test page)
 
 ## Next
