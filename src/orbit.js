@@ -8,10 +8,10 @@ const TUNING = {
   flightDecay: 40,        // px/s lost per second while flying
   flightDecayPerKm: 6,    // extra decay per 1000 px of altitude (difficulty ramp)
   maxFlightDecay: 140,
-  orbitGain: 300,         // px/s gained per second while orbiting
-  orbitShrink: 18,        // orbit radius lost per second (orbiting forever = crash)
-  grabRange: 240,         // extra distance beyond the planet surface where holding catches the orbit
-  minOrbitGap: 50,        // closest orbit allowed when latching
+  orbitGain: 300,         // px/s gained per second while orbiting (at the edge of the grab zone)
+  closeOrbitBonus: 1.6,   // hugging the surface gains up to (1 + this) times faster
+  grabRange: 160,         // extra distance beyond the planet surface where holding catches the orbit
+  minOrbitGap: 34,        // closest orbit: just clear of the surface
   wallBounceKeep: 0.92,   // speed kept after bouncing off a side wall
   assistMaxAngle: 0.45,   // ~25 degrees: releases this close to a planet get steered onto it
   assistMaxDist: 1100,
@@ -55,17 +55,21 @@ function startOrbit(cx, cy, x, y, vx, vy, planetRadius) {
   };
 }
 
-// Advances an orbit by dt seconds. Returns the new orbit and speed; crashed=true when the
-// tightening orbit reaches the planet surface.
+// 0 at the outer edge of the grab zone, 1 when skimming the surface.
+function orbitCloseness(radius, planetRadius) {
+  const t = 1 - (radius - planetRadius - TUNING.minOrbitGap) / (TUNING.grabRange - TUNING.minOrbitGap);
+  return Math.max(0, Math.min(1, t));
+}
+
+// Advances an orbit by dt seconds. Orbits are stable (no crash); closer orbits gain speed
+// faster, so diving in deep before grabbing is the skill.
 function orbitStep(orbit, speed, dt, planetRadius) {
   const spin = Math.min(speed / orbit.radius, TUNING.maxOrbitSpin);
   const angle = orbit.angle + orbit.dir * spin * dt;
-  const radius = orbit.radius - TUNING.orbitShrink * dt;
-  const newSpeed = Math.min(TUNING.maxSpeed, speed + TUNING.orbitGain * dt);
+  const gain = TUNING.orbitGain * (1 + TUNING.closeOrbitBonus * orbitCloseness(orbit.radius, planetRadius));
   return {
-    orbit: { angle, radius, dir: orbit.dir },
-    speed: newSpeed,
-    crashed: radius <= planetRadius + TUNING.cometRadius,
+    orbit: { angle, radius: orbit.radius, dir: orbit.dir },
+    speed: Math.min(TUNING.maxSpeed, speed + gain * dt),
   };
 }
 
@@ -236,5 +240,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, orbitCloseness, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

@@ -16,23 +16,19 @@ test('latching too close is pushed out to the minimum orbit', () => {
   assert.strictEqual(orbit.radius, 60 + o.TUNING.minOrbitGap);
 });
 
-test('orbiting gains speed and tightens the orbit', () => {
+test('orbiting gains speed and the orbit stays stable', () => {
   const orbit = o.startOrbit(0, 0, 200, 0, 0, -600, 60);
   const step = o.orbitStep(orbit, 600, 1, 60);
   assert.ok(step.speed > 600);
-  assert.ok(step.orbit.radius < orbit.radius);
-  assert.strictEqual(step.crashed, false);
+  assert.strictEqual(step.orbit.radius, orbit.radius);
 });
 
-test('orbiting long enough crashes into the planet', () => {
-  let orbit = o.startOrbit(0, 0, 200, 0, 0, -600, 60);
-  let speed = 600;
-  let crashed = false;
-  for (let i = 0; i < 1000 && !crashed; i++) {
-    const s = o.orbitStep(orbit, speed, 0.05, 60);
-    orbit = s.orbit; speed = s.speed; crashed = s.crashed;
-  }
-  assert.ok(crashed);
+test('closer orbits gain speed faster', () => {
+  const close = o.startOrbit(0, 0, 60 + o.TUNING.minOrbitGap, 0, 0, -600, 60);
+  const far = o.startOrbit(0, 0, 60 + o.TUNING.grabRange, 0, 0, -600, 60);
+  assert.strictEqual(o.orbitCloseness(close.radius, 60), 1);
+  assert.strictEqual(o.orbitCloseness(far.radius, 60), 0);
+  assert.ok(o.orbitStep(close, 600, 0.5, 60).speed > o.orbitStep(far, 600, 0.5, 60).speed);
 });
 
 test('speed never exceeds the cap', () => {

@@ -194,7 +194,8 @@ class GameScene extends Phaser.Scene {
         this.orbit = startOrbit(planet.x, planet.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, planet.radius);
         this.orbitPlanet = planet;
         this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.catchBonus);
-        this.popText('+SPEED', '#5eff8f');
+        const close = orbitCloseness(this.orbit.radius, planet.radius);
+        this.popText(close > 0.7 ? 'CLOSE ORBIT!' : '+SPEED', close > 0.7 ? '#ffe14d' : '#5eff8f');
         this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
         if (this.hintStage === 0) {
           this.hintStage = 1;
@@ -209,15 +210,6 @@ class GameScene extends Phaser.Scene {
       this.speed = step.speed;
       this.comet.x = this.orbitPlanet.x + Math.cos(this.orbit.angle) * this.orbit.radius;
       this.comet.y = this.orbitPlanet.y + Math.sin(this.orbit.angle) * this.orbit.radius;
-      if (step.crashed) {
-        // Scraping the surface throws the comet off its orbit and costs speed instead of ending the run.
-        const v = tangentVelocity(this.orbit, this.speed);
-        this.comet.vx = v.vx;
-        this.comet.vy = v.vy;
-        this.orbit = null;
-        this.orbitPlanet = null;
-        this.loseSpeed(TUNING.hitKeep);
-      }
     } else {
       this.speed -= flightDecay(altitude) * dt;
       // Keep direction, apply the decayed speed.
