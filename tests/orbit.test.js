@@ -126,3 +126,21 @@ test('speed multiplier goes x1 at minimum to x5 at top speed', () => {
   assert.strictEqual(o.speedMultiplier(o.TUNING.maxSpeed), 5);
   assert.ok(o.speedMultiplier(1400) > o.speedMultiplier(600));
 });
+
+test('black hole bends the path toward it without changing speed', () => {
+  // Hole to the right, comet flying straight up.
+  const v = o.blackHolePull(100, 0, 0, 0, 0, -800, 0.1);
+  assert.ok(v.vx > 0, 'should bend toward the hole');
+  assert.ok(Math.abs(Math.hypot(v.vx, v.vy) - 800) < 1e-6, 'speed unchanged');
+  const far = o.blackHolePull(5000, 0, 0, 0, 0, -800, 0.1);
+  assert.deepStrictEqual(far, { vx: 0, vy: -800 });
+});
+
+test('warp through a black hole turns the path ~60 degrees and keeps speed', () => {
+  // Flying up (vy<0) with the hole slightly to the right: turn toward the right.
+  const w = o.warpVelocity(10, -5, 0, 0, 0, -800);
+  assert.ok(w.vx > 0);
+  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - 800) < 1e-6);
+  const angle = Math.acos((w.vx * 0 + w.vy * -800) / (800 * 800));
+  assert.ok(Math.abs(angle - o.TUNING.blackHoleWarp) < 1e-6);
+});

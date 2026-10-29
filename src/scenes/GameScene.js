@@ -21,6 +21,8 @@ class GameScene extends Phaser.Scene {
     this.comet = { x: GAME_WIDTH / 2, y: this.startY, vx: 0, vy: -this.speed };
 
     this.planets = [];
+    this.asteroids = [];
+    this.blackHoles = [];
     this.nextPlanetY = this.startY - 560;
     // First planet straight ahead so the very first hold always works.
     this.addPlanet(GAME_WIDTH / 2 + 150, this.nextPlanetY, 85);
@@ -66,10 +68,32 @@ class GameScene extends Phaser.Scene {
     while (this.nextPlanetY > view.top - GAME_HEIGHT) {
       const layout = nextPlanetLayout(this.planetSide, this.startY - this.nextPlanetY, GAME_WIDTH, Math.random);
       this.addPlanet(layout.x, this.nextPlanetY, layout.radius);
+      this.maybeAddHazard(this.nextPlanetY - layout.gap / 2, layout.side);
       this.planetSide = layout.side;
       this.nextPlanetY -= layout.gap;
     }
-    this.planets = this.planets.filter((p) => p.y - p.radius < view.bottom + 400);
+    const onScreen = (o) => o.y < view.bottom + 400;
+    this.planets = this.planets.filter((p) => onScreen({ y: p.y - p.radius }));
+    this.asteroids = this.asteroids.filter((a) => !a.dead && onScreen(a));
+    this.blackHoles = this.blackHoles.filter(onScreen);
+  }
+
+  // Hazards sit halfway between two planets and only appear past certain altitudes.
+  maybeAddHazard(y, planetSide) {
+    const meters = (this.startY - y) / 10;
+    if (meters > TUNING.blackHoleFromMeters && Math.random() < TUNING.blackHoleChance) {
+      this.blackHoles.push({ x: planetSide < 0 ? GAME_WIDTH * 0.3 : GAME_WIDTH * 0.7, y, spin: 0 });
+      return;
+    }
+    if (meters > TUNING.asteroidFromMeters && Math.random() < TUNING.asteroidChance) {
+      const radius = Phaser.Math.Between(24, 36);
+      this.asteroids.push({
+        x: Phaser.Math.Between(80, GAME_WIDTH - 80), y, radius,
+        vx: Phaser.Math.Between(90, 170) * (Math.random() < 0.5 ? -1 : 1),
+        rot: 0,
+        shape: Array.from({ length: 9 }, () => 0.72 + Math.random() * 0.38),
+      });
+    }
   }
 
   createStarfield() {
@@ -201,7 +225,9 @@ class GameScene extends Phaser.Scene {
       this.comet.y += this.comet.vy * dt;
       this.bounceWalls();
       this.bouncePlanets();
+      this.applyBlackHoles(dt);
     }
+    this.updateAsteroids(dt);
 
     this.updateCamera(dt);
     this.bounceFloor();
@@ -243,6 +269,44 @@ class GameScene extends Phaser.Scene {
       this.speed *= TUNING.wallBounceKeep;
       this.cameras.main.shake(90, 0.006);
       this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
+    }
+  }
+
+  updateAsteroids(dt) {
+    for (const a of this.asteroids) {
+      a.x += a.vx * dt;
+      a.rot += a.vx * 0.004 * dt;
+      if (a.x < a.radius || a.x > GAME_WIDTH - a.radius) a.vx = -a.vx;
+      if (!a.dead && Phaser.Math.Distance.Between(a.x, a.y, this.comet.x, this.comet.y) < a.radius + TUNING.cometRadius * 0.8) {
+        a.dead = true;
+        this.burst(a.x, a.y, 0xb8a28c, 14);
+        this.loseSpeed(TUNING.asteroidKeep);
+      }
+    }
+  }
+
+  applyBlackHoles(dt) {
+    for (const h of this.blackHoles) {
+      const dist = Phaser.Math.Distance.Between(this.comet.x, this.comet.y, h.x, h.y);
+      // After a warp the pull stays off until you leave its field, or it would drag you back.
+      if (h.warped && dist > TUNING.blackHolePullRadius) h.warped = false;
+      if (!h.warped) {
+        const v = blackHolePull(h.x, h.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, dt);
+        this.comet.vx = v.vx;
+        this.comet.vy = v.vy;
+      }
+      // Not solid: flying through the core turns your path instead of hurting you.
+      const inside = dist < TUNING.blackHoleRadius + TUNING.cometRadius;
+      if (inside && !h.cometInside && !h.warped) {
+        const w = warpVelocity(h.x, h.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy);
+        this.comet.vx = w.vx;
+        this.comet.vy = w.vy;
+        h.warped = true;
+        this.popText('WARP!', '#c77dff');
+        this.cameras.main.shake(120, 0.006);
+        this.burst(this.comet.x, this.comet.y, 0xc77dff, 10);
+      }
+      h.cometInside = inside;
     }
   }
 
@@ -319,9 +383,11 @@ class GameScene extends Phaser.Scene {
     this.drawWalls(g);
     const grab = this.isHolding ? null : this.nearestGrabbablePlanet();
     const assist = this.currentAssist();
+    for (const h of this.blackHoles) this.drawBlackHole(g, h);
     for (const p of this.planets) {
       this.drawPlanet(g, p, p === grab || p === this.orbitPlanet, assist && assist.planet === p);
     }
+    for (const a of this.asteroids) if (!a.dead) this.drawAsteroid(g, a);
     if (this.orbit) this.drawAimGuide(g, assist);
     this.drawComet();
   }
@@ -366,6 +432,39 @@ class GameScene extends Phaser.Scene {
     g.fillCircle(p.x - p.radius * 0.3, p.y - p.radius * 0.3, p.radius * 0.45);
     g.fillStyle(0x000000, 0.18);
     for (const c of p.craters) g.fillCircle(p.x + Math.cos(c.a) * c.d, p.y + Math.sin(c.a) * c.d, c.r);
+  }
+
+  drawAsteroid(g, a) {
+    const pts = a.shape.map((k, i) => {
+      const ang = a.rot + (i / a.shape.length) * Math.PI * 2;
+      return { x: a.x + Math.cos(ang) * a.radius * k, y: a.y + Math.sin(ang) * a.radius * k };
+    });
+    g.lineStyle(6, 0x1a1033, 1);
+    g.fillStyle(0x9c8672, 1);
+    g.fillPoints(pts, true);
+    g.strokePoints(pts, true);
+    g.fillStyle(0x6e5a4a, 1);
+    g.fillCircle(a.x + a.radius * 0.25, a.y + a.radius * 0.15, a.radius * 0.28);
+    g.fillStyle(0xffffff, 0.25);
+    g.fillCircle(a.x - a.radius * 0.3, a.y - a.radius * 0.3, a.radius * 0.22);
+  }
+
+  drawBlackHole(g, h) {
+    h.spin += 0.04;
+    // Pull zone hint, then swirling rings around a dark core.
+    g.fillStyle(0x8a2be2, 0.08);
+    g.fillCircle(h.x, h.y, TUNING.blackHolePullRadius);
+    for (let i = 0; i < 3; i++) {
+      const r = TUNING.blackHoleRadius + 18 + i * 22;
+      g.lineStyle(6 - i, i === 0 ? 0xff6fb5 : 0xc77dff, 0.8 - i * 0.2);
+      g.beginPath();
+      g.arc(h.x, h.y, r, h.spin * (i + 1), h.spin * (i + 1) + Math.PI * 1.2);
+      g.strokePath();
+    }
+    g.fillStyle(0xff6fb5, 1);
+    g.fillCircle(h.x, h.y, TUNING.blackHoleRadius + 5);
+    g.fillStyle(0x0b0618, 1);
+    g.fillCircle(h.x, h.y, TUNING.blackHoleRadius);
   }
 
   // Long dotted line showing where a release goes; turns green when it will reach a planet.

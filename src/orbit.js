@@ -24,6 +24,15 @@ const TUNING = {
   minZoom: 0.68,          // camera zoom at top speed
   perfectAngle: 0.12,     // release within ~7 degrees of the assist line = PERFECT
   perfectBonus: 140,
+  asteroidFromMeters: 600,
+  asteroidChance: 0.45,
+  asteroidKeep: 0.85,
+  blackHoleFromMeters: 1800,
+  blackHoleChance: 0.3,
+  blackHoleRadius: 34,
+  blackHolePullRadius: 270,
+  blackHoleWarp: 1.05,    // ~60 degrees: how much flying through the core turns your path
+  blackHoleTurn: 6,       // max rad/s the pull can bend your path (at the core); the hole is not solid
   hitGrace: 120,          // a hit never leaves you closer than this to minSpeed
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,
@@ -156,6 +165,34 @@ function speedMultiplier(speed) {
   return 1 + Math.min(4, Math.floor(speedFraction(speed) * 5));
 }
 
+// Black hole pull: bends the velocity toward the hole, stronger when closer, without
+// changing speed. Returns the new velocity.
+function blackHolePull(hx, hy, x, y, vx, vy, dt) {
+  const dx = hx - x;
+  const dy = hy - y;
+  const dist = Math.hypot(dx, dy);
+  if (dist >= TUNING.blackHolePullRadius || dist === 0) return { vx, vy };
+  const speed = Math.hypot(vx, vy);
+  const current = Math.atan2(vy, vx);
+  const toward = Math.atan2(dy, dx);
+  let diff = toward - current;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const maxTurn = TUNING.blackHoleTurn * (1 - dist / TUNING.blackHolePullRadius) * dt;
+  const angle = current + Math.max(-maxTurn, Math.min(maxTurn, diff));
+  return { vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed };
+}
+
+// Flying through a black hole's core turns your direction by blackHoleWarp, toward the
+// side the hole was on (a dead-center pass turns right). Speed is kept.
+function warpVelocity(hx, hy, x, y, vx, vy) {
+  const cross = vx * (hy - y) - vy * (hx - x);
+  const turn = (cross < 0 ? -1 : 1) * TUNING.blackHoleWarp;
+  const cos = Math.cos(turn);
+  const sin = Math.sin(turn);
+  return { vx: vx * cos - vy * sin, vy: vx * sin + vy * cos };
+}
+
 function flightDecay(altitude) {
   return Math.min(
     TUNING.maxFlightDecay,
@@ -198,5 +235,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
