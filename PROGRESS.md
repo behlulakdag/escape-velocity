@@ -55,3 +55,11 @@
 - [ ] Upload a build to itch.io on day one
 - [ ] Final test on a real phone
 - [ ] Submit to the jam page (with the private prize-contact email)
+
+## Plan for Oct 30 morning (deadline Oct 31 18:00 Turkey time)
+1. NEW (user request): momentum - "the faster you go, the faster you accelerate" (speed-scaled orbit gain / snowball), and raise or remove the 450 km/s cap. Confirm the interpretation with the user first.
+2. Remaining polish: speed readout snaps up on boosts; set bonus label vs zone banner overlap; SECOND WIND grace so a bump right after it is free; non-text cue on every PERFECT; buff Tight Spin.
+3. itch page: rename/retitle to Escape Velocity, cover 630x500, 3-5 screenshots, GIF, description + controls + AI tools list, embed 720x1280 scaled, mobile friendly, fullscreen.
+4. User: play on a real phone in the itch iframe and LISTEN to the audio (never heard yet).
+5. Make the page Public, user submits on the jam page (private prize-contact email!) - early afternoon Oct 31, not at the last hour.
+
