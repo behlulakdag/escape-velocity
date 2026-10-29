@@ -7,6 +7,12 @@ class HudScene extends Phaser.Scene {
 
   create() {
     const style = { fontFamily: FONT, color: COLORS.text, stroke: '#1a1033', strokeThickness: 10 };
+    // Red glow from the bottom edge that grows as the supernova closes in.
+    this.danger = this.add.graphics().setAlpha(0);
+    for (let i = 0; i < 12; i++) {
+      this.danger.fillStyle(0xff3a1f, 0.07);
+      this.danger.fillRect(0, GAME_HEIGHT - 40 - i * 40, GAME_WIDTH, 40 + i * 40);
+    }
     this.scoreText = this.add.text(32, 40, '0', { ...style, fontSize: '60px' });
     this.altText = this.add.text(34, 110, '0 m', { ...style, fontSize: '32px', color: '#c9bfff', strokeThickness: 8 });
     this.speedText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 130, '', { ...style, fontSize: '56px' }).setOrigin(0.5);
@@ -37,6 +43,11 @@ class HudScene extends Phaser.Scene {
     this.tweens.killTweensOf([this.bannerText, this.bannerSub]);
     this.tweens.add({ targets: this.bannerText, scale: fit, duration: 350, ease: 'Back.Out' });
     this.tweens.add({ targets: [this.bannerText, this.bannerSub], alpha: 0, delay: 1400, duration: 500 });
+  }
+
+  setDanger(level) {
+    const pulse = 0.85 + Math.sin(this.time.now / 90) * 0.15;
+    this.danger.setAlpha(Math.max(0, Math.min(1, level)) * pulse);
   }
 
   showHint(label) {

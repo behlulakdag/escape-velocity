@@ -3,7 +3,7 @@
 const TUNING = {
   cometRadius: 28,
   startSpeed: 620,
-  minSpeed: 220,          // below this the comet freezes
+  minSpeed: 220,          // the comet never drops below this; the supernova is what kills you
   maxSpeed: 2400,
   flightDecay: 40,        // px/s lost per second while flying
   flightDecayPerKm: 6,    // extra decay per 1000 px of altitude (difficulty ramp)
@@ -18,7 +18,6 @@ const TUNING = {
   assistPassGap: 110,     // how far from the surface an assisted fling passes the planet
   catchBonus: 60,         // instant speed for every planet caught
   hitKeep: 0.7,           // speed kept after hitting a planet
-  floorBounceKeep: 0.8,   // speed kept after falling to the bottom of the screen
   maxOrbitSpin: 5,        // rad/s cap on visible orbit rotation so high speed stays readable
   assistMaxBelow: 40,     // assist never steers toward planets further below than this
   minZoom: 0.68,          // camera zoom at top speed
@@ -35,6 +34,11 @@ const TUNING = {
   blackHoleWarp: 1.05,    // ~60 degrees: how much flying through the core turns your path
   blackHoleTurn: 6,       // max rad/s the pull can bend your path (at the core); the hole is not solid
   hitGrace: 120,          // a hit never leaves you closer than this to minSpeed
+  novaStartBelow: 300,    // how far below the comet the supernova starts
+  novaBaseSpeed: 130,     // px/s the wave climbs at the start
+  novaRamp: 5,            // extra px/s every second
+  novaMaxSpeed: 950,
+  novaLeash: 250,         // the wave is never further than this below the visible screen (falling back = death)
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,
   planetGapPerPx: 0.012,
@@ -198,6 +202,11 @@ function warpVelocity(hx, hy, x, y, vx, vy) {
   return { vx: vx * cos - vy * sin, vy: vx * sin + vy * cos };
 }
 
+// How fast the supernova climbs after `seconds` of play.
+function novaSpeed(seconds) {
+  return Math.min(TUNING.novaMaxSpeed, TUNING.novaBaseSpeed + TUNING.novaRamp * seconds);
+}
+
 function flightDecay(altitude) {
   return Math.min(
     TUNING.maxFlightDecay,
@@ -240,5 +249,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, orbitCloseness, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, orbitCloseness, novaSpeed, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

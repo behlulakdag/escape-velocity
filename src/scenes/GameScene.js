@@ -17,6 +17,8 @@ class GameScene extends Phaser.Scene {
     this.score = 0;
     this.zoneIndex = 0;
     this.trail = [];
+    this.elapsed = 0;
+    this.novaY = this.startY + TUNING.novaStartBelow;   // world y of the supernova front
 
     this.comet = { x: GAME_WIDTH / 2, y: this.startY, vx: 0, vy: -this.speed };
 
@@ -184,7 +186,10 @@ class GameScene extends Phaser.Scene {
 
   update(time, delta) {
     if (this.isOver) return;
-    if (this.hintStage === 0 && this.hud.hintText && !this.hud.hintText.text) this.hud.showHint('HOLD near a planet');
+    if (this.hintStage === 0 && this.hud.hintText && !this.hud.hintText.text) {
+      this.hud.showHint('HOLD near a planet');
+      this.hud.showBanner('ESCAPE THE', 'SUPERNOVA!');
+    }
     const dt = Math.min(delta / 1000, 0.05);
     const altitude = this.startY - this.comet.y;
 
@@ -225,9 +230,10 @@ class GameScene extends Phaser.Scene {
     this.updateAsteroids(dt);
 
     this.updateCamera(dt);
-    this.bounceFloor();
-    // Every mistake costs speed; running out of speed is the only way to lose.
-    if (this.speed < TUNING.minSpeed) return this.gameOver('TOO SLOW!');
+    this.speed = Math.max(this.speed, TUNING.minSpeed);
+    this.updateNova(dt);
+    // The supernova is the only way to lose: speed is what keeps you ahead of it.
+    if (this.comet.y + TUNING.cometRadius * 0.5 > this.novaY) return this.gameOver('SUPERNOVA!');
 
     if (altitude > this.bestAltitudePx) {
       // Only new height scores, multiplied by how fast you got there.
@@ -240,6 +246,15 @@ class GameScene extends Phaser.Scene {
     this.recordTrail();
     this.draw();
     this.updateHud();
+  }
+
+  updateNova(dt) {
+    this.elapsed += dt;
+    this.novaY -= novaSpeed(this.elapsed) * dt;
+    // Never let it fall far behind, so the threat is always close.
+    this.novaY = Math.min(this.novaY, this.visibleBounds().bottom + TUNING.novaLeash);
+    const gap = this.novaY - this.comet.y;
+    if (this.hud.setDanger) this.hud.setDanger(1 - (gap - 150) / 450);
   }
 
   checkZone() {
@@ -333,16 +348,6 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  // The bottom of the screen is a floor: falling behind bounces you back up, at a cost.
-  bounceFloor() {
-    const floor = this.visibleBounds().bottom - TUNING.cometRadius;
-    if (this.comet.y > floor && !this.orbit) {
-      this.comet.y = floor;
-      this.comet.vy = -Math.abs(this.comet.vy);
-      this.loseSpeed(TUNING.floorBounceKeep);
-    }
-  }
-
   loseSpeed(keep) {
     this.speed = speedAfterHit(this.speed, keep);
     this.cameras.main.shake(160, 0.012);
@@ -367,6 +372,9 @@ class GameScene extends Phaser.Scene {
     let center = cam.scrollY + GAME_HEIGHT / 2;
     const targetCenter = this.comet.y - (0.12 * GAME_HEIGHT) / cam.zoom;
     if (targetCenter < center) center = Phaser.Math.Linear(center, targetCenter, Math.min(1, dt * 8));
+    // Falling back: follow only enough to keep the comet on screen.
+    const lowest = this.comet.y - (0.38 * GAME_HEIGHT) / cam.zoom;
+    if (center < lowest) center = Phaser.Math.Linear(center, lowest, Math.min(1, dt * 6));
     cam.scrollY = center - GAME_HEIGHT / 2;
     this.starsFar.tilePositionY = cam.scrollY * 0.15;
     this.starsNear.tilePositionY = cam.scrollY * 0.4;
@@ -391,6 +399,7 @@ class GameScene extends Phaser.Scene {
       this.drawPlanet(g, p, p === grab || p === this.orbitPlanet, assist && assist.planet === p);
     }
     for (const a of this.asteroids) if (!a.dead) this.drawAsteroid(g, a);
+    this.drawNova(g);
     if (this.orbit) this.drawAimGuide(g, assist);
     this.drawComet();
   }
@@ -435,6 +444,38 @@ class GameScene extends Phaser.Scene {
     g.fillCircle(p.x - p.radius * 0.3, p.y - p.radius * 0.3, p.radius * 0.45);
     g.fillStyle(0x000000, 0.18);
     for (const c of p.craters) g.fillCircle(p.x + Math.cos(c.a) * c.d, p.y + Math.sin(c.a) * c.d, c.r);
+  }
+
+  // Layered, wobbling wall of fire: white-hot edge, then yellow, orange and deep red below.
+  drawNova(g) {
+    const v = this.visibleBounds();
+    if (this.novaY > v.bottom + 40) return;
+    const t = this.time.now / 1000;
+    const layers = [
+      { offset: -10, color: 0xffffff, alpha: 0.9 },
+      { offset: 6, color: 0xffe14d, alpha: 1 },
+      { offset: 40, color: 0xff9a2e, alpha: 1 },
+      { offset: 110, color: 0xff4d2e, alpha: 1 },
+      { offset: 220, color: 0xb3203a, alpha: 1 },
+    ];
+    for (const layer of layers) {
+      const pts = [];
+      for (let x = v.left - 20; x <= v.right + 20; x += 24) {
+        const wobble = Math.sin(x * 0.018 + t * 3 + layer.offset) * 14 + Math.sin(x * 0.047 - t * 5) * 6;
+        pts.push({ x, y: this.novaY + layer.offset + wobble });
+      }
+      pts.push({ x: v.right + 20, y: v.bottom + 20 });
+      pts.push({ x: v.left - 20, y: v.bottom + 20 });
+      g.fillStyle(layer.color, layer.alpha);
+      g.fillPoints(pts, true);
+    }
+    // Embers rising off the front.
+    for (let i = 0; i < 14; i++) {
+      const ex = v.left + ((i * 137 + t * 60) % (v.right - v.left));
+      const life = (t * 0.9 + i * 0.37) % 1;
+      g.fillStyle(i % 2 ? 0xffe14d : 0xff9a2e, 1 - life);
+      g.fillCircle(ex, this.novaY - life * 140, 6 * (1 - life) + 2);
+    }
   }
 
   drawAsteroid(g, a) {

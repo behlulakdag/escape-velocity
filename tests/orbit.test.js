@@ -140,3 +140,9 @@ test('warp through a black hole turns the path ~60 degrees and keeps speed', () 
   const angle = Math.acos((w.vx * 0 + w.vy * -800) / (800 * 800));
   assert.ok(Math.abs(angle - o.TUNING.blackHoleWarp) < 1e-6);
 });
+
+test('supernova speeds up over time and is capped', () => {
+  assert.strictEqual(o.novaSpeed(0), o.TUNING.novaBaseSpeed);
+  assert.ok(o.novaSpeed(30) > o.novaSpeed(0));
+  assert.strictEqual(o.novaSpeed(1e6), o.TUNING.novaMaxSpeed);
+});
