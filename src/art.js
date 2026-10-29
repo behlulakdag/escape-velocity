@@ -3,7 +3,14 @@
 // `ctx` carries read-only state useful for reactive art:
 //   { time (seconds), comet {x,y,vx,vy}, speed, speedFraction, orbitPlanet, isHolding, danger (0..1),
 //     stretch (>=1), perfectChain (int), closeCall (0..1), squash (0..1, optional),
-//     aimKind ('none'|'target'|'perfect', optional) }  - newer fields may be undefined.
+//     aimKind ('none'|'target'|'perfect', optional),
+//     perfectPulse (0..1, optional, default 0): set to 1 on a PERFECT and decay to 0 over ~0.4s;
+//       drawComet draws a gold shock ring + rays bursting out of the comet (a LOCAL effect, use it
+//       instead of a full-screen flash),
+//     zonePulse (0..1, optional, default 0): same, for entering a new zone; a wider cyan/white
+//       double ring around the comet }  - newer fields may be undefined.
+// No function here draws large full-screen translucent fills: big moments stay local to the
+// comet / planet / nova front so the palette never washes out at high speed or danger.
 // Style: bright cartoon space, thick dark outlines, cel shading, cute faces on everything.
 // Performance: everything is redrawn each frame, so shapes stay cheap (circles, short polygons)
 // and per-object geometry that never changes is computed once and cached on the object (`_art`).
@@ -378,9 +385,10 @@ const ART = {
     const step = Math.max(24, (right - left) / 40);
 
     // Heat glow above the front.
-    g.fillStyle(0xff7a2e, 0.06 + danger * 0.05);
+    // Low alpha on purpose: at high danger this band fills much of the view and must not wash it out.
+    g.fillStyle(0xff7a2e, 0.04 + danger * 0.03);
     g.fillRect(left, novaY - 220, right - left, 220);
-    g.fillStyle(0xffb347, 0.07 + danger * 0.06);
+    g.fillStyle(0xffb347, 0.05 + danger * 0.03);
     g.fillRect(left, novaY - 110, right - left, 110);
 
     // Heat shimmer: faint wavy lines drifting upward.
@@ -714,6 +722,12 @@ const ART = {
       }
     }
 
+    // PERFECT / zone shock bursts sit behind the head so the face stays readable.
+    const zonePulse = Math.max(0, Math.min(1, ctx.zonePulse || 0));
+    if (zonePulse > 0) ART.drawShockBurst(g, comet.x, comet.y, zonePulse, 0x5ee6ff, 1.6, t);
+    const perfectPulse = Math.max(0, Math.min(1, ctx.perfectPulse || 0));
+    if (perfectPulse > 0) ART.drawShockBurst(g, comet.x, comet.y, perfectPulse, ART.gold, 1, t);
+
     // Head, stretched along the velocity (squash & stretch keeps the area roughly equal).
     const stretch = Math.max(1, Math.min(2.2, ctx.stretch || 1));
     // Impact squash (1 right after a grab/hit, decays to 0): shorter along travel, wider across it.
@@ -746,6 +760,46 @@ const ART = {
     g.fillCircle(comet.x - r * 0.42, comet.y - r * 0.45, r * 0.18);
 
     ART.drawCometFace(g, comet.x + dir.x * r * 0.2, comet.y + dir.y * r * 0.2, r, dir, ctx);
+  },
+
+  // Expanding shock ring + rays around (x, y). p: 1 at the moment of the event, fading to 0.
+  // scale widens the burst (zones use a bigger one than PERFECT).
+  drawShockBurst(g, x, y, p, color, scale, t) {
+    const r = TUNING.cometRadius;
+    const k = 1 - p;                                  // 0 -> 1 as the burst expands
+    const ease = 1 - (1 - k) * (1 - k);               // fast start, soft end
+    const ringR = r * 1.6 + ease * 150 * scale;
+    // Brief hot core right at the start (small, so it never reads as a screen flash).
+    if (p > 0.7) {
+      g.fillStyle(0xffffff, (p - 0.7) * 2.2);
+      g.fillCircle(x, y, r * (1.8 + (1 - p) * 3));
+    }
+    // Outer ring: dark outline under a bright band, so it reads on any background.
+    g.lineStyle(6 + 12 * p, ART.outline, 0.45 * p);
+    g.strokeCircle(x, y, ringR);
+    g.lineStyle(3 + 9 * p, color, Math.min(1, p * 1.4));
+    g.strokeCircle(x, y, ringR);
+    // Trailing inner ring.
+    const innerR = r * 1.3 + ease * 90 * scale;
+    g.lineStyle(2 + 4 * p, 0xffffff, 0.8 * p);
+    g.strokeCircle(x, y, innerR);
+    // Rays shooting out between the rings.
+    const rays = 10;
+    const spin = (t || 0) * 0.6;
+    for (let i = 0; i < rays; i++) {
+      const a = spin + (i / rays) * Math.PI * 2 + (i % 2) * 0.12;
+      const len = (i % 2 ? 22 : 34) * scale * p + 6;
+      const from = innerR + 6;
+      const cx = Math.cos(a);
+      const cy = Math.sin(a);
+      g.lineStyle(5 * p + 2, i % 2 ? 0xffffff : color, p);
+      g.lineBetween(x + cx * from, y + cy * from, x + cx * (from + len), y + cy * (from + len));
+    }
+    // A few sparkles riding the outer ring.
+    for (let i = 0; i < 4; i++) {
+      const a = -spin * 1.5 + i * (Math.PI / 2) + 0.4;
+      ART.sparkle(g, x + Math.cos(a) * ringR, y + Math.sin(a) * ringR, 8 + 10 * p, spin * 3 + i, 0xffffff, p);
+    }
   },
 
   // Expression priority: close call > worried > happy (perfect chain) > determined > calm.
