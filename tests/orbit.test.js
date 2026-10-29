@@ -111,3 +111,12 @@ test('assist never steers toward planets below', () => {
   const below = { x: 0, y: 500, radius: 70 };
   assert.strictEqual(o.pickAssistTarget(0, 0, 0, 1, [below], null), null);
 });
+
+test('zones start at 0 and are found by altitude', () => {
+  assert.strictEqual(o.ZONES[0].from, 0);
+  assert.strictEqual(o.zoneIndexForAltitude(0), 0);
+  assert.strictEqual(o.zoneIndexForAltitude(499), 0);
+  assert.strictEqual(o.zoneIndexForAltitude(500), 1);
+  assert.strictEqual(o.zoneIndexForAltitude(1e9), o.ZONES.length - 1);
+  for (let i = 1; i < o.ZONES.length; i++) assert.ok(o.ZONES[i].from > o.ZONES[i - 1].from);
+});

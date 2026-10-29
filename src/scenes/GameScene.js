@@ -13,6 +13,7 @@ class GameScene extends Phaser.Scene {
     this.speed = TUNING.startSpeed;
     this.startY = GAME_HEIGHT - 260;
     this.bestAltitude = 0;
+    this.zoneIndex = 0;
     this.trail = [];
 
     this.comet = { x: GAME_WIDTH / 2, y: this.startY, vx: 0, vy: -this.speed };
@@ -77,7 +78,7 @@ class GameScene extends Phaser.Scene {
     }
     g.generateTexture('stars', 512, 512);
     g.destroy();
-    this.cameras.main.setBackgroundColor(0x2b1d5c);
+    this.cameras.main.setBackgroundColor(ZONES[0].sky);
     // Oversized so the background still fills the screen when the camera zooms out.
     const w = GAME_WIDTH / TUNING.minZoom;
     const h = GAME_HEIGHT / TUNING.minZoom;
@@ -201,10 +202,25 @@ class GameScene extends Phaser.Scene {
     if (this.speed < TUNING.minSpeed) return this.gameOver('TOO SLOW!');
 
     this.bestAltitude = Math.max(this.bestAltitude, Math.floor(altitude / 10));
+    this.checkZone();
     this.fillPlanets();
     this.recordTrail();
     this.draw();
     this.updateHud();
+  }
+
+  checkZone() {
+    const index = zoneIndexForAltitude(this.bestAltitude);
+    if (index <= this.zoneIndex) return;
+    const from = ZONES[this.zoneIndex].sky;
+    const to = ZONES[index].sky;
+    this.zoneIndex = index;
+    this.hud.showBanner(ZONES[index].name, ZONES[index].from + ' m');
+    this.cameras.main.flash(250, 255, 255, 255);
+    this.tweens.addCounter({
+      from: 0, to: 1, duration: 1500,
+      onUpdate: (tw) => this.cameras.main.setBackgroundColor(lerpColor(from, to, tw.getValue())),
+    });
   }
 
   bounceWalls() {

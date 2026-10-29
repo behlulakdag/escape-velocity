@@ -131,6 +131,23 @@ function nextPlanetLayout(prevSide, altitude, worldWidth, rand) {
   return { x, radius, side, gap };
 }
 
+// Altitude milestones (meters). Each one gets a banner and a new sky color, giving the
+// run short-term goals beyond the raw number.
+const ZONES = [
+  { from: 0, name: 'LIFTOFF', sky: 0x2b1d5c },
+  { from: 500, name: 'ORBIT', sky: 0x1f3a7a },
+  { from: 1500, name: 'MACH 2', sky: 0x5a1f7a },
+  { from: 3000, name: 'LIGHTSPEED', sky: 0x13606a },
+  { from: 5000, name: 'HYPERSPACE', sky: 0x7a1f4a },
+  { from: 8000, name: 'ESCAPE VELOCITY', sky: 0x7a5a12 },
+];
+
+function zoneIndexForAltitude(meters) {
+  let index = 0;
+  for (let i = 0; i < ZONES.length; i++) if (meters >= ZONES[i].from) index = i;
+  return index;
+}
+
 function flightDecay(altitude) {
   return Math.min(
     TUNING.maxFlightDecay,
@@ -173,5 +190,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, PLANET_SIZES, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, PLANET_SIZES, ZONES, zoneIndexForAltitude, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
