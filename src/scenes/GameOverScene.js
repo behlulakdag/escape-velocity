@@ -1,3 +1,4 @@
+// Game over: the supernova happily chomps the comet at the bottom while the score counts up.
 class GameOverScene extends Phaser.Scene {
   constructor() {
     super('GameOver');
@@ -11,39 +12,82 @@ class GameOverScene extends Phaser.Scene {
 
   create() {
     const cx = GAME_WIDTH / 2;
+    const previousBest = loadHighScore();
     const isRecord = saveHighScore(this.finalScore);
+    this.cameras.main.setBackgroundColor(0x3a1850);
+    addStarLayers(this);
+    this.novaGfx = this.add.graphics();
+    this.cometGfx = this.add.graphics();
+    this.comet = { x: cx, y: 1000, vx: 0, vy: -1 };
 
-    this.add.text(cx, 360, this.reason, {
-      fontFamily: FONT,
-      fontSize: '76px',
-      color: '#ff4d6d',
-    }).setOrigin(0.5);
+    const stroke = { stroke: '#1a1033', strokeThickness: 12 };
+    const reason = this.add.text(cx, 235, this.reason, {
+      fontFamily: FONT, fontSize: '80px', color: '#ff6f5c', ...stroke, strokeThickness: 16,
+    }).setOrigin(0.5).setShadow(0, 8, '#1a1033', 0, true, true).setScale(0);
+    this.tweens.add({ targets: reason, scale: 1, duration: 450, ease: 'Back.easeOut' });
 
-    this.add.text(cx, 460, this.altitude + ' m', {
-      fontFamily: FONT,
-      fontSize: '36px',
-      color: '#c9bfff',
-    }).setOrigin(0.5);
-
-    this.add.text(cx, 530, String(this.finalScore), {
-      fontFamily: FONT,
-      fontSize: '60px',
-      color: COLORS.text,
-    }).setOrigin(0.5);
-
-    this.add.text(cx, 610, isRecord ? 'NEW BEST!' : 'BEST: ' + loadHighScore(), {
-      fontFamily: FONT,
-      fontSize: '40px',
-      color: isRecord ? '#ffc83d' : '#bbbbbb',
-    }).setOrigin(0.5);
-
-    makeButton(this, cx, 820, 'RETRY', () => this.scene.start('Game'));
-    makeButton(this, cx, 980, 'MENU', () => this.scene.start('Menu'), {
-      color: 0xffffff,
-      height: 100,
-      fontSize: '44px',
+    this.add.text(cx, 330, 'SCORE', { fontFamily: FONT, fontSize: '34px', color: '#c9bfff', ...stroke, strokeThickness: 8 })
+      .setOrigin(0.5);
+    const scoreText = this.add.text(cx, 405, '0', { fontFamily: FONT, fontSize: '112px', color: '#ffffff', ...stroke, strokeThickness: 16 })
+      .setOrigin(0.5);
+    const counter = { value: 0 };
+    this.tweens.add({
+      targets: counter, value: this.finalScore, duration: Math.min(900, 300 + this.finalScore / 20), ease: 'Cubic.easeOut',
+      onUpdate: () => scoreText.setText(String(Math.floor(counter.value))),
+      onComplete: () => {
+        scoreText.setText(String(this.finalScore));
+        this.tweens.add({ targets: scoreText, scale: 1.12, yoyo: true, duration: 120 });
+      },
     });
 
+    const bestLine = this.add.text(cx, 500, isRecord ? 'NEW BEST!' : 'BEST  ' + Math.max(previousBest, this.finalScore), {
+      fontFamily: FONT, fontSize: isRecord ? '56px' : '40px', color: isRecord ? '#ffe14d' : '#ffffff', ...stroke, strokeThickness: 10,
+    }).setOrigin(0.5);
+    if (isRecord) {
+      this.tweens.add({ targets: bestLine, scale: 1.12, angle: 3, yoyo: true, repeat: -1, duration: 380, ease: 'Sine.easeInOut' });
+      this.time.delayedCall(500, () => {
+        this.game.events.emit('sfx', 'newbest', {});
+        for (let i = 0; i < 14; i++) this.confetti(cx, 500);
+      });
+    }
+    this.add.text(cx, 565, 'ALTITUDE  ' + this.altitude + ' m', {
+      fontFamily: FONT, fontSize: '32px', color: '#9ff3ff', ...stroke, strokeThickness: 8,
+    }).setOrigin(0.5);
+
+    makeButton(this, cx, 705, 'RETRY', () => this.scene.start('Game'), { width: 460, height: 140, fontSize: '68px' });
+    makeButton(this, cx, 868, 'MENU', () => this.scene.start('Menu'), {
+      color: 0x9ff3ff, width: 320, height: 104, fontSize: '44px',
+    });
+    makeMuteButton(this, 92, 116);
     addFullscreenButton(this);
+    this.input.keyboard.on('keydown-SPACE', () => this.scene.start('Game'));
+  }
+
+  confetti(x, y) {
+    const colors = [0xffe14d, 0xff6fb5, 0x5eff8f, 0x9ff3ff, 0xffffff];
+    const piece = this.add.rectangle(x, y, 14, 22, Phaser.Utils.Array.GetRandom(colors)).setStrokeStyle(3, 0x1a1033);
+    const a = Math.random() * Math.PI * 2;
+    const d = Phaser.Math.Between(140, 300);
+    this.tweens.add({
+      targets: piece, x: x + Math.cos(a) * d, y: y + Math.sin(a) * d * 0.6 + 120, angle: Phaser.Math.Between(-360, 360),
+      alpha: 0, duration: Phaser.Math.Between(700, 1100), ease: 'Cubic.easeOut', onComplete: () => piece.destroy(),
+    });
+  }
+
+  update(time, delta) {
+    const t = time / 1000;
+    scrollStarLayers(this, delta, 0.02);
+    // The comet is caught in the supernova's mouth (drawn after the nova so it sits over the teeth).
+    const novaY = 1010;
+    this.comet.x = GAME_WIDTH / 2 + Math.sin(t * 1.7) * 12;
+    this.comet.y = novaY + 118 + Math.sin(t * 2.4) * 6 + Math.sin(t * 9) * 3;
+    const ctx = {
+      time: t, comet: this.comet, speed: 900, speedFraction: 0.6, orbitPlanet: null,
+      isHolding: false, danger: 1, stretch: 1, perfectChain: 0, closeCall: 0,
+    };
+    this.novaGfx.clear();
+    ART.drawNova(this.novaGfx, novaY, { left: 0, right: GAME_WIDTH, top: 0, bottom: GAME_HEIGHT }, ctx);
+    this.cometGfx.clear();
+    ART.drawComet(this.cometGfx, this.comet, [], ctx);
   }
 }
