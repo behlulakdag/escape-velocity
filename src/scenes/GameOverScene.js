@@ -3,6 +3,16 @@
 // GameScene passes score, altitude, reason, newBestAltitude, bestAltitude and (optional)
 // topSpeedKmh, maxChain, zoneIndex, seconds; a missing optional stat simply drops its row.
 const GO_CARD = { w: 600, h: 700, pad: 34, x: GAME_WIDTH / 2, y: 548, rowTop: -22, rowStep: 54 };
+// Build strip under the page (strip-local coordinates). Five cards get ~127 px slots; names are
+// written at 26 px (~13 CSS px on a 360 px phone) on up to two lines.
+const GO_STRIP = { y: 914, h: 164, left: 62, right: 700, maxSlot: 150, cardY: -30, cardScale: 0.95, labelY: 6, labelSize: 26 };
+
+// Card name for the narrow build slot: one word per line, and the long single words broken
+// with a hand-written hyphen, so every label fits its slot at full size (no shrinking).
+const GO_LABEL_BREAKS = { Aerodynamic: 'Aero-\ndynamic', Afterburner: 'After-\nburner', Shockwave: 'Shock-\nwave', Overdrive: 'Over-\ndrive', Slingshot: 'Sling-\nshot' };
+function goCardLabel(name) {
+  return GO_LABEL_BREAKS[name] || name.split(' ').join('\n');
+}
 
 function goNumber(value) {
   return typeof value === 'number' && isFinite(value) ? value : undefined;
@@ -101,38 +111,52 @@ class GameOverScene extends Phaser.Scene {
     const retry = () => this.scene.start('Game', { skipIntro: true });   // instant restart: no intro
     // With a card build the strip sits under the page, so the buttons shift down a little.
     const hasBuild = this.cards.length > 0;
-    makeButton(this, cx, hasBuild ? 1058 : 1002, 'RETRY', retry, {
-      width: 460, height: hasBuild ? 128 : 140, fontSize: '72px', color: UI_CRAYON.yellow,
+    makeButton(this, cx, hasBuild ? 1062 : 1002, 'RETRY', retry, {
+      width: 460, height: hasBuild ? 124 : 140, fontSize: '72px', color: UI_CRAYON.yellow,
     }).setRotation(0.02);
-    makeButton(this, cx, hasBuild ? 1180 : 1145, 'MENU', () => this.scene.start('Menu'), {
+    makeButton(this, cx, hasBuild ? 1182 : 1145, 'MENU', () => this.scene.start('Menu'), {
       color: UI_CRAYON.blue, width: 320, height: 100, fontSize: '48px',
     }).setRotation(-0.025);
-    if (hasBuild) this.showRunCards(930);
+    if (hasBuild) this.showRunCards(GO_STRIP.y);
     makeMuteButton(this, 92, 116);
     addFullscreenButton(this);
     this.input.keyboard.on('keydown-SPACE', retry);
   }
 
-  // The run's upgrade cards on a taped strip under the page: "build:" then each card as a mini
-  // index card with its name scribbled under it. Set-bonus families get a gold crayon loop.
+  // The run's upgrade cards on a taped strip that overlaps the page's singed bottom edge:
+  // "build:" written up the margin, then each card as a mini index card with its name under it
+  // (wrapped to two lines, never below ~22 game px = 11 CSS px on a 360 px phone). Each family's
+  // cards sit together; a completed set gets one gold crayon loop round the group.
   // Shown at once (the strip slaps down with the page), cards stamped on one after another.
   showRunCards(y) {
-    const n = this.cards.length;
-    const left = 150;
-    const slot = Math.min(118, (GAME_WIDTH - left - 40) / n);
-    const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(this.cards) : [];
+    const L = GO_STRIP;
+    const ids = typeof cardGroupedOrder === 'function' ? cardGroupedOrder(this.cards) : this.cards;
+    const n = ids.length;
+    const slot = Math.min(L.maxSlot, (L.right - L.left) / n);
+    const x0 = L.left + (L.right - L.left - slot * n) / 2 - GAME_WIDTH / 2;
+    const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(ids) : [];
     const strip = this.add.container(GAME_WIDTH / 2, y, [uiBoilImage(this, 0, 0, goStripTexture(this))]).setRotation(0.012);
-    strip.add(uiInkText(this, -GAME_WIDTH / 2 + 46, -6, 'build:', { size: 30, color: UI_INK.pencilDarkHex, stroke: null, ox: 0, rot: -0.08 }));
-    this.cards.forEach((id, i) => {
+    const build = uiInkText(this, -GAME_WIDTH / 2 + 40, 0, 'build:', { size: 28, color: UI_INK.pencilDarkHex, stroke: null, rot: -Math.PI / 2 + 0.04, boil: false });
+    strip.add(build);
+    const xOf = (i) => x0 + slot / 2 + i * slot;
+    for (const family of sets) {
+      const members = ids.map((id, i) => (cardById(id).family === family ? i : -1)).filter(i => i >= 0);
+      if (!members.length) continue;
+      const a = xOf(members[0]);
+      const b = xOf(members[members.length - 1]);
+      const loop = uiBoilImage(this, (a + b) / 2, -2, cardSetGroupLoopTexture(this, b - a + slot - 8, L.h - 30, 0xc0861a)).setAlpha(0);
+      strip.add(loop);
+      this.tweens.add({ targets: loop, alpha: 1, delay: 360 + members[members.length - 1] * 90, duration: 200 });
+    }
+    ids.forEach((id, i) => {
       const card = cardById(id);
-      const x = -GAME_WIDTH / 2 + left + slot / 2 + i * slot;
-      const parts = [];
-      if (sets.indexOf(card.family) >= 0) parts.push(uiBoilImage(this, 0, -12, cardSetLoopTexture(this)));
-      parts.push(cardMakeMini(this, 0, -12, id, 0.82));
-      const name = uiInkText(this, 0, 36, card.name, { size: 19, color: UI_INK.darkHex, stroke: null, rot: 0.02, boil: false });
-      name.setScale(Math.min(1, (slot - 6) / name.width));
+      const parts = [cardMakeMini(this, 0, L.cardY, id, L.cardScale)];
+      const name = uiInkText(this, 0, L.labelY, goCardLabel(card.name), {
+        size: L.labelSize, color: UI_INK.darkHex, stroke: null, rot: 0.02, boil: false, oy: 0, lineSpacing: -7,
+      });
+      name.setScale(Math.min(1, (slot - 12) / name.width));
       parts.push(name);
-      const item = this.add.container(x, 0, parts).setScale(1.6).setAlpha(0);
+      const item = this.add.container(xOf(i), 0, parts).setScale(1.6).setAlpha(0);
       strip.add(item);
       this.tweens.add({
         targets: item, scale: 1, alpha: 1, delay: 300 + i * 90, duration: 180, ease: 'Quad.In',
@@ -276,7 +300,7 @@ function goCardTexture(scene) {
 // Long torn strip of notebook paper with tape at both ends, for the card build.
 function goStripTexture(scene) {
   const W = GAME_WIDTH - 20;
-  const H = 128;
+  const H = GO_STRIP.h;
   return uiSketchTexture(scene, 'go_strip', W, H, (ctx, shape, jitter) => {
     const top = 16;
     const bottom = H - 18;
@@ -296,7 +320,7 @@ function goStripTexture(scene) {
     ctx.clip();
     ctx.strokeStyle = 'rgba(90,135,200,0.32)';
     ctx.lineWidth = 2;
-    for (const ly of [46, 86]) {
+    for (const ly of [56, 100, 140]) {
       ctx.beginPath();
       ctx.moveTo(0, ly + (shape() - 0.5) * 2);
       ctx.lineTo(W, ly + (shape() - 0.5) * 3);
@@ -304,8 +328,8 @@ function goStripTexture(scene) {
     }
     ctx.strokeStyle = 'rgba(214,70,70,0.45)';
     ctx.beginPath();
-    ctx.moveTo(126, 0);
-    ctx.lineTo(128, H);
+    ctx.moveTo(58, 0);
+    ctx.lineTo(60, H);
     ctx.stroke();
     ctx.restore();
     for (const [tx, rot] of [[34, -0.5], [W - 34, 0.45]]) {

@@ -21,6 +21,12 @@ const CARD_UI = {
   autoWarn: 2,          // seconds left when the middle card starts nudging
 };
 
+// Card center x that keeps a card scaled by `scale` (plus its border marks) inside the screen.
+function cardSafeX(x, scale) {
+  const half = (CARD_UI.width / 2 + 16) * scale + 8;
+  return Phaser.Math.Clamp(x, half, GAME_WIDTH - half);
+}
+
 // Exit animation length (ms) before the pick is reported to the game.
 const EXIT_MS = 360;
 
@@ -322,12 +328,13 @@ class CardScene extends Phaser.Scene {
       if (!this.canPick()) return;
       this.pressed = entry;
       this.tweens.killTweensOf(box);
-      box.setScale(1.07, 0.9);
+      // The squash widens the card: an edge card steps inward so its labels stay on screen.
+      box.setScale(1.07, 0.9).setX(cardSafeX(x, 1.07));
     });
     box.on('pointerout', () => {
       if (this.pressed !== entry || this.picked) return;
       this.pressed = null;
-      this.tweens.add({ targets: box, scaleX: 1, scaleY: 1, duration: 160, ease: 'Back.Out' });
+      this.tweens.add({ targets: box, x, scaleX: 1, scaleY: 1, duration: 160, ease: 'Back.Out' });
     });
     box.on('pointerup', () => {
       if (this.pressed !== entry) return;
@@ -365,12 +372,14 @@ class CardScene extends Phaser.Scene {
 
     // Chosen card squashes, lifts, then is tossed up toward the HUD's owned-card row.
     this.tweens.killTweensOf(chosen.box);
-    chosen.box.setScale(1.14, 0.84).setAngle(0);
+    // Edge cards slide inward as they grow, so the lifted card (and its family label) never
+    // runs off the screen edge.
+    chosen.box.setScale(1.14, 0.84).setAngle(0).setX(cardSafeX(chosen.baseX, 1.14));
     chosen.box.setDepth(5);
     this.tweens.chain({
       targets: chosen.box,
       tweens: [
-        { scaleX: 1.18, scaleY: 1.18, y: chosen.baseY - 50, duration: 150, ease: 'Back.Out' },
+        { scaleX: 1.18, scaleY: 1.18, x: cardSafeX(chosen.baseX, 1.3), y: chosen.baseY - 50, duration: 150, ease: 'Back.Out' },
         { x: GAME_WIDTH - 120, y: 220, scaleX: 0.25, scaleY: 0.25, angle: 14, alpha: 0, duration: 180, delay: 20, ease: 'Quad.In' },
       ],
     });

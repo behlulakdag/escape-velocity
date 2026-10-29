@@ -325,6 +325,48 @@ function cardSetLoopTexture(scene) {
   });
 }
 
+// One gold crayon loop scrawled round a whole set group (all cards of a completed family),
+// w x h = the group's outer size. Keyed by size (and color), so each group width is baked once.
+// color: defaults to the gold crayon; pass a deeper one on cream paper.
+function cardSetGroupLoopTexture(scene, w, h, color) {
+  const W = Math.round(w);
+  const H = Math.round(h);
+  const c = color === undefined ? CARD_GOLD : color;
+  return uiSketchTexture(scene, 'cd_setgroup_' + W + 'x' + H + '_' + c.toString(16), W + 20, H + 20, (ctx, shape, jitter) => {
+    const cx = (W + 20) / 2;
+    const cy = (H + 20) / 2;
+    const rx = W / 2;
+    const ry = H / 2;
+    const pts = [];
+    const rot = -2.2 + shape() * 0.4;
+    // A rounded-rectangle-ish loop (superellipse) so long groups are hugged, overshooting its start.
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40;
+      const a = rot + t * UI_TAU * 1.08;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      const k = 1 - t * 0.05;
+      const px = Math.sign(c) * Math.pow(Math.abs(c), 0.55) * rx * k;
+      const py = Math.sign(s) * Math.pow(Math.abs(s), 0.55) * ry * k;
+      pts.push({ x: cx + px + (jitter() - 0.5) * 3, y: cy + py + (jitter() - 0.5) * 3 });
+    }
+    uiStroke(ctx, pts, jitter, { width: 6, color: c, retrace: false });
+  });
+}
+
+// Owned cards in display order: each family's cards side by side (families in the order they
+// were first picked), so a completed set can be looped as one group.
+function cardGroupedOrder(ids) {
+  const families = [];
+  for (const id of ids) {
+    const c = cardById(id);
+    if (c && families.indexOf(c.family) < 0) families.push(c.family);
+  }
+  const out = [];
+  for (const f of families) for (const id of ids) if (cardById(id).family === f) out.push(id);
+  return out;
+}
+
 // Mini card (scrap + icon) as one container. Returns the container; .scrap and .icon exposed.
 function cardMakeMini(scene, x, y, cardId, scale) {
   const card = cardById(cardId) || { family: 'orbit', icon: cardId };
