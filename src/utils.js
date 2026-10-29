@@ -21,6 +21,7 @@ function makeButton(scene, x, y, label, onClick, opts = {}) {
   btn.on('pointerout', () => btn.setScale(1));
   btn.on('pointerup', () => {
     btn.setScale(1);
+    scene.game.events.emit('sfx', 'click', {});
     onClick();
   });
   return btn;

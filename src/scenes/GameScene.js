@@ -47,6 +47,7 @@ class GameScene extends Phaser.Scene {
     // Keyboard is an optional extra for desktop testing.
     this.input.keyboard.on('keydown-SPACE', () => { this.isHolding = true; });
     this.input.keyboard.on('keyup-SPACE', () => this.releaseHold());
+    this.sfx('start');
   }
 
   // ---------- world ----------
@@ -85,7 +86,7 @@ class GameScene extends Phaser.Scene {
   maybeAddHazard(y, planetSide) {
     const meters = (this.startY - y) / 10;
     if (meters > TUNING.blackHoleFromMeters && Math.random() < TUNING.blackHoleChance) {
-      this.blackHoles.push({ x: planetSide < 0 ? GAME_WIDTH * 0.3 : GAME_WIDTH * 0.7, y, spin: 0 });
+      this.blackHoles.push({ x: planetSide < 0 ? GAME_WIDTH * 0.3 : GAME_WIDTH * 0.7, y });
       return;
     }
     if (meters > TUNING.asteroidFromMeters && Math.random() < TUNING.asteroidChance) {
@@ -103,13 +104,7 @@ class GameScene extends Phaser.Scene {
   }
 
   createStarfield() {
-    const g = this.make.graphics({ x: 0, y: 0, add: false });
-    for (let i = 0; i < 90; i++) {
-      g.fillStyle(0xffffff, Phaser.Math.FloatBetween(0.3, 0.9));
-      g.fillCircle(Phaser.Math.Between(0, 512), Phaser.Math.Between(0, 512), Phaser.Math.FloatBetween(1, 3));
-    }
-    g.generateTexture('stars', 512, 512);
-    g.destroy();
+    if (!this.textures.exists('stars')) ART.makeStarTexture(this, 'stars');
     this.cameras.main.setBackgroundColor(ZONES[0].sky);
     // Oversized so the background still fills the screen when the camera zooms out.
     const w = GAME_WIDTH / TUNING.minZoom;
@@ -130,6 +125,11 @@ class GameScene extends Phaser.Scene {
     return { left: cx - halfW, right: cx + halfW, top: cy - halfH, bottom: cy + halfH };
   }
 
+  // Announces a game moment for the audio layer (src/audio.js listens on game.events).
+  sfx(name, data) {
+    this.game.events.emit('sfx', name, data || {});
+  }
+
   // ---------- input ----------
 
   releaseHold() {
@@ -140,6 +140,7 @@ class GameScene extends Phaser.Scene {
     if (assist && assist.angle < TUNING.perfectAngle) {
       this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.perfectBonus);
       this.popText('PERFECT!', '#ffe14d');
+      this.sfx('perfect');
       this.cameras.main.flash(120, 255, 225, 77);
     }
     // Leave along the tangent; an assisted release then curves onto its target over a
@@ -148,6 +149,7 @@ class GameScene extends Phaser.Scene {
     this.comet.vy = v.vy;
     this.homing = assist ? { x: assist.aimX, y: assist.aimY, time: TUNING.homingTime } : null;
     const kick = speedFraction(this.speed);
+    this.sfx('release', { speedFraction: kick });
     this.cameras.main.shake(120, 0.004 + kick * 0.01);
     this.burst(this.comet.x, this.comet.y, speedColor(kick), 10);
     this.orbit = null;
@@ -198,6 +200,7 @@ class GameScene extends Phaser.Scene {
         this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.catchBonus);
         const close = orbitCloseness(this.orbit.targetRadius, planet.radius);
         this.popText(close > 0.7 ? 'CLOSE ORBIT!' : '+SPEED', close > 0.7 ? '#ffe14d' : '#5eff8f');
+        this.sfx('grab', { close: close > 0.7 });
         this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
         if (this.hintStage === 0) {
           this.hintStage = 1;
@@ -268,6 +271,7 @@ class GameScene extends Phaser.Scene {
     const to = ZONES[index].sky;
     this.zoneIndex = index;
     this.hud.showBanner(ZONES[index].name, ZONES[index].from + ' m');
+    this.sfx('zone', { index });
     this.cameras.main.flash(250, 255, 255, 255);
     this.tweens.addCounter({
       from: 0, to: 1, duration: 1500,
@@ -281,6 +285,7 @@ class GameScene extends Phaser.Scene {
       this.comet.x = Phaser.Math.Clamp(this.comet.x, r, GAME_WIDTH - r);
       this.comet.vx = -this.comet.vx;
       this.speed *= TUNING.wallBounceKeep;
+      this.sfx('wall');
       this.cameras.main.shake(90, 0.006);
       this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
     }
@@ -325,6 +330,7 @@ class GameScene extends Phaser.Scene {
         this.comet.vy = w.vy;
         h.warped = true;
         this.popText('WARP!', '#c77dff');
+        this.sfx('warp');
         this.cameras.main.shake(120, 0.006);
         this.burst(this.comet.x, this.comet.y, 0xc77dff, 10);
       }
@@ -354,6 +360,7 @@ class GameScene extends Phaser.Scene {
 
   loseSpeed(keep) {
     this.speed = speedAfterHit(this.speed, keep);
+    this.sfx('hit');
     this.cameras.main.shake(160, 0.012);
     this.cameras.main.flash(90, 255, 77, 109);
     this.burst(this.comet.x, this.comet.y, 0xff4d6d, 10);
@@ -390,177 +397,51 @@ class GameScene extends Phaser.Scene {
     if (this.trail.length > maxLen) this.trail.length = maxLen;
   }
 
-  // ---------- drawing ----------
+  // ---------- drawing (art lives in src/art.js) ----------
+
+  artContext() {
+    return {
+      time: this.time.now / 1000,
+      comet: this.comet,
+      speed: this.speed,
+      speedFraction: speedFraction(this.speed),
+      orbitPlanet: this.orbitPlanet,
+      isHolding: this.isHolding,
+      danger: Phaser.Math.Clamp(1 - (this.novaY - this.comet.y - 150) / 450, 0, 1),
+    };
+  }
 
   draw() {
     const g = this.worldGfx;
     g.clear();
-    this.drawWalls(g);
+    const ctx = this.artContext();
+    const view = this.visibleBounds();
+    ART.drawWalls(g, view);
     const grab = this.isHolding ? null : this.nearestGrabbablePlanet();
     const assist = this.currentAssist();
-    for (const h of this.blackHoles) this.drawBlackHole(g, h);
+    for (const h of this.blackHoles) ART.drawBlackHole(g, h, ctx);
     for (const p of this.planets) {
-      this.drawPlanet(g, p, p === grab || p === this.orbitPlanet, assist && assist.planet === p);
+      ART.drawPlanet(g, p, p === grab || p === this.orbitPlanet, !!(assist && assist.planet === p), ctx);
     }
-    for (const a of this.asteroids) if (!a.dead) this.drawAsteroid(g, a);
-    this.drawNova(g);
-    if (this.orbit) this.drawAimGuide(g, assist);
-    this.drawComet();
+    for (const a of this.asteroids) if (!a.dead) ART.drawAsteroid(g, a, ctx);
+    ART.drawNova(g, this.novaY, view, ctx);
+    if (this.orbit) this.drawAimGuide(g, assist, ctx);
+    this.cometGfx.clear();
+    ART.drawComet(this.cometGfx, this.comet, this.trail, ctx);
   }
 
-  // Side walls only show when zoomed out; shade the outside so the play area stays clear.
-  drawWalls(g) {
-    const v = this.visibleBounds();
-    if (v.left >= 0) return;
-    g.fillStyle(0x120a2a, 0.75);
-    g.fillRect(v.left, v.top, -v.left, v.bottom - v.top);
-    g.fillRect(GAME_WIDTH, v.top, v.right - GAME_WIDTH, v.bottom - v.top);
-    g.lineStyle(8, 0xff6fb5, 0.8);
-    g.lineBetween(0, v.top, 0, v.bottom);
-    g.lineBetween(GAME_WIDTH, v.top, GAME_WIDTH, v.bottom);
-  }
-
-  drawPlanet(g, p, highlighted, isTarget) {
-    // Grab zone: dashed ring so players learn where holding works. Green = release now.
-    const zone = p.radius + TUNING.grabRange;
-    if (isTarget) {
-      g.fillStyle(0x5eff8f, 0.12);
-      g.fillCircle(p.x, p.y, zone);
-    }
-    g.lineStyle(isTarget ? 7 : 4, isTarget ? 0x5eff8f : 0xffffff, isTarget ? 0.9 : highlighted ? 0.55 : 0.14);
-    for (let a = 0; a < Math.PI * 2; a += Math.PI / 18) {
-      g.beginPath();
-      g.arc(p.x, p.y, zone, a, a + Math.PI / 36);
-      g.strokePath();
-    }
-    if (p.hasRing) {
-      g.lineStyle(10, 0x1a1033, 1);
-      g.strokeEllipse(p.x, p.y, p.radius * 2.9, p.radius * 0.9);
-      g.lineStyle(5, 0xfff1c1, 1);
-      g.strokeEllipse(p.x, p.y, p.radius * 2.9, p.radius * 0.9);
-    }
-    g.fillStyle(0x1a1033, 1);
-    g.fillCircle(p.x, p.y, p.radius + 6);
-    g.fillStyle(p.color, 1);
-    g.fillCircle(p.x, p.y, p.radius);
-    // Lit side + craters break up the plain disc.
-    g.fillStyle(0xffffff, 0.25);
-    g.fillCircle(p.x - p.radius * 0.3, p.y - p.radius * 0.3, p.radius * 0.45);
-    g.fillStyle(0x000000, 0.18);
-    for (const c of p.craters) g.fillCircle(p.x + Math.cos(c.a) * c.d, p.y + Math.sin(c.a) * c.d, c.r);
-  }
-
-  // Layered, wobbling wall of fire: white-hot edge, then yellow, orange and deep red below.
-  drawNova(g) {
-    const v = this.visibleBounds();
-    if (this.novaY > v.bottom + 40) return;
-    const t = this.time.now / 1000;
-    const layers = [
-      { offset: -10, color: 0xffffff, alpha: 0.9 },
-      { offset: 6, color: 0xffe14d, alpha: 1 },
-      { offset: 40, color: 0xff9a2e, alpha: 1 },
-      { offset: 110, color: 0xff4d2e, alpha: 1 },
-      { offset: 220, color: 0xb3203a, alpha: 1 },
-    ];
-    for (const layer of layers) {
-      const pts = [];
-      for (let x = v.left - 20; x <= v.right + 20; x += 24) {
-        const wobble = Math.sin(x * 0.018 + t * 3 + layer.offset) * 14 + Math.sin(x * 0.047 - t * 5) * 6;
-        pts.push({ x, y: this.novaY + layer.offset + wobble });
-      }
-      pts.push({ x: v.right + 20, y: v.bottom + 20 });
-      pts.push({ x: v.left - 20, y: v.bottom + 20 });
-      g.fillStyle(layer.color, layer.alpha);
-      g.fillPoints(pts, true);
-    }
-    // Embers rising off the front.
-    for (let i = 0; i < 14; i++) {
-      const ex = v.left + ((i * 137 + t * 60) % (v.right - v.left));
-      const life = (t * 0.9 + i * 0.37) % 1;
-      g.fillStyle(i % 2 ? 0xffe14d : 0xff9a2e, 1 - life);
-      g.fillCircle(ex, this.novaY - life * 140, 6 * (1 - life) + 2);
-    }
-  }
-
-  drawAsteroid(g, a) {
-    const pts = a.shape.map((k, i) => {
-      const ang = a.rot + (i / a.shape.length) * Math.PI * 2;
-      return { x: a.x + Math.cos(ang) * a.radius * k, y: a.y + Math.sin(ang) * a.radius * k };
-    });
-    g.lineStyle(6, 0x1a1033, 1);
-    g.fillStyle(0x9c8672, 1);
-    g.fillPoints(pts, true);
-    g.strokePoints(pts, true);
-    g.fillStyle(0x6e5a4a, 1);
-    g.fillCircle(a.x + a.radius * 0.25, a.y + a.radius * 0.15, a.radius * 0.28);
-    g.fillStyle(0xffffff, 0.25);
-    g.fillCircle(a.x - a.radius * 0.3, a.y - a.radius * 0.3, a.radius * 0.22);
-  }
-
-  drawBlackHole(g, h) {
-    h.spin += 0.04;
-    // Pull zone hint, then swirling rings around a dark core.
-    g.fillStyle(0x8a2be2, 0.08);
-    g.fillCircle(h.x, h.y, TUNING.blackHolePullRadius);
-    for (let i = 0; i < 3; i++) {
-      const r = TUNING.blackHoleRadius + 18 + i * 22;
-      g.lineStyle(6 - i, i === 0 ? 0xff6fb5 : 0xc77dff, 0.8 - i * 0.2);
-      g.beginPath();
-      g.arc(h.x, h.y, r, h.spin * (i + 1), h.spin * (i + 1) + Math.PI * 1.2);
-      g.strokePath();
-    }
-    g.fillStyle(0xff6fb5, 1);
-    g.fillCircle(h.x, h.y, TUNING.blackHoleRadius + 5);
-    g.fillStyle(0x0b0618, 1);
-    g.fillCircle(h.x, h.y, TUNING.blackHoleRadius);
-  }
-
-  // Long dotted line showing where a release goes; turns green when it will reach a planet.
-  drawAimGuide(g, assist) {
-    let dx;
-    let dy;
-    let length;
+  // Where the release line points: at the assisted target, or along the tangent.
+  drawAimGuide(g, assist, ctx) {
     if (assist) {
-      dx = assist.aimX - this.comet.x;
-      dy = assist.aimY - this.comet.y;
-      length = Math.hypot(dx, dy);
-      dx /= length;
-      dy /= length;
+      const dx = assist.aimX - this.comet.x;
+      const dy = assist.aimY - this.comet.y;
+      const length = Math.hypot(dx, dy);
+      const kind = assist.angle < TUNING.perfectAngle ? 'perfect' : 'target';
+      ART.drawAimGuide(g, this.comet.x, this.comet.y, dx / length, dy / length, length, kind, ctx);
     } else {
       const v = tangentVelocity(this.orbit, 1);
-      dx = v.vx;
-      dy = v.vy;
-      length = 520;
+      ART.drawAimGuide(g, this.comet.x, this.comet.y, v.vx, v.vy, 520, 'none', ctx);
     }
-    // White = no target, green = will reach a planet, gold = PERFECT window.
-    const color = !assist ? 0xffffff : assist.angle < TUNING.perfectAngle ? 0xffe14d : 0x5eff8f;
-    const dots = Math.floor(length / 34);
-    for (let i = 1; i <= dots; i++) {
-      const t = i / dots;
-      g.fillStyle(0x1a1033, 0.6);
-      g.fillCircle(this.comet.x + dx * i * 34, this.comet.y + dy * i * 34, 9 - t * 4);
-      g.fillStyle(color, assist ? 1 : 0.85 - t * 0.6);
-      g.fillCircle(this.comet.x + dx * i * 34, this.comet.y + dy * i * 34, 6 - t * 3);
-    }
-  }
-
-  drawComet() {
-    const g = this.cometGfx;
-    g.clear();
-    const f = speedFraction(this.speed);
-    const color = speedColor(f);
-    const r = TUNING.cometRadius;
-    for (let i = this.trail.length - 1; i > 0; i--) {
-      const t = 1 - i / this.trail.length;
-      g.lineStyle(r * 2 * t + 2, color, t * 0.9);
-      g.lineBetween(this.trail[i].x, this.trail[i].y, this.trail[i - 1].x, this.trail[i - 1].y);
-    }
-    g.fillStyle(0x1a1033, 1);
-    g.fillCircle(this.comet.x, this.comet.y, r + 5);
-    g.fillStyle(color, 1);
-    g.fillCircle(this.comet.x, this.comet.y, r);
-    g.fillStyle(0xffffff, 0.9);
-    g.fillCircle(this.comet.x - 5, this.comet.y - 5, r * 0.45);
   }
 
   burst(x, y, color, count) {
@@ -583,6 +464,7 @@ class GameScene extends Phaser.Scene {
   gameOver(reason) {
     if (this.isOver) return;
     this.isOver = true;
+    this.sfx('gameover', { reason });
     this.draw();
     this.cameras.main.shake(300, 0.02);
     this.cameras.main.flash(200, 255, 255, 255);
