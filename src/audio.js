@@ -23,6 +23,18 @@
 //   newbest {}             fanfare
 //   gameover {reason}      explosion + falling tone, music ducks
 //   speedup {level}        short riser
+//   milestone {level,chain} chain stamp stinger (NICE/BLAZING/UNSTOPPABLE), A minor, higher per level; ducks music
+//   secondwind {}          one-time rescue: thump + rising breath + lift chord
+//   pageturn {index}       paper swish as the zone page turns
+//   jaws {}                death snap: crunch + crayon scribble, transient on the event; ducks music
+//   cardopen {}            three cards dealt onto the table
+//   cardpick {id}          card slapped down; brighter for rarer cards
+//   setbonus {family}      rolled chord (one per family, all in A minor)
+//   wallkick {}            springy boing off the wall
+//   shatter {}             asteroid smashed by Tail Armor
+//   shield {}              Heat Shield absorbs a hit: soft bell
+//   shockwave {}           Shockwave card: low boom pushing outward
+//   rescue {}              Unbreakable set bonus: heavy rescue riser
 // Unknown event names are ignored.
 //
 // Music follows the game by polling game.scene.keys.Game each scheduler tick:
@@ -69,8 +81,10 @@ const AUDIO = (() => {
   let gameRef = null;
   let muted = loadMuted();
   let unlocked = false;
-  let voices = 0;
-  let musicVoices = 0;
+  // Live voice counts + the set of live one-shot voices ({ src, env, tag }). Each voice keeps
+  // the pool it was claimed from, so an offline test render (own pool) never touches the live
+  // counters. The set lets mute/launch/hide fade notes out instead of leaving them ringing.
+  let pool = newPool();
   let lastWall = 0;
   const lastPlayed = {};
   const SAME_EVENT_GAP = 0.04;
@@ -85,13 +99,14 @@ const AUDIO = (() => {
   let danger = 0;               // smoothed danger
   let introActive = false;
   let lastTickTime = 0;
-  let duckAt = -1e9;            // ctx time of the last game-over duck
+  // Current music duck: `level` held for `hold` s from `at`, then recovering with time constant `recover`.
+  let duck = { at: -1e9, level: MUSIC_DUCKED, hold: DUCK_HOLD, recover: DUCK_RECOVER_TC };
+  let silentTest = false;       // debug: sounds run (so they can be counted) but master stays at zero
   let arpFast = false;          // latched at bar starts so the arp never changes mid-bar
   let hatFast = false;
   let slowMo = false;
-  // Every live one-shot voice: { src, env, tag }. Lets mute/launch/hide fade notes out
-  // instead of leaving them ringing (a 2 s pad would otherwise survive a mute toggle).
-  const activeVoices = new Set();
+
+  function newPool() { return { sfx: 0, music: 0, active: new Set() }; }
 
   function loadMuted() {
     try { return localStorage.getItem(MUTE_KEY) === '1'; } catch (e) { return false; }
@@ -117,7 +132,13 @@ const AUDIO = (() => {
     try {
       ctx = new Ctor();
     } catch (e) { ctx = null; return null; }
+    buildGraph(ctx, true);
+    return ctx;
+  }
 
+  // Builds the bus graph on `c` and points the module-level nodes at it.
+  function buildGraph(c, useLimiter) {
+    ctx = c;
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -8;
     limiter.knee.value = 4;
@@ -127,8 +148,8 @@ const AUDIO = (() => {
     limiter.connect(ctx.destination);
 
     master = ctx.createGain();
-    master.gain.value = muted ? 0 : MASTER_LEVEL;
-    master.connect(limiter);
+    master.gain.value = muted || silentTest ? 0 : MASTER_LEVEL;
+    master.connect(useLimiter ? limiter : ctx.destination);
 
     sfxBus = ctx.createGain();
     sfxBus.gain.value = SFX_LEVEL;
@@ -150,6 +171,7 @@ const AUDIO = (() => {
 
     // Persistent danger drone: two detuned low saws through a lowpass, gain follows danger.
     // It goes through the music bus so it ducks with the rest of the music.
+    droneOscs = [];
     droneGain = ctx.createGain();
     droneGain.gain.value = 0;
     const droneFilter = ctx.createBiquadFilter();
@@ -165,7 +187,6 @@ const AUDIO = (() => {
       o.start();
       droneOscs.push(o);
     });
-    return ctx;
   }
 
   function unlock() {
@@ -186,7 +207,7 @@ const AUDIO = (() => {
   }
 
   function canPlay() {
-    return ctx && unlocked && !muted && ctx.state === 'running';
+    return ctx && unlocked && (!muted || silentTest) && ctx.state === 'running';
   }
 
   // ---------- voice helpers ----------
@@ -194,13 +215,14 @@ const AUDIO = (() => {
   // Counts a one-shot voice and cleans it up when it ends. Returns false if over the cap.
   function claimVoice(src, env, nodes, bus, tag) {
     const isMusic = bus === musicFilter || bus === musicBus;
-    if (isMusic ? musicVoices >= MAX_MUSIC_VOICES : voices >= MAX_VOICES) return false;
-    if (isMusic) musicVoices++; else voices++;
+    const p = pool;
+    if (isMusic ? p.music >= MAX_MUSIC_VOICES : p.sfx >= MAX_VOICES) return false;
+    if (isMusic) p.music++; else p.sfx++;
     const voice = { src, env, tag: tag || (isMusic ? 'music' : 'sfx') };
-    activeVoices.add(voice);
+    p.active.add(voice);
     src.onended = () => {
-      if (isMusic) musicVoices--; else voices--;
-      activeVoices.delete(voice);
+      if (isMusic) p.music--; else p.sfx--;
+      p.active.delete(voice);
       nodes.forEach((n) => { try { n.disconnect(); } catch (e) { /* already gone */ } });
     };
     return true;
@@ -212,7 +234,7 @@ const AUDIO = (() => {
     if (!ctx) return 0;
     const t = ctx.currentTime;
     let n = 0;
-    activeVoices.forEach((v) => {
+    pool.active.forEach((v) => {
       if (which && v.tag !== which) return;
       if (v.killed) return;
       v.killed = true;
@@ -235,7 +257,7 @@ const AUDIO = (() => {
 
   function countVoices(which) {
     let n = 0;
-    activeVoices.forEach((v) => { if (!v.killed && (!which || v.tag === which)) n++; });
+    pool.active.forEach((v) => { if (!v.killed && (!which || v.tag === which)) n++; });
     return n;
   }
 
@@ -299,6 +321,22 @@ const AUDIO = (() => {
     env.connect(o.bus || sfxBus);
     src.start(t, Math.random() * 1.5);
     src.stop(t + dur + 0.05);
+    return { src, filter: f, t, dur };
+  }
+
+  // Low-frequency wobble on an AudioParam (pitch for warp, filter for the crayon scribble).
+  // Not counted as a voice: it stops with the voice it modulates.
+  function wobble(param, rate, depth, t, dur) {
+    const lfo = ctx.createOscillator();
+    const g = ctx.createGain();
+    lfo.type = 'triangle';
+    lfo.frequency.value = rate;
+    g.gain.value = depth;
+    lfo.connect(g);
+    g.connect(param);
+    lfo.start(t);
+    lfo.stop(t + dur + 0.05);
+    lfo.onended = () => { try { lfo.disconnect(); g.disconnect(); } catch (e) { /* gone */ } };
   }
 
   // ---------- sound effects ----------
@@ -365,18 +403,7 @@ const AUDIO = (() => {
     },
     warp() {
       const osc = tone({ type: 'sawtooth', freq: 600, freqEnd: 90, dur: 0.6, glide: 0.55, gain: 0.14, filter: 'lowpass', cutoff: 3000, cutoffEnd: 300, q: 6 });
-      if (osc) {
-        // Wobble the pitch with a fast LFO for the warped feel.
-        const lfo = ctx.createOscillator();
-        const depth = ctx.createGain();
-        lfo.frequency.value = 14;
-        depth.gain.value = 600;
-        lfo.connect(depth);
-        depth.connect(osc.detune);
-        lfo.start();
-        lfo.stop(ctx.currentTime + 0.65);
-        lfo.onended = () => { try { lfo.disconnect(); depth.disconnect(); } catch (e) { /* gone */ } };
-      }
+      if (osc) wobble(osc.detune, 14, 600, ctx.currentTime, 0.6);   // warped pitch
       tone({ type: 'sine', freq: 50, freqEnd: 140, dur: 0.5, gain: 0.3 });
     },
     zone(d) {
@@ -407,12 +434,127 @@ const AUDIO = (() => {
       noise({ filter: 'lowpass', cutoff: 2500, cutoffEnd: 60, dur: 1.4, gain: 0.55 });
       tone({ type: 'sine', freq: 90, freqEnd: 25, dur: 1.0, gain: 0.55 });
       tone({ type: 'sawtooth', freq: midiHz(24), freqEnd: midiHz(0), dur: 1.4, glide: 1.3, gain: 0.08, filter: 'lowpass', cutoff: 2000, cutoffEnd: 300, delay: 0.15 });
-      duckMusic();
+      duckMusic(MUSIC_DUCKED, DUCK_HOLD, DUCK_RECOVER_TC);
     },
     speedup(d) {
       const lvl = Math.min(6, (d && d.level) || 1);
       noise({ filter: 'bandpass', cutoff: 800, cutoffEnd: 6000 + lvl * 500, dur: 0.45, gain: 0.12, attack: 0.35, q: 2 });
       tone({ type: 'triangle', freq: midiHz(12 + scaleNote(lvl)), freqEnd: midiHz(24 + scaleNote(lvl)), dur: 0.4, gain: 0.06, attack: 0.3 });
+    },
+
+    // Chain stamp. A quick rising arpeggio landing on a held chord tone: level 1 Am (A C E A),
+    // level 2 C (C E G C), level 3 Em (E G B E) + sub boom, so each stamp sits higher in A minor.
+    milestone(d) {
+      const level = Math.min(3, Math.max(1, (d && d.level) || 1));
+      const lift = (level - 1) * 2;                    // scale degrees up per level
+      const degs = [0, 2, 4, 7].map((n) => 7 + n + lift);
+      const step = 0.055;
+      degs.forEach((deg, i) => {
+        tone({ type: 'triangle', freq: midiHz(12 + scaleNote(deg)), delay: i * step, dur: 0.16, gain: 0.12 + level * 0.02 });
+      });
+      const top = midiHz(12 + scaleNote(degs[3]));
+      const land = degs.length * step;
+      tone({ type: 'sawtooth', freq: top, delay: land, dur: 0.6, gain: 0.08 + level * 0.015, attack: 0.01, filter: 'lowpass', cutoff: 4500, cutoffEnd: 900, detune: 6 });
+      tone({ type: 'sine', freq: top * 2, delay: land, dur: 0.5, gain: 0.07 });
+      // Ink burst: a short wet splat under the stamp.
+      noise({ filter: 'bandpass', cutoff: 1400, cutoffEnd: 300, dur: 0.14, gain: 0.16, q: 1.2 });
+      tone({ type: 'sine', freq: 150, freqEnd: 60, dur: 0.16, gain: 0.22 });
+      if (level >= 3) tone({ type: 'sine', freq: midiHz(-12), delay: land, dur: 0.6, gain: 0.3 });   // A1 boom
+      duckMusic(MUSIC_LEVEL * 0.4, 0.45, 0.3);
+    },
+    // One-time rescue: thump, a rising breath and an Am lift chord once the comet is flung clear.
+    secondwind() {
+      tone({ type: 'sine', freq: 95, freqEnd: 40, dur: 0.25, gain: 0.38 });
+      noise({ filter: 'bandpass', cutoff: 300, cutoffEnd: 5000, dur: 0.6, gain: 0.22, attack: 0.25, q: 1.3 });
+      tone({ type: 'triangle', freq: midiHz(12), freqEnd: midiHz(36), glide: 0.45, dur: 0.5, gain: 0.08 });
+      [0, 3, 7].forEach((n, i) => {
+        tone({ type: 'triangle', freq: midiHz(24 + n), delay: 0.35 + i * 0.03, dur: 0.6, gain: 0.06, attack: 0.02 });
+      });
+    },
+    // Paper swish: a filtered noise sweep that rises then falls, with the page landing at the end.
+    pageturn(d) {
+      const k = 1 + (((d && d.index) || 0) % 3) * 0.08;   // each page sounds a little different
+      noise({ filter: 'bandpass', cutoff: 1100 * k, cutoffEnd: 4200 * k, dur: 0.38, gain: 0.24, attack: 0.13, q: 0.9 });
+      noise({ filter: 'highpass', cutoff: 5200, dur: 0.24, gain: 0.05, attack: 0.08, delay: 0.06 });
+      noise({ filter: 'lowpass', cutoff: 900, dur: 0.07, gain: 0.16, delay: 0.3 });
+    },
+    // Death snap. Every transient starts at the event time (no attack ramp) so the crunch lands
+    // exactly on the jaws closing; the crayon scribble scratches out right after it.
+    jaws() {
+      const t = ctx.currentTime;
+      tone({ at: t, type: 'sine', freq: 170, freqEnd: 42, dur: 0.24, gain: 0.42, attack: 0.001 });
+      noise({ at: t, filter: 'lowpass', cutoff: 3800, cutoffEnd: 280, dur: 0.18, gain: 0.36, attack: 0.001 });
+      tone({ at: t, type: 'square', freq: 950, freqEnd: 260, dur: 0.035, gain: 0.07, attack: 0.001 });
+      [0, 0.035, 0.075].forEach((dt, i) => {
+        noise({ at: t + dt, filter: 'bandpass', cutoff: [2600, 1800, 3300][i], dur: 0.045, gain: 0.2, q: 3, attack: 0.001 });
+      });
+      const s = noise({ at: t + 0.05, filter: 'bandpass', cutoff: 2300, dur: 0.45, gain: 0.12, q: 4, attack: 0.02 });
+      if (s) wobble(s.filter.frequency, 17, 1300, s.t, s.dur);
+      duckMusic(0.05, 0.3, DUCK_RECOVER_TC);
+    },
+    // Three index cards dealt onto the table, each a paper flick with a tiny tick.
+    cardopen() {
+      tone({ type: 'sine', freq: 120, freqEnd: 80, dur: 0.12, gain: 0.12 });
+      [0, 0.08, 0.16].forEach((dt, i) => {
+        noise({ filter: 'bandpass', cutoff: 2800 + i * 400, cutoffEnd: 1600, dur: 0.07, gain: 0.12, q: 1.2, delay: dt });
+        tone({ type: 'triangle', freq: midiHz(24 + scaleNote(i * 2)), dur: 0.05, gain: 0.03, delay: dt + 0.02 });
+      });
+    },
+    // Card slapped down; the pluck after it is brighter for rare and legendary cards.
+    cardpick(d) {
+      let rarity = 'common';
+      try { if (d && d.id && typeof cardById === 'function') rarity = (cardById(d.id) || {}).rarity || rarity; } catch (e) { /* cards.js missing */ }
+      noise({ filter: 'lowpass', cutoff: 5500, cutoffEnd: 600, dur: 0.09, gain: 0.28, attack: 0.001 });
+      tone({ type: 'sine', freq: 210, freqEnd: 70, dur: 0.14, gain: 0.22, attack: 0.001 });
+      const notes = rarity === 'legendary' ? [7, 12, 16] : rarity === 'rare' ? [7, 12] : [7];
+      notes.forEach((n, i) => {
+        tone({ type: 'triangle', freq: midiHz(12 + n + 12), delay: 0.04 + i * 0.05, dur: 0.22, gain: 0.07 });
+      });
+      if (rarity === 'legendary') noise({ filter: 'highpass', cutoff: 7000, dur: 0.4, gain: 0.05, delay: 0.1, attack: 0.04 });
+    },
+    // Rolled chord, one chord of the key per family: orbit Am, fling C, flight F, shield G.
+    setbonus(d) {
+      const chords = { orbit: [0, 3, 7], fling: [3, 7, 10], flight: [-4, 0, 3], shield: [-2, 2, 5] };
+      const chord = chords[d && d.family] || chords.orbit;
+      tone({ type: 'sine', freq: midiHz(chord[0]), dur: 1.0, gain: 0.22, attack: 0.01 });
+      chord.forEach((n, i) => {
+        tone({ type: 'sawtooth', freq: midiHz(24 + n), delay: i * 0.05, dur: 1.0, gain: 0.05, attack: 0.02, filter: 'lowpass', cutoff: 3500, cutoffEnd: 1200, detune: i ? 5 : -5 });
+      });
+      tone({ type: 'triangle', freq: midiHz(36 + chord[0]), delay: 0.15, dur: 0.8, gain: 0.06 });
+      noise({ filter: 'highpass', cutoff: 7000, dur: 0.8, gain: 0.04, delay: 0.1, attack: 0.1 });
+    },
+    wallkick() {
+      tone({ type: 'sine', freq: 260, freqEnd: 780, glide: 0.12, dur: 0.2, gain: 0.2 });
+      tone({ type: 'triangle', freq: 520, freqEnd: 1560, glide: 0.12, dur: 0.16, gain: 0.05 });
+      noise({ filter: 'bandpass', cutoff: 2000, dur: 0.04, gain: 0.12, q: 1.5 });
+    },
+    shatter() {
+      noise({ filter: 'highpass', cutoff: 3800, cutoffEnd: 1500, dur: 0.25, gain: 0.22, attack: 0.001 });
+      noise({ filter: 'lowpass', cutoff: 900, dur: 0.1, gain: 0.2, attack: 0.001 });
+      for (let i = 0; i < 4; i++) {
+        tone({ type: 'triangle', freq: 2500 + Math.random() * 2500, delay: i * 0.025 + Math.random() * 0.02, dur: 0.12, gain: 0.04 });
+      }
+    },
+    // Heat Shield: a soft bell (E5 with an inharmonic partial) over a muffled whump.
+    shield() {
+      const f = midiHz(31);
+      tone({ type: 'sine', freq: f, dur: 0.6, gain: 0.14 });
+      tone({ type: 'sine', freq: f * 2.76, dur: 0.35, gain: 0.04 });
+      noise({ filter: 'lowpass', cutoff: 600, dur: 0.15, gain: 0.16 });
+    },
+    shockwave() {
+      tone({ type: 'sine', freq: 90, freqEnd: 28, dur: 0.7, gain: 0.42, attack: 0.002 });
+      noise({ filter: 'lowpass', cutoff: 2500, cutoffEnd: 100, dur: 0.8, gain: 0.28 });
+      noise({ filter: 'bandpass', cutoff: 3000, cutoffEnd: 300, dur: 0.5, gain: 0.1, q: 2 });
+    },
+    // Unbreakable: heavier than second wind, with an A power chord at the top of the climb.
+    rescue() {
+      tone({ type: 'sine', freq: 110, freqEnd: 35, dur: 0.4, gain: 0.42 });
+      noise({ filter: 'bandpass', cutoff: 250, cutoffEnd: 6000, dur: 0.7, gain: 0.26, attack: 0.3, q: 1.4 });
+      tone({ type: 'sawtooth', freq: midiHz(0), freqEnd: midiHz(24), glide: 0.5, dur: 0.55, gain: 0.07, filter: 'lowpass', cutoff: 1200, cutoffEnd: 5000 });
+      [0, 7, 12].forEach((n, i) => {
+        tone({ type: 'sawtooth', freq: midiHz(12 + n), delay: 0.45, dur: 0.7, gain: 0.05, attack: 0.01, filter: 'lowpass', cutoff: 3000, cutoffEnd: 900, detune: (i - 1) * 6 });
+      });
     },
   };
 
@@ -423,7 +565,7 @@ const AUDIO = (() => {
     if (name === 'intro') introActive = true;
     if (name === 'launch' || name === 'gameover') introActive = false;
     const fn = SFX[name];
-    if (!fn || !canPlay() || voices >= MAX_VOICES) return;
+    if (!fn || !canPlay() || pool.sfx >= MAX_VOICES) return;
     // The same event twice within a few ms sounds like one louder click; skip the repeat.
     const now = ctx.currentTime;
     if (now - (lastPlayed[name] || -1) < SAME_EVENT_GAP) return;
@@ -431,21 +573,25 @@ const AUDIO = (() => {
     try { fn(data || {}); } catch (e) { /* never let audio break the game */ }
   }
 
-  // Starts a game-over duck; updateMusicLevel() does the actual gain moves each tick.
-  function duckMusic() {
+  // Starts a music duck; updateMusicLevel() does the actual gain moves each tick. A duck that is
+  // deeper and lasts longer is kept (the jaws snap must not lift the game-over duck early).
+  function duckMusic(level, hold, recover) {
     if (!ctx) return;
-    duckAt = ctx.currentTime;
-    updateMusicLevel(duckAt);
+    const now = ctx.currentTime;
+    const holding = now - duck.at < duck.hold;
+    if (holding && duck.level <= level && duck.at + duck.hold >= now + hold) return;
+    duck = { at: now, level, hold, recover };
+    updateMusicLevel(now);
   }
 
-  // Single owner of musicBus.gain: base level, game-over duck, slow-motion dip.
+  // Single owner of musicBus.gain: base level, ducks, slow-motion dip.
   function updateMusicLevel(now) {
     if (!musicBus) return;
-    const sinceDuck = now - duckAt;
+    const sinceDuck = now - duck.at;
     let target = MUSIC_LEVEL * (slowMo ? SLOWMO_DUCK : 1);
     let tc = 0.25;
-    if (sinceDuck >= 0 && sinceDuck < DUCK_HOLD) { target = MUSIC_DUCKED; tc = 0.04; }
-    else if (sinceDuck >= 0 && sinceDuck < DUCK_HOLD + 5 * DUCK_RECOVER_TC) tc = DUCK_RECOVER_TC;
+    if (sinceDuck >= 0 && sinceDuck < duck.hold) { target = Math.min(target, duck.level); tc = 0.04; }
+    else if (sinceDuck >= 0 && sinceDuck < duck.hold + 5 * duck.recover) tc = duck.recover;
     musicBus.gain.cancelScheduledValues(now);
     musicBus.gain.setTargetAtTime(target, now, tc);
   }
@@ -589,6 +735,7 @@ const AUDIO = (() => {
     if (!ctx) return;
     const t = ctx.currentTime;
     master.gain.cancelScheduledValues(t);
+    if (silentTest) { master.gain.setValueAtTime(0, t); return; }
     master.gain.setTargetAtTime(muted ? 0 : MASTER_LEVEL, t, 0.03);
   }
 
@@ -643,6 +790,47 @@ const AUDIO = (() => {
     } catch (e) { /* ignore */ }
   }
 
+  // ---------- testing ----------
+
+  // Renders one sound event into an OfflineAudioContext (never reaches the speakers) and returns
+  // { peak, rms, voicesClaimed, voicesLeft, ms } measured on the master output before the limiter,
+  // so levels can be compared without listening. The live context and its counters are untouched.
+  async function renderOffline(name, data, seconds) {
+    const fn = SFX[name];
+    const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!fn || !Offline) return null;
+    const live = { ctx, master, sfxBus, musicBus, musicFilter, droneGain, droneOscs, noiseBuffer, pool, duck, lastWall };
+    const rate = 22050;
+    const off = new Offline(1, Math.ceil(rate * (seconds || 2)), rate);
+    const testPool = newPool();
+    let claimed = 0;
+    try {
+      buildGraph(off, false);
+      master.gain.value = MASTER_LEVEL;
+      droneOscs.forEach((o) => { try { o.stop(); } catch (e) { /* ignore */ } });
+      pool = testPool;
+      lastWall = -1;
+      fn(data || {});
+      claimed = testPool.sfx + testPool.music;
+    } finally {
+      ({ ctx, master, sfxBus, musicBus, musicFilter, droneGain, droneOscs, noiseBuffer, pool, duck, lastWall } = live);
+    }
+    const t0 = performance.now();
+    const buf = await off.startRendering();
+    await new Promise((r) => setTimeout(r, 60));   // let the onended cleanups run
+    const ch = buf.getChannelData(0);
+    let peak = 0, sum = 0;
+    let onset = -1;   // first audible sample: proves a transient lands on the event time
+    for (let i = 0; i < ch.length; i++) {
+      const v = Math.abs(ch[i]);
+      if (v > peak) peak = v;
+      if (onset < 0 && v > 0.02) onset = i;
+      sum += v * v;
+    }
+    return { peak: +peak.toFixed(3), onsetMs: onset < 0 ? null : +(onset / rate * 1000).toFixed(1), rms: +Math.sqrt(sum / ch.length).toFixed(4), voicesClaimed: claimed,
+      voicesLeft: testPool.sfx + testPool.music + testPool.active.size, ms: Math.round(performance.now() - t0) };
+  }
+
   // ---------- wiring ----------
 
   function init(game) {
@@ -688,7 +876,7 @@ const AUDIO = (() => {
     stopMusic,
     debug: () => ({
       state: ctx ? ctx.state : 'none',
-      voices, musicVoices, mode, bpm: +bpm.toFixed(1), cutoff: ctx ? Math.round(musicFilter.frequency.value) : 0,
+      voices: pool.sfx, musicVoices: pool.music, mode, bpm: +bpm.toFixed(1), cutoff: ctx ? Math.round(musicFilter.frequency.value) : 0,
       danger: +danger.toFixed(2), intensity: +intensity.toFixed(2), music: !!schedulerId,
       live: countVoices(null), introVoices: countVoices('intro'), slowMo,
       masterGain: ctx ? +master.gain.value.toFixed(3) : 0,
@@ -696,6 +884,15 @@ const AUDIO = (() => {
       droneGain: ctx ? +droneGain.gain.value.toFixed(3) : 0,
       time: ctx ? +ctx.currentTime.toFixed(3) : 0,
       levels: { master: MASTER_LEVEL, sfx: SFX_LEVEL, music: MUSIC_LEVEL, slowMo: SLOWMO_DUCK },
+      duck: ctx ? { level: duck.level, hold: duck.hold, ago: +(ctx.currentTime - duck.at).toFixed(3) } : null,
+      silentTest,
     }),
+    // Testing only: events play (so voices and ducks can be checked) while the master gain stays 0.
+    setSilentTest(on) {
+      silentTest = !!on;
+      if (ctx) { master.gain.cancelScheduledValues(ctx.currentTime); applyMute(); }
+      return silentTest;
+    },
+    renderOffline,
   };
 })();
