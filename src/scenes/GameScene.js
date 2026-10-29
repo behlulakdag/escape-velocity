@@ -40,6 +40,12 @@ class GameScene extends Phaser.Scene {
     this.trail = [];
     this.elapsed = 0;
     this.novaY = this.startY + TUNING.novaStartBelow;   // world y of the supernova front
+    this.scrape = null;         // { planet, angle, dir, time, vx, vy }: grace window after touching a planet
+    this.noGrabPlanet = null;   // planet that just let go of you (overspeed), not re-grabbed until you leave it
+    this.capTime = 0;           // seconds spent orbiting at the speed cap
+    this.assistedFlings = 0;
+    this.flightTarget = null;   // planet the last assisted fling is heading for
+    this.autoCatchTarget = null;
     this.initFeel();
 
     this.comet = { x: GAME_WIDTH / 2, y: this.startY, vx: 0, vy: -this.speed };
@@ -58,12 +64,13 @@ class GameScene extends Phaser.Scene {
     this.bestGfx = this.add.graphics();
     this.worldGfx = this.add.graphics();
     this.speedGfx = this.add.graphics().setScrollFactor(0);
+    this.catchGfx = this.add.graphics();   // teaching ring around the planet to catch next
     this.cometGfx = this.add.graphics();
     this.introGfx = this.add.graphics();
     this.createBestMarker();
     this.scene.launch('Hud');
     this.hud = this.scene.get('Hud');
-    this.hintStage = 0;   // 0: teach hold, 1: teach release, 2: done
+    this.hintStage = 0;   // 0: teach hold, 1: teach release, 2: teach catching the next planet, 3: done
     this.events.once('shutdown', () => this.scene.stop('Hud'));
 
     this.input.on('pointerdown', () => this.pressHold());
@@ -90,6 +97,8 @@ class GameScene extends Phaser.Scene {
     this.accel = 0;             // smoothed speed change, px/s per second
     this.lastSpeed = this.speed;
     this.jellyT = 10;           // seconds since the last grab/hit squash
+    this.perfectPulseAt = -1e9; // time.now of the last PERFECT / zone entry, for local art bursts
+    this.zonePulseAt = -1e9;
     this.zoomKick = 0;
     this.baseZoom = 1;
     this.camCenter = GAME_HEIGHT / 2;   // camera anchor before look-ahead (the nova leash uses this)
@@ -197,14 +206,40 @@ class GameScene extends Phaser.Scene {
 
   releaseHold() {
     this.isHolding = false;
-    if (!this.orbit || this.isOver) return;
+    if (this.isOver) return;
+    if (this.orbit) this.fling(false);
+  }
+
+  // Current speed cap: rises with the best altitude so the speed keeps climbing all run.
+  speedCap() {
+    return maxSpeedForAltitude(this.bestAltitude);
+  }
+
+  addSpeed(amount) {
+    this.speed = Math.max(this.speed, Math.min(this.speedCap(), this.speed + amount));
+  }
+
+  // Leaves the orbit. overspeed: the planet let go by itself (held at the cap too long), which
+  // never scores a PERFECT and does not touch isHolding (the finger may still be down).
+  fling(overspeed) {
     const v = tangentVelocity(this.orbit, this.speed);
     const assist = this.currentAssist();
-    if (assist && assist.angle < TUNING.perfectAngle) {
-      this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.perfectBonus);
+    if (!overspeed && assist && assist.angle < TUNING.perfectAngle) {
+      this.addSpeed(TUNING.perfectBonus);
       this.onPerfect();
     } else {
       this.breakChain();
+    }
+    if (overspeed) {
+      this.noGrabPlanet = this.orbitPlanet;
+      this.popText('OVERSPEED!', '#8fe3ff', { size: 36 });
+    }
+    this.flightTarget = assist ? assist.planet : null;
+    this.autoCatchTarget = null;
+    if (assist) {
+      this.assistedFlings++;
+      // Onboarding: the first few assisted flings catch their target even without a hold.
+      if (autoCatchAllowed(this.assistedFlings, this.elapsed)) this.autoCatchTarget = assist.planet;
     }
     // Leave along the tangent; an assisted release then curves onto its target over a
     // fraction of a second instead of snapping direction on the release frame.
@@ -218,15 +253,18 @@ class GameScene extends Phaser.Scene {
     this.zoomKick = 0.025 + kick * 0.05;
     this.orbit = null;
     this.orbitPlanet = null;
-    if (this.hintStage === 1) {
+    this.capTime = 0;
+    if (this.hintStage === 1 || this.hintStage === 2) {
+      // 'RELEASE to fling!' is done; now teach the second half of the loop.
       this.hintStage = 2;
-      this.hud.hideHint();
+      this.hud.showHint('HOLD to catch it!');
     }
   }
 
   // Consecutive PERFECTs build a chain: louder pop, bigger flash, more score.
   onPerfect() {
     this.perfectChain++;
+    this.perfectPulseAt = this.time.now;
     const chain = this.perfectChain;
     this.score += perfectChainBonus(chain);
     const heat = Math.min(1, (chain - 1) / 5);
@@ -235,7 +273,7 @@ class GameScene extends Phaser.Scene {
     this.popText(label, color, { size: 44 + Math.min(chain, 6) * 8, stroke: heat > 0.5 ? '#c2410c' : '#1a1033' });
     this.sfx('perfect', { chain });
     // Gentle overlay instead of a solid camera flash, so the comet stays visible at high chains.
-    if (this.hud.flash) this.hud.flash(0xffe14d, 0.2 + heat * 0.15, 150 + heat * 60);
+    if (this.hud.flash) this.hud.flash(0xffe14d, 0.08 + heat * 0.06, 150 + heat * 60, 0.14);
     this.cameras.main.shake(140, 0.006 + heat * 0.008);
     this.burst(this.comet.x, this.comet.y, 0xffe14d, 8 + Math.min(chain, 6) * 3, 160);
     this.freeze(FEEL.hitstopPerfect);
@@ -263,9 +301,12 @@ class GameScene extends Phaser.Scene {
   nearestGrabbablePlanet() {
     let best = null;
     let bestDist = Infinity;
+    const range = grabRangeForSpeed(this.speed);
+    const c = this.comet;
     for (const p of this.planets) {
-      const d = Phaser.Math.Distance.Between(this.comet.x, this.comet.y, p.x, p.y);
-      if (d < p.radius + TUNING.grabRange && d < bestDist) {
+      if (p === this.noGrabPlanet || !canGrabPlanet(c.x, c.y, c.vx, c.vy, p)) continue;
+      const d = Phaser.Math.Distance.Between(c.x, c.y, p.x, p.y);
+      if (d < p.radius + range && d < bestDist) {
         best = p;
         bestDist = d;
       }
@@ -281,7 +322,7 @@ class GameScene extends Phaser.Scene {
     if (this.introActive) return this.updateIntro(realDt);
     if (this.hintStage === 0 && this.hud.hintText && !this.hud.hintText.text) {
       this.hud.showHint('HOLD near a planet');
-      this.hud.showBanner('ESCAPE THE SUPERNOVA!', '');
+      this.hud.showBanner('ESCAPE THE SUPERNOVA!', '', { duration: 1500 });
     }
     this.updateFeelTimers(realDt);
     if (this.hitstop > 0) {
@@ -299,33 +340,31 @@ class GameScene extends Phaser.Scene {
     const dt = realDt * timeScale;
     const altitude = this.startY - this.comet.y;
 
-    if (this.isHolding && !this.orbit) {
-      const planet = this.nearestGrabbablePlanet();
-      if (planet) {
-        this.orbit = startOrbit(planet.x, planet.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, planet.radius);
-        this.homing = null;
-        this.orbitPlanet = planet;
-        this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.catchBonus);
-        const close = orbitCloseness(this.orbit.targetRadius, planet.radius);
-        this.popText(close > 0.7 ? 'CLOSE ORBIT!' : '+SPEED', close > 0.7 ? '#ffe14d' : '#5eff8f');
-        this.sfx('grab', { close: close > 0.7 });
-        this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
-        planet.wobble = 1;
-        this.jellyT = 0;
-        this.freeze(FEEL.hitstopGrab);
-        if (this.hintStage === 0) {
-          this.hintStage = 1;
-          this.hud.showHint('RELEASE to fling!');
-        }
+    if (this.noGrabPlanet && this.distanceTo(this.noGrabPlanet) > this.noGrabPlanet.radius + grabRangeForSpeed(this.speed)) {
+      this.noGrabPlanet = null;
+    }
+    if (this.scrape) {
+      this.updateScrape(dt);
+    } else if (!this.orbit) {
+      if (this.isHolding) {
+        const planet = this.nearestGrabbablePlanet();
+        if (planet) this.latch(planet, false);
+      } else if (this.autoCatchTarget && this.distanceTo(this.autoCatchTarget) < this.autoCatchTarget.radius + grabRangeForSpeed(this.speed)) {
+        this.latch(this.autoCatchTarget, true);
       }
     }
 
-    if (this.orbit) {
-      const step = orbitStep(this.orbit, this.speed, dt, this.orbitPlanet.radius);
+    if (this.scrape) {
+      // updateScrape already placed the comet on the surface.
+    } else if (this.orbit) {
+      const step = orbitStep(this.orbit, this.speed, dt, this.orbitPlanet.radius, this.speedCap());
       this.orbit = step.orbit;
       this.speed = step.speed;
       this.comet.x = this.orbitPlanet.x + Math.cos(this.orbit.angle) * this.orbit.radius;
       this.comet.y = this.orbitPlanet.y + Math.sin(this.orbit.angle) * this.orbit.radius;
+      this.capTime = this.speed >= this.speedCap() - 1 ? this.capTime + dt : 0;
+      const u = tangentVelocity(this.orbit, 1);
+      if (overspeedFling(this.capTime, u.vx, u.vy)) this.fling(true);
     } else {
       this.speed -= flightDecay(altitude) * dt;
       // Keep direction, apply the decayed speed.
@@ -339,15 +378,20 @@ class GameScene extends Phaser.Scene {
         this.homing.time -= dt;
         if (this.homing.time <= 0) this.homing = null;
       }
-      this.comet.x += this.comet.vx * dt;
-      this.comet.y += this.comet.vy * dt;
-      this.bounceWalls();
-      this.bouncePlanets();
+      // Sub-steps so a fast comet cannot tunnel through a small planet in one frame.
+      const steps = Math.max(1, Math.ceil((this.speed * dt) / 30));
+      for (let i = 0; i < steps && !this.scrape; i++) {
+        this.comet.x += (this.comet.vx * dt) / steps;
+        this.comet.y += (this.comet.vy * dt) / steps;
+        this.bounceWalls();
+        this.bouncePlanets();
+      }
       this.applyBlackHoles(dt);
     }
     this.updateAsteroids(dt);
 
     this.updateCamera(dt);
+    this.reportCometScreen();
     this.speed = Math.max(this.speed, TUNING.minSpeed);
     this.updateNova(dt);
     // The supernova is the only way to lose: speed is what keeps you ahead of it.
@@ -371,7 +415,7 @@ class GameScene extends Phaser.Scene {
 
   updateNova(dt) {
     this.elapsed += dt;
-    this.novaY -= novaSpeed(this.elapsed) * dt;
+    this.novaY -= novaSpeed(this.elapsed, this.bestAltitude) * dt;
     // Never let it fall far behind, so the threat is always close.
     this.novaY = Math.min(this.novaY, this.anchorBottom() + TUNING.novaLeash);
     const gap = this.novaY - this.comet.y;
@@ -384,9 +428,10 @@ class GameScene extends Phaser.Scene {
     const from = ZONES[this.zoneIndex].sky;
     const to = ZONES[index].sky;
     this.zoneIndex = index;
-    this.hud.showBanner(ZONES[index].name, ZONES[index].from + ' m');
+    this.zonePulseAt = this.time.now;
+    this.hud.showBanner(ZONES[index].name, 'TOP SPEED ' + Math.round(this.speedCap() / 10) + ' km/s');
     this.sfx('zone', { index });
-    this.cameras.main.flash(250, 255, 255, 255);
+    if (this.hud.flash) this.hud.flash(lerpColor(to, 0xffffff, 0.5), 0.12, 250);
     this.tweens.addCounter({
       from: 0, to: 1, duration: 1500,
       onUpdate: (tw) => this.cameras.main.setBackgroundColor(lerpColor(from, to, tw.getValue())),
@@ -461,6 +506,10 @@ class GameScene extends Phaser.Scene {
       if (dist < minDist) {
         const nx = dx / dist;
         const ny = dy / dist;
+        if (!this.isHolding && canGrabPlanet(this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, p)) {
+          this.startScrape(p, nx, ny, minDist);
+          return;
+        }
         const dot = this.comet.vx * nx + this.comet.vy * ny;
         this.comet.vx -= 2 * dot * nx;
         this.comet.vy -= 2 * dot * ny;
@@ -473,13 +522,88 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  // Catch grace: touching a planet without holding first slides the comet along its surface
+  // for TUNING.catchGrace seconds. A hold in that window turns it into a close orbit; otherwise
+  // it bounces off exactly as it would have (reflected incoming velocity, speed loss).
+  startScrape(planet, nx, ny, minDist) {
+    const c = this.comet;
+    c.x = planet.x + nx * minDist;
+    c.y = planet.y + ny * minDist;
+    const cross = nx * c.vy - ny * c.vx;
+    this.scrape = {
+      planet, angle: Math.atan2(ny, nx), radius: minDist,
+      dir: cross < 0 ? -1 : 1, time: TUNING.catchGrace, vx: c.vx, vy: c.vy,
+    };
+    this.homing = null;
+    planet.wobble = 0.4;
+  }
+
+  updateScrape(dt) {
+    const s = this.scrape;
+    if (this.isHolding) {
+      this.scrape = null;
+      return this.latch(s.planet, false);
+    }
+    s.angle += (s.dir * TUNING.scrapeSpeed * dt) / s.radius;
+    this.comet.x = s.planet.x + Math.cos(s.angle) * s.radius;
+    this.comet.y = s.planet.y + Math.sin(s.angle) * s.radius;
+    s.time -= dt;
+    if (s.time > 0) return;
+    this.scrape = null;
+    const nx = Math.cos(s.angle);
+    const ny = Math.sin(s.angle);
+    const dot = s.vx * nx + s.vy * ny;
+    this.comet.vx = dot < 0 ? s.vx - 2 * dot * nx : s.vx;
+    this.comet.vy = dot < 0 ? s.vy - 2 * dot * ny : s.vy;
+    this.comet.x += nx * 2;
+    this.comet.y += ny * 2;
+    s.planet.wobble = 0.7;
+    this.loseSpeed(TUNING.hitKeep);
+  }
+
+  // Starts orbiting planet. auto: onboarding catch without a hold (quiet pop, still counts).
+  latch(planet, auto) {
+    const c = this.comet;
+    this.orbit = startOrbit(planet.x, planet.y, c.x, c.y, c.vx, c.vy, planet.radius);
+    this.homing = null;
+    this.orbitPlanet = planet;
+    this.autoCatchTarget = null;
+    this.flightTarget = null;
+    this.capTime = 0;
+    this.addSpeed(TUNING.catchBonus);
+    const close = orbitCloseness(this.orbit.targetRadius, planet.radius) > 0.7;
+    if (auto) this.popText('AUTO CATCH', '#c9c3e6', { size: 30, duration: 600 });
+    else this.popText(close ? 'CLOSE ORBIT!' : '+SPEED', close ? '#ffe14d' : '#5eff8f');
+    this.sfx('grab', { close });
+    this.burst(c.x, c.y, 0xffffff, 6);
+    planet.wobble = 1;
+    this.jellyT = 0;
+    this.freeze(FEEL.hitstopGrab);
+    if (this.hintStage === 0) {
+      this.hintStage = 1;
+      this.hud.showHint('RELEASE to fling!');
+    } else if (this.hintStage === 2) {
+      if (auto) {
+        this.hud.showHint('TAP to fling!');
+      } else {
+        // First real mid-flight catch: the loop is learned.
+        this.hintStage = 3;
+        this.hud.hideHint();
+      }
+    }
+  }
+
+  distanceTo(p) {
+    return Math.hypot(this.comet.x - p.x, this.comet.y - p.y);
+  }
+
   loseSpeed(keep) {
     this.speed = speedAfterHit(this.speed, keep);
     this.breakChain();
     this.jellyT = 0;
     this.sfx('hit');
     this.cameras.main.shake(160, 0.012);
-    this.cameras.main.flash(90, 255, 77, 109);
+    if (this.hud.flash) this.hud.flash(0xff4d6d, 0.12, 120);
     this.burst(this.comet.x, this.comet.y, 0xff4d6d, 10);
     this.popText('-' + Math.round((1 - keep) * 100) + '% SPEED', '#ff4d6d');
   }
@@ -527,14 +651,19 @@ class GameScene extends Phaser.Scene {
   updateCamera(dt) {
     const cam = this.cameras.main;
     const f = speedFraction(this.speed);
-    const targetZoom = 1 - f * (1 - TUNING.minZoom);
+    // Zoom by the first zone's cap, not the late-zone top speed: how much the player can see
+    // ahead (and how close the supernova leash sits) must not shrink because the cap grew.
+    const zoomF = Phaser.Math.Clamp((this.speed - TUNING.minSpeed) / (ZONES[0].maxSpeed - TUNING.minSpeed), 0, 1);
+    const targetZoom = 1 - zoomF * (1 - TUNING.minZoom);
     this.baseZoom = Phaser.Math.Linear(this.baseZoom, targetZoom, Math.min(1, dt * 2));
     let center = this.camCenter;
     const targetCenter = this.comet.y - (0.12 * GAME_HEIGHT) / this.baseZoom;
     if (targetCenter < center) center = Phaser.Math.Linear(center, targetCenter, Math.min(1, dt * 8));
-    // Falling back: follow only enough to keep the comet on screen.
-    const lowest = this.comet.y - (0.38 * GAME_HEIGHT) / this.baseZoom;
-    if (center < lowest) center = Phaser.Math.Linear(center, lowest, Math.min(1, dt * 6));
+    // Falling back: follow enough to keep the comet above the bottom HUD band (screen y
+    // GAME_HEIGHT - COMET_BAND_BOTTOM), easing in first and then hard-clamping a bit lower.
+    const lowest = this.comet.y - (GAME_HEIGHT / 2 - GameScene.COMET_BAND_BOTTOM - 30) / this.baseZoom;
+    if (center < lowest) center = Phaser.Math.Linear(center, lowest, Math.min(1, dt * 8));
+    center = Math.max(center, this.comet.y - (GAME_HEIGHT / 2 - GameScene.COMET_BAND_BOTTOM + 40) / this.baseZoom);
     this.camCenter = center;
 
     // Look ahead along the flight direction (gently while orbiting, where direction spins).
@@ -552,6 +681,10 @@ class GameScene extends Phaser.Scene {
     cam.setZoom(this.baseZoom + this.zoomKick);
     cam.scrollX = this.look.x;
     cam.scrollY = center + this.look.y - GAME_HEIGHT / 2;
+    // Look-ahead (feel only) must not push the comet into the bottom HUD band either.
+    const maxScreenY = GAME_HEIGHT - GameScene.COMET_BAND_BOTTOM;
+    const screenY = (this.comet.y - cam.scrollY - GAME_HEIGHT / 2) * cam.zoom + GAME_HEIGHT / 2;
+    if (screenY > maxScreenY) cam.scrollY += (screenY - maxScreenY) / cam.zoom;
     this.starsFar.tilePositionY = cam.scrollY * 0.15;
     this.starsNear.tilePositionY = cam.scrollY * 0.4;
     this.starsFar.tilePositionX = cam.scrollX * 0.15;
@@ -564,6 +697,13 @@ class GameScene extends Phaser.Scene {
       this.starsSparkle.tilePositionY = cam.scrollY * 0.7;
       this.starsSparkle.tilePositionX = cam.scrollX * 0.7;
     }
+  }
+
+  // The HUD dims its bottom panel when the comet is near it.
+  reportCometScreen() {
+    if (this.headless || !this.hud || !this.hud.setCometScreen) return;
+    const p = this.worldToScreen(this.comet.x, this.comet.y);
+    this.hud.setCometScreen(p.x, p.y);
   }
 
   // Bottom of the gameplay view (no look-ahead / punch): what the supernova leash follows.
@@ -602,7 +742,7 @@ class GameScene extends Phaser.Scene {
     if (!this.headless) this.slowMoT = 0;
     this.popText('CLOSE CALL!', '#ff9a2e', { size: 56, duration: 1000 });
     this.sfx('closecall');
-    if (this.hud.flash) this.hud.flash(0xff9a2e, 0.28, 160);
+    if (this.hud.flash) this.hud.flash(0xff9a2e, 0.14, 160, 0.14);
     this.cameras.main.shake(200, 0.01);
     this.burst(this.comet.x, this.comet.y + 40, 0xff9a2e, 14, 150);
   }
@@ -617,10 +757,11 @@ class GameScene extends Phaser.Scene {
 
   createBestMarker() {
     this.bestY = this.startY - this.prevBestAlt * 10;
-    // Left side: the flag and the right wall are on the right, the zone banner is centered.
-    this.bestLabel = this.add.text(24, this.bestY - 18, 'BEST ' + this.prevBestAlt + ' m', {
-      fontFamily: FONT, fontSize: '38px', color: '#5eff8f', stroke: '#1a1033', strokeThickness: 9,
-    }).setOrigin(0, 1).setVisible(this.prevBestAlt > 0);
+    // Right side under the line, below the flag: the stats block is top-left and the zone banner
+    // is centered. Hidden near the top of the screen (see drawBestMarker) so it never overlaps the HUD.
+    this.bestLabel = this.add.text(GAME_WIDTH - 24, this.bestY + 16, 'BEST ' + this.prevBestAlt + ' m', {
+      fontFamily: FONT, fontSize: '30px', color: '#5eff8f', stroke: '#1a1033', strokeThickness: 8,
+    }).setOrigin(1, 0).setVisible(this.prevBestAlt > 0);
   }
 
   checkBest() {
@@ -628,7 +769,7 @@ class GameScene extends Phaser.Scene {
     this.passedBest = true;
     this.popText('NEW BEST!', '#5eff8f', { size: 64, duration: 1200 });
     this.sfx('newbest');
-    this.cameras.main.flash(220, 94, 255, 143);
+    if (this.hud.flash) this.hud.flash(0x5eff8f, 0.14, 220, 0.14);
     this.cameras.main.shake(160, 0.008);
     this.burst(this.comet.x, this.comet.y, 0x5eff8f, 18, 180);
     this.tweens.add({ targets: this.bestLabel, alpha: 0, scale: 1.6, duration: 600 });
@@ -640,6 +781,8 @@ class GameScene extends Phaser.Scene {
     g.clear();
     if (this.prevBestAlt <= 0) return;
     const y = this.bestY;
+    const labelScreenY = this.worldToScreen(0, y).y;
+    this.bestLabel.setVisible(labelScreenY > GameScene.BEST_LABEL_MIN_Y && labelScreenY < GAME_HEIGHT - GameScene.COMET_BAND_BOTTOM);
     if (y < view.top - 60 || y > view.bottom + 60) return;
     const t = this.time.now / 1000;
     const alpha = this.passedBest ? 0.35 : 1;
@@ -761,9 +904,10 @@ class GameScene extends Phaser.Scene {
     this.explodeT = 0;
     const x = GAME_WIDTH / 2;
     const y = this.startY;
-    this.cameras.main.flash(350, 255, 255, 255);
+    // Warm colored burst, never a white-out: the HUD flash stays at <= 0.18 alpha.
+    if (this.hud.flash) this.hud.flash(0xff9a2e, 0.18, 380, 0.18);
     this.cameras.main.shake(400, 0.025);
-    this.burst(x, y, 0xffffff, 16, 320);
+    this.burst(x, y, 0xfff1c1, 16, 320);
     this.burst(x, y, 0xffe14d, 18, 260);
     this.burst(x, y, 0xff9a2e, 14, 200);
   }
@@ -836,7 +980,7 @@ class GameScene extends Phaser.Scene {
     if (this.explodeT >= 0 && this.explodeT < 1.4) {
       const k = this.explodeT / 1.4;
       const rings = [
-        { speed: 1500, width: 26, color: 0xffffff },
+        { speed: 1500, width: 26, color: 0xfff1c1 },
         { speed: 1000, width: 18, color: 0xffe14d },
         { speed: 650, width: 12, color: 0xff9a2e },
       ];
@@ -848,8 +992,11 @@ class GameScene extends Phaser.Scene {
         g.lineStyle(w, ring.color, 1 - k);
         g.strokeCircle(x, y, rr);
       }
-      g.fillStyle(0xffffff, 0.8 * (1 - k) * (1 - k));
-      g.fillCircle(x, y, 180 * (1 - k) + 20);
+      // Fireball core: warm and small, so the blast never washes the screen out.
+      g.fillStyle(0xff9a2e, 0.55 * (1 - k) * (1 - k));
+      g.fillCircle(x, y, 150 * (1 - k) + 20);
+      g.fillStyle(0xffe14d, 0.6 * (1 - k) * (1 - k));
+      g.fillCircle(x, y, 80 * (1 - k) + 10);
     }
   }
 
@@ -875,6 +1022,8 @@ class GameScene extends Phaser.Scene {
       squash: Math.exp(-this.jellyT * 7),   // extra: 1 right after a grab/hit, decays to 0
       perfectChain: this.perfectChain,
       closeCall: this.closeCall,
+      perfectPulse: Math.max(0, 1 - (this.time.now - this.perfectPulseAt) / 400),
+      zonePulse: Math.max(0, 1 - (this.time.now - this.zonePulseAt) / 600),
       intro: this.introActive,
       aimKind: assist ? (assist.angle < TUNING.perfectAngle ? 'perfect' : 'target') : 'none',
     };
@@ -899,11 +1048,50 @@ class GameScene extends Phaser.Scene {
     // The supernova is born when the opening star explodes.
     if (!this.introActive || this.explodeT >= 0) ART.drawNova(g, this.novaY, view, ctx);
     if (this.orbit) this.drawAimGuide(g, assist, ctx);
+    this.drawCatchRing();
     this.updateSpeedLines(this.hitstop > 0 ? 0 : Math.min(this.game.loop.delta / 1000, 0.05));
     this.cometGfx.clear();
     if (this.cometVisible) ART.drawComet(this.cometGfx, this.comet, this.trail, ctx);
     this.drawIntro();
     this.updateHud();
+  }
+
+  // Onboarding: until the first real mid-flight catch, the planet you are flying at gets a
+  // pulsing ring at the edge of its grab zone that brightens as you approach ("hold here").
+  drawCatchRing() {
+    const g = this.catchGfx;
+    g.clear();
+    if (this.headless || this.hintStage !== 2 || this.orbit || this.scrape || this.isOver) return;
+    const p = this.flightTarget || this.autoCatchTarget || this.nextPlanetAbove();
+    if (!p) return;
+    const zone = p.radius + grabRangeForSpeed(this.speed);
+    const gap = this.distanceTo(p) - zone;
+    const near = Phaser.Math.Clamp(1 - gap / 600, 0.5, 1);
+    const t = this.time.now / 1000;
+    const k = (t * 1.6) % 1;   // shrinking pulse: from outside the zone onto its edge
+    const pulseR = zone + 70 * (1 - k);
+    g.lineStyle(10, ART.outline, 0.35 * near * k);
+    g.strokeCircle(p.x, p.y, pulseR);
+    g.lineStyle(5, 0x5eff8f, 0.85 * near * k);
+    g.strokeCircle(p.x, p.y, pulseR);
+    // Steady dashed edge of the grab zone.
+    const dashes = 28;
+    g.lineStyle(5, 0x5eff8f, 0.55 * near);
+    for (let i = 0; i < dashes; i++) {
+      const a0 = (i / dashes) * Math.PI * 2 + t * 0.6;
+      g.beginPath();
+      g.arc(p.x, p.y, zone, a0, a0 + (Math.PI * 2) / dashes * 0.55);
+      g.strokePath();
+    }
+  }
+
+  // Closest planet above the comet (catch-ring fallback when the fling had no assist target).
+  nextPlanetAbove() {
+    let best = null;
+    for (const p of this.planets) {
+      if (p.y < this.comet.y && (!best || p.y > best.y)) best = p;
+    }
+    return best;
   }
 
   // Where the release line points: at the assisted target, or along the tangent.
@@ -948,7 +1136,7 @@ class GameScene extends Phaser.Scene {
     this.sfx('gameover', { reason });
     this.draw();
     this.cameras.main.shake(300, 0.02);
-    this.cameras.main.flash(200, 255, 255, 255);
+    if (this.hud.flash) this.hud.flash(0xff9a2e, 0.18, 220, 0.18);
     this.burst(this.comet.x, this.comet.y, 0xff9a2e, 22);
     // The simulator must never reach GameOver: it would save the bot's score as the real best.
     if (this.headless) return;
@@ -957,6 +1145,11 @@ class GameScene extends Phaser.Scene {
     });
   }
 }
+
+// Screen px kept free at the bottom for the speed / multiplier HUD panel.
+GameScene.COMET_BAND_BOTTOM = 300;
+// The BEST label only shows below this screen y, clear of the top-left stats block.
+GameScene.BEST_LABEL_MIN_Y = 260;
 
 // Opening scene timeline (seconds): the star swells, explodes, then the comet launches.
 GameScene.INTRO_EXPLODE = 1.7;

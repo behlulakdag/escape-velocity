@@ -4,7 +4,8 @@ const TUNING = {
   cometRadius: 28,
   startSpeed: 620,
   minSpeed: 140,          // the comet never drops below this; the supernova is what kills you
-  maxSpeed: 2400,
+  maxSpeed: 4500,          // absolute top speed (late zones); speedFraction() is relative to this
+  zoneSpeedPerMeter: 0.05, // past the last zone the cap keeps creeping up by this per meter
   flightDecay: 40,        // px/s lost per second while flying
   flightDecayPerKm: 6,    // extra decay per 1000 px of altitude (difficulty ramp)
   maxFlightDecay: 140,
@@ -41,10 +42,22 @@ const TUNING = {
   novaBaseSpeed: 160,     // px/s the wave climbs at the start
   novaRamp: 5,            // extra px/s every second
   novaMaxSpeed: 950,
+  novaAltitudeRamp: 0.01, // extra px/s per meter of best altitude, so faster zones get a faster wave
   novaLeash: 250,         // the wave is never further than this below the visible screen (falling back = death)
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,
   planetGapPerPx: 0.012,
+  catchGrace: 0.18,       // s: a hold this late after touching a planet still latches (scrape, then orbit)
+  scrapeSpeed: 420,       // px/s the comet slides along the surface during the grace window
+  grabSpeedFrom: 1000,    // above this speed the grab zone widens, so reactive holds at speed still land
+  grabSpeedGrow: 0.04,    // extra grab px per px/s above grabSpeedFrom
+  grabSpeedMaxExtra: 70,
+  grabBelowMargin: 30,    // a planet whose top is further below the comet than this is "behind" you
+  grabForwardCos: 0.5,    // ...unless it is within 60 degrees of where you are flying
+  overspeedHold: 1.2,     // s at the speed cap in orbit before the planet lets go of you
+  overspeedUp: -0.6,      // the overspeed fling only happens while the tangent points this much upward
+  autoCatchFlings: 3,     // the first assisted flings of a run catch their target by themselves...
+  autoCatchSeconds: 20,   // ...but only this early in the run
 };
 
 // Rotation direction from the comet's position relative to the planet and its velocity,
@@ -71,7 +84,7 @@ function orbitCloseness(radius, planetRadius) {
 
 // Advances an orbit by dt seconds. Orbits are stable (no crash); closer orbits gain speed
 // faster, so diving in deep before grabbing is the skill.
-function orbitStep(orbit, speed, dt, planetRadius) {
+function orbitStep(orbit, speed, dt, planetRadius, maxSpeed) {
   const spin = Math.min(speed / orbit.radius, TUNING.maxOrbitSpin);
   const angle = orbit.angle + orbit.dir * spin * dt;
   const gain = TUNING.orbitGain * (1 + TUNING.closeOrbitBonus * orbitCloseness(orbit.radius, planetRadius));
@@ -79,7 +92,8 @@ function orbitStep(orbit, speed, dt, planetRadius) {
   const radius = Math.min(target, orbit.radius + TUNING.orbitSettleSpeed * dt);
   return {
     orbit: { angle, radius, targetRadius: target, dir: orbit.dir },
-    speed: Math.min(TUNING.maxSpeed, speed + gain * dt),
+    // Never above the cap, but never cut down either (the cap only grows with altitude).
+    speed: Math.max(speed, Math.min(maxSpeed || TUNING.maxSpeed, speed + gain * dt)),
   };
 }
 
@@ -159,14 +173,56 @@ function nextPlanetLayout(prevSide, altitude, worldWidth, rand) {
 
 // Altitude milestones (meters). Each one gets a banner and a new sky color, giving the
 // run short-term goals beyond the raw number.
+// maxSpeed: the speed cap (px/s, readout = /10 km/s) when the zone starts. Between zones the cap
+// rises smoothly, so the number keeps climbing for the whole run.
 const ZONES = [
-  { from: 0, name: 'LIFTOFF', sky: 0x2b1d5c },
-  { from: 500, name: 'ORBIT', sky: 0x1f3a7a },
-  { from: 1500, name: 'MACH 2', sky: 0x5a1f7a },
-  { from: 3000, name: 'LIGHTSPEED', sky: 0x13606a },
-  { from: 5000, name: 'HYPERSPACE', sky: 0x7a1f4a },
-  { from: 8000, name: 'ESCAPE VELOCITY', sky: 0x7a5a12 },
+  { from: 0, name: 'LIFTOFF', sky: 0x2b1d5c, maxSpeed: 2400 },
+  { from: 500, name: 'ORBIT', sky: 0x1f3a7a, maxSpeed: 2650 },
+  { from: 1500, name: 'HYPERSONIC', sky: 0x5a1f7a, maxSpeed: 2950 },
+  { from: 3000, name: 'WARP SPEED', sky: 0x13606a, maxSpeed: 3300 },
+  { from: 5000, name: 'HYPERSPACE', sky: 0x7a1f4a, maxSpeed: 3700 },
+  { from: 8000, name: 'ESCAPE VELOCITY', sky: 0x7a5a12, maxSpeed: 4100 },
 ];
+
+// Speed cap at an altitude (meters): interpolates between zone caps, then creeps up to TUNING.maxSpeed.
+function maxSpeedForAltitude(meters) {
+  const m = Math.max(0, meters);
+  for (let i = 0; i < ZONES.length - 1; i++) {
+    const a = ZONES[i];
+    const b = ZONES[i + 1];
+    if (m < b.from) return a.maxSpeed + (b.maxSpeed - a.maxSpeed) * ((m - a.from) / (b.from - a.from));
+  }
+  const last = ZONES[ZONES.length - 1];
+  return Math.min(TUNING.maxSpeed, last.maxSpeed + (m - last.from) * TUNING.zoneSpeedPerMeter);
+}
+
+// Grab zone (px beyond the surface) at a speed: wider when fast, because at 300 km/s a
+// human reaction lands the hold a couple of hundred px late.
+function grabRangeForSpeed(speed) {
+  const extra = Math.max(0, speed - TUNING.grabSpeedFrom) * TUNING.grabSpeedGrow;
+  return TUNING.grabRange + Math.min(TUNING.grabSpeedMaxExtra, extra);
+}
+
+// Only planets at/above the comet (or ahead of its flight) can be grabbed, so a panic hold
+// never latches onto a planet you already passed and drags you back toward the supernova.
+function canGrabPlanet(x, y, vx, vy, planet) {
+  if (planet.y - planet.radius <= y + TUNING.grabBelowMargin) return true;
+  const dx = planet.x - x;
+  const dy = planet.y - y;
+  const len = Math.hypot(dx, dy) * Math.hypot(vx, vy);
+  return len > 0 && (dx * vx + dy * vy) / len >= TUNING.grabForwardCos;
+}
+
+// Overspeed: after holding at the cap for overspeedHold seconds the planet lets go, but only while
+// the tangent (ux, uy, unit) points upward, so holding forever flings you up instead of trapping you.
+function overspeedFling(secondsAtCap, ux, uy) {
+  return secondsAtCap >= TUNING.overspeedHold && uy <= TUNING.overspeedUp;
+}
+
+// Whether an assisted fling (the n-th of the run, 1-based) at `seconds` catches its target by itself.
+function autoCatchAllowed(flingNumber, seconds) {
+  return flingNumber >= 1 && flingNumber <= TUNING.autoCatchFlings && seconds < TUNING.autoCatchSeconds;
+}
 
 function zoneIndexForAltitude(meters) {
   let index = 0;
@@ -211,9 +267,11 @@ function warpVelocity(hx, hy, x, y, vx, vy) {
   return { vx: vx * cos - vy * sin, vy: vx * sin + vy * cos };
 }
 
-// How fast the supernova climbs after `seconds` of play.
-function novaSpeed(seconds) {
-  return Math.min(TUNING.novaMaxSpeed, TUNING.novaBaseSpeed + TUNING.novaRamp * seconds);
+// How fast the supernova climbs after `seconds` of play; meters (best altitude, optional) adds a
+// little, so the wave keeps pace when the speed cap rises in later zones.
+function novaSpeed(seconds, meters) {
+  const climb = TUNING.novaAltitudeRamp * Math.max(0, meters || 0);
+  return Math.min(TUNING.novaMaxSpeed, TUNING.novaBaseSpeed + TUNING.novaRamp * seconds + climb);
 }
 
 function flightDecay(altitude) {
@@ -305,5 +363,5 @@ function cometStretch(fraction, accel) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

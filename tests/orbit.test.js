@@ -191,3 +191,67 @@ test('comet stretch is >= 1, grows with speed and acceleration, capped at 1.6', 
   assert.strictEqual(o.cometStretch(0.5, -5000), o.cometStretch(0.5, 0));
   assert.ok(o.cometStretch(1, 1e9) <= 1.6);
 });
+
+test('speed cap starts at the first zone cap, rises through every zone and never passes maxSpeed', () => {
+  assert.strictEqual(o.maxSpeedForAltitude(0), o.ZONES[0].maxSpeed);
+  assert.strictEqual(o.maxSpeedForAltitude(-50), o.ZONES[0].maxSpeed);
+  for (const z of o.ZONES) assert.ok(Math.abs(o.maxSpeedForAltitude(z.from) - z.maxSpeed) < 1e-9, z.name);
+  let prev = 0;
+  for (let m = 0; m <= 30000; m += 250) {
+    const cap = o.maxSpeedForAltitude(m);
+    assert.ok(cap >= prev, 'cap never drops (at ' + m + ' m)');
+    assert.ok(cap <= o.TUNING.maxSpeed);
+    prev = cap;
+  }
+  assert.ok(o.maxSpeedForAltitude(8000) < o.maxSpeedForAltitude(9000), 'still climbs past the last zone');
+  assert.strictEqual(o.maxSpeedForAltitude(1e6), o.TUNING.maxSpeed);
+});
+
+test('orbit gain stops at the given cap but never cuts a faster speed down', () => {
+  const orbit = o.startOrbit(0, 0, 150, 0, 0, -600, 60);
+  assert.strictEqual(o.orbitStep(orbit, 1990, 1, 60, 2000).speed, 2000);
+  assert.strictEqual(o.orbitStep(orbit, 2500, 1, 60, 2000).speed, 2500);
+});
+
+test('grab zone widens with speed, up to a limit', () => {
+  assert.strictEqual(o.grabRangeForSpeed(300), o.TUNING.grabRange);
+  assert.strictEqual(o.grabRangeForSpeed(o.TUNING.grabSpeedFrom), o.TUNING.grabRange);
+  assert.ok(o.grabRangeForSpeed(2000) > o.TUNING.grabRange);
+  assert.strictEqual(o.grabRangeForSpeed(1e6), o.TUNING.grabRange + o.TUNING.grabSpeedMaxExtra);
+});
+
+test('only planets above the comet or ahead of its flight can be grabbed', () => {
+  const planet = { x: 0, y: 0, radius: 60 };
+  // Beside / above the comet: grabbable whatever the direction.
+  assert.ok(o.canGrabPlanet(150, 0, 0, -600, planet));
+  assert.ok(o.canGrabPlanet(100, 200, 0, -600, planet));
+  // Comet already well above the planet, flying up: the planet is behind it.
+  assert.ok(!o.canGrabPlanet(100, -200, 0, -600, planet));
+  assert.ok(!o.canGrabPlanet(0, -180, 300, -500, planet));
+  // ...unless the comet is flying toward it (diving down on purpose).
+  assert.ok(o.canGrabPlanet(100, -200, -150, 600, planet));
+  // Zero velocity: only the above rule applies.
+  assert.ok(!o.canGrabPlanet(0, -300, 0, 0, planet));
+});
+
+test('overspeed fling needs time at the cap and an upward tangent', () => {
+  const t = o.TUNING.overspeedHold;
+  assert.ok(!o.overspeedFling(t - 0.01, 0, -1));
+  assert.ok(o.overspeedFling(t, 0, -1));
+  assert.ok(!o.overspeedFling(t + 5, 0, 1), 'never flings you down into the supernova');
+  assert.ok(!o.overspeedFling(t + 5, 1, 0), 'never flings you sideways');
+});
+
+test('auto catch only covers the first assisted flings, early in the run', () => {
+  assert.ok(o.autoCatchAllowed(1, 0));
+  assert.ok(o.autoCatchAllowed(o.TUNING.autoCatchFlings, 5));
+  assert.ok(!o.autoCatchAllowed(o.TUNING.autoCatchFlings + 1, 5));
+  assert.ok(!o.autoCatchAllowed(1, o.TUNING.autoCatchSeconds));
+  assert.ok(!o.autoCatchAllowed(0, 1));
+});
+
+test('the supernova climbs faster at higher altitude, still capped', () => {
+  assert.strictEqual(o.novaSpeed(10), o.novaSpeed(10, 0));
+  assert.ok(o.novaSpeed(10, 3000) > o.novaSpeed(10, 0));
+  assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxSpeed);
+});
