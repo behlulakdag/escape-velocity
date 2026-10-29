@@ -70,3 +70,12 @@ test('assist ignores planets behind, far away, or the one being left', () => {
   assert.strictEqual(o.pickAssistTarget(0, 0, 0, -1, [behind, far], null), null);
   assert.strictEqual(o.pickAssistTarget(0, 0, 0, -1, [current], current), null);
 });
+
+test('a hit costs speed but never drops you to game over', () => {
+  assert.strictEqual(o.speedAfterHit(1000, 0.7), 700);
+  const slow = o.TUNING.minSpeed + 50;
+  assert.strictEqual(o.speedAfterHit(slow, 0.7), slow, 'already slow: no further loss');
+  const mid = o.TUNING.minSpeed + 200;
+  assert.strictEqual(o.speedAfterHit(mid, 0.5), o.TUNING.minSpeed + o.TUNING.hitGrace);
+  assert.ok(o.speedAfterHit(o.TUNING.minSpeed + 1, 0.1) >= o.TUNING.minSpeed);
+});

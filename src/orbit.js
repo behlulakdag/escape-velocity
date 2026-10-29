@@ -19,6 +19,7 @@ const TUNING = {
   catchBonus: 60,         // instant speed for every planet caught
   hitKeep: 0.7,           // speed kept after hitting a planet
   floorBounceKeep: 0.8,   // speed kept after falling to the bottom of the screen
+  hitGrace: 120,          // a hit never leaves you closer than this to minSpeed
 };
 
 // Rotation direction from the comet's position relative to the planet and its velocity,
@@ -88,6 +89,12 @@ function pickAssistTarget(x, y, dirX, dirY, planets, exclude) {
   return best;
 }
 
+// Speed after a hit. A hit hurts but never ends the run by itself: it stops at
+// minSpeed + hitGrace, leaving a few seconds to catch the next planet.
+function speedAfterHit(speed, keep) {
+  return Math.max(speed * keep, Math.min(speed, TUNING.minSpeed + TUNING.hitGrace));
+}
+
 function flightDecay(altitude) {
   return Math.min(
     TUNING.maxFlightDecay,
@@ -130,5 +137,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, startOrbit, pickAssistTarget, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, startOrbit, pickAssistTarget, speedAfterHit, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

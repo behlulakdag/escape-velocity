@@ -245,7 +245,7 @@ class GameScene extends Phaser.Scene {
   }
 
   loseSpeed(keep) {
-    this.speed *= keep;
+    this.speed = speedAfterHit(this.speed, keep);
     this.cameras.main.shake(160, 0.012);
     this.cameras.main.flash(90, 255, 77, 109);
     this.burst(this.comet.x, this.comet.y, 0xff4d6d, 10);
