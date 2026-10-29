@@ -39,4 +39,10 @@
 Theme: Speed
 Game: ESCAPE VELOCITY. You are a burning comet; speed is your life, score and visuals.
 Core mechanic: hold near a planet to lock into orbit and gain speed (gravity assist; closer orbit = faster), release to fling along the tangent. A rising supernova wave is the only way to lose.
-Art direction (user decision, Oct 29, final): the CURRENT committed look is approved by the user and testers - keep it as is (bright cartoon space, thick dark outlines 0x1a1033, characters with faces, Lilita One font). New UI/art must match it. Tried and rejected: a hand-drawn sketchbook/line-boil restyle (too strange) and glossy UI-kit HUD plates (pill tags like SCORE/BONUS, gradient panels, icons, progress bars: looked AI-made). Avoid both.
+Art direction (user decision, Oct 30, FINAL - supersedes earlier notes): SKETCHBOOK. The user and testers liked the hand-drawn sketchbook look (a first version is in git stash@{0}); the whole game, including the card UI, must use it. The game must look made by a person, never generic or AI-generated.
+- Space drawn on dark navy construction paper with visible grain/fibers; lines in cream/white gel-pen ink with gentle "line boil" (outlines re-wobble ~10 times per second, never every frame), slightly irregular shapes, varying line weight; fills in colored-pencil/crayon hatching slightly offset from the outline.
+- Small limited palette: cream ink, crayon orange/red/yellow (comet + supernova), a few muted crayon colors for planets; warm orange light from the supernova below, cool light from above.
+- Faces only on the comet (hero) and the supernova (villain); planets are worlds with drawn features (craters, rings as pen strokes, bumps, small moons).
+- Effects are ink doodles (scribble bursts, asterisk stars, dashed speed lines), used only when they mean something.
+- HUD/UI hand-lettered in ink (Lilita One for titles/numbers is fine), buttons and cards as hand-drawn wobbly shapes with crayon fill, taped-note panels.
+- AVOID (read as AI/template): glossy gradient panels, pill-shaped label tags ("SCORE", "BONUS"), icon+label UI-kit plates, progress bars, perfect geometric circles, sparkle/glow spam, generic purple-space gradients.
