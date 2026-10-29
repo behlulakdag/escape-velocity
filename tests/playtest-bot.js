@@ -5,6 +5,7 @@
 // Styles: random = releases at a random time (confused new player), careful = releases on the
 // first green aim, skilled = waits for the gold PERFECT window (gives up after 2.5s), idle = never touches,
 // holder = holds the whole run and never lets go (panic player; overspeed flings it on).
+// Upgrade cards: on every zone entry the headless scene picks a random card at once (reported as cards / avgCards).
 (() => {
   let clock = performance.now();
   const step = () => { clock += 16.67; game.scene.update(clock, 16.67); };
@@ -23,6 +24,16 @@
     let closeCalls = 0;
     let maxChain = 0;
     s.gameOver = function (r) { reason = r; return proto.gameOver.call(this, r); };
+    // Headless GameScene picks a random card itself on zone entry (no CardScene); log when.
+    let firstPickAt = null;
+    let rescues = 0;
+    s.pickCard = function (id) {
+      if (firstPickAt === null) firstPickAt = Math.round(this.elapsed * 10) / 10;
+      return proto.pickCard.call(this, id);
+    };
+    s.rescueFromNova = function () { rescues++; return proto.rescueFromNova.call(this); };
+    // window.simNoCards = true runs the base game without cards, for comparison.
+    if (window.simNoCards) s.openCardPick = function () {};
     s.popText = function (label, color, opts) {
       if (label.startsWith('PERFECT')) perfects++;
       if (label === 'CLOSE CALL!') closeCalls++;
@@ -61,7 +72,10 @@
     s.sys.settings.data = {};
     delete s.gameOver;
     delete s.popText;
-    return { style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits };
+    delete s.pickCard;
+    delete s.rescueFromNova;
+    delete s.openCardPick;
+    return { style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues };
   };
 
   window.playtestSummary = (styles, runsEach) => {
@@ -76,6 +90,9 @@
         reasons: [...new Set(runs.map((r) => r.reason))].join('/'),
         maxChain: Math.max(...runs.map((r) => r.maxChain)),
         closeCalls: runs.reduce((n, r) => n + r.closeCalls, 0),
+        avgCards: Math.round((runs.reduce((n, r) => n + r.cards.length, 0) / runs.length) * 10) / 10,
+        medianFirstPick: median(runs.filter((r) => r.firstPickAt !== null).map((r) => r.firstPickAt)),
+        rescues: runs.reduce((n, r) => n + r.rescues, 0),
       };
     }
     // Leave the game as a player would find it: no headless Game scene left running in the background.

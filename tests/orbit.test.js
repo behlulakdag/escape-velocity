@@ -255,3 +255,17 @@ test('the supernova climbs faster at higher altitude, still capped', () => {
   assert.ok(o.novaSpeed(10, 3000) > o.novaSpeed(10, 0));
   assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxSpeed);
 });
+
+test('orbitStep boost multiplies the orbit gain and the close-orbit bonus', () => {
+  const orbit = { angle: 0, radius: 60 + o.TUNING.minOrbitGap, targetRadius: 60 + o.TUNING.minOrbitGap, dir: 1 };
+  const base = o.orbitStep(orbit, 600, 0.1, 60, 5000).speed - 600;
+  const same = o.orbitStep(orbit, 600, 0.1, 60, 5000, { gainMul: 1, closeMul: 1 }).speed - 600;
+  assert.ok(Math.abs(base - same) < 1e-9, 'neutral boost = no boost');
+  const gain = o.orbitStep(orbit, 600, 0.1, 60, 5000, { gainMul: 1.25 }).speed - 600;
+  assert.ok(Math.abs(gain - base * 1.25) < 1e-9);
+  // Skimming the surface (closeness 1): gain = orbitGain * (1 + bonus * closeMul).
+  const close = o.orbitStep(orbit, 600, 0.1, 60, 5000, { closeMul: 1.5 }).speed - 600;
+  const expected = o.TUNING.orbitGain * (1 + o.TUNING.closeOrbitBonus * 1.5) * 0.1;
+  assert.ok(Math.abs(close - expected) < 1e-9);
+  assert.ok(close > base);
+});

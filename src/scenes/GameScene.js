@@ -65,6 +65,7 @@ class GameScene extends Phaser.Scene {
     this.flightTarget = null;   // planet the last assisted fling is heading for
     this.autoCatchTarget = null;
     this.initFeel();
+    this.initCards();
 
     this.comet = { x: GAME_WIDTH / 2, y: this.startY, vx: 0, vy: -this.speed };
 
@@ -83,6 +84,7 @@ class GameScene extends Phaser.Scene {
     this.worldGfx = this.add.graphics();
     this.speedGfx = this.add.graphics().setScrollFactor(0);
     this.catchGfx = this.add.graphics();   // teaching ring around the planet to catch next
+    this.cardFxGfx = this.add.graphics();  // card effects: slipstream wisps, shockwave line
     this.cometGfx = this.add.graphics();
     this.introGfx = this.add.graphics();
     this.createBestMarker();
@@ -99,6 +101,13 @@ class GameScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-SPACE', () => this.pressHold());
     this.input.keyboard.on('keyup-SPACE', () => this.releaseHold());
     this.events.once('shutdown', () => { this.tweens.timeScale = 1; });
+    // CardScene reports the chosen card on the global emitter (it is a separate scene).
+    this.onCardPicked = (id) => this.pickCard(id);
+    this.game.events.on('cards:picked', this.onCardPicked);
+    this.events.once('shutdown', () => {
+      this.game.events.off('cards:picked', this.onCardPicked);
+      this.closeCardScene();
+    });
     this.sfx('start');
     if (this.headless || data.skipIntro) this.launch(); else this.startIntro();
   }
@@ -133,7 +142,181 @@ class GameScene extends Phaser.Scene {
 
   pressHold() {
     if (this.introActive) return this.skipIntro();
+    if (this.cardPick) return;   // the tap belongs to the cards on top
+    this.inputGuard = false;
     this.isHolding = true;
+  }
+
+  // ---------- upgrade cards (rules in src/cards.js, UI in CardScene) ----------
+
+  initCards() {
+    this.ownedCards = [];
+    this.mods = cardMods(this.ownedCards);
+    this.cardPick = null;       // { choices, realT } while the pick is on screen
+    this.inputGuard = false;    // swallows the release of the finger that tapped a card
+    this.shieldCharges = 0;     // Heat Shield charges left in this zone
+    this.rescuesLeft = 0;       // Unbreakable
+    this.afterburnerT = 0;      // seconds of afterburner left
+    this.overdriveFxT = 0;
+    this.shockFx = null;        // { y, push, t }: shock line pushing the supernova down
+  }
+
+  grabRange() {
+    return grabRangeForSpeed(this.speed) * this.mods.grabRangeMul;
+  }
+
+  perfectAngle() {
+    return this.mods.perfectAngle || TUNING.perfectAngle;
+  }
+
+  openCardPick() {
+    if (this.isOver || this.cardPick) return;
+    const choices = drawCardChoices(this.ownedCards, Math.random);
+    if (!choices.length) return;
+    // The simulator has no UI: it picks a random card at once.
+    if (this.headless) return this.pickCard(choices[Math.floor(Math.random() * choices.length)]);
+    this.cardPick = { choices, realT: 0 };
+    // Gameplay input is ignored while choosing; an orbit just keeps spinning (orbits are stable).
+    this.isHolding = false;
+    this.sfx('cardopen', {});
+    if (this.game.scene.keys.Cards) {
+      this.scene.launch('Cards', { choices, owned: this.ownedCards.slice(), timeout: GameScene.CARD_TIMEOUT });
+    }
+  }
+
+  // Safety net in case the card UI never answers: auto-pick the middle card a bit after its timeout.
+  updateCardPickFallback(realDt) {
+    this.cardPick.realT += realDt;
+    if (this.cardPick.realT > GameScene.CARD_TIMEOUT + 1.5) {
+      const c = this.cardPick.choices;
+      this.pickCard(c[Math.min(1, c.length - 1)]);
+    }
+  }
+
+  closeCardScene() {
+    if (this.game.scene.keys.Cards && this.scene.isActive('Cards')) this.scene.stop('Cards');
+  }
+
+  pickCard(id) {
+    if (this.isOver || this.ownedCards.indexOf(id) >= 0) return;
+    const card = cardById(id);
+    if (!card) return;
+    if (!this.headless) {
+      if (!this.cardPick || this.cardPick.choices.indexOf(id) < 0) return;
+      this.cardPick = null;
+      this.closeCardScene();
+      // Ease out of the slow motion and swallow the release of the tapping finger.
+      this.slowMoT = FEEL.slowMoHold;
+      this.inputGuard = true;
+      this.isHolding = false;
+    }
+    const setsBefore = activeSetBonuses(this.ownedCards);
+    this.ownedCards.push(id);
+    this.mods = cardMods(this.ownedCards);
+    if (id === 'heatshield') this.shieldCharges = this.mods.heatShieldCharges;
+    const newSets = activeSetBonuses(this.ownedCards).filter((f) => setsBefore.indexOf(f) < 0);
+    if (newSets.indexOf('shield') >= 0) this.rescuesLeft = this.mods.rescues;
+    const color = CARD_FAMILIES[card.family].color;
+    this.sfx('cardpick', { id });
+    this.popText(card.name.toUpperCase() + '!', GameScene.hex(color), { size: 40, duration: 900 });
+    this.burst(this.comet.x, this.comet.y, color, 14, 150);
+    if (this.hud.setCards) this.hud.setCards(this.ownedCards.slice());
+    for (const family of newSets) {
+      if (this.hud.showSetBonus) this.hud.showSetBonus(family);
+      this.sfx('setbonus', { family });
+      this.burst(this.comet.x, this.comet.y, CARD_FAMILIES[family].color, 22, 220);
+      this.cameras.main.shake(180, 0.008);
+    }
+  }
+
+  // Heat Shield: a hit that would cost speed is absorbed instead. Returns true when it was.
+  useHeatShield() {
+    if (this.shieldCharges <= 0) return false;
+    this.shieldCharges--;
+    this.popText('SHIELD!', GameScene.hex(CARD_FAMILIES.shield.color), { size: 44 });
+    this.sfx('shield');
+    this.sfx('wall');
+    this.cameras.main.shake(120, 0.006);
+    this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.shield.color, 16, 130);
+    this.jellyT = 0;
+    return true;
+  }
+
+  // Unbreakable: the supernova caught you, but once per run the comet is flung back out of it.
+  rescueFromNova() {
+    this.rescuesLeft--;
+    this.orbit = null;
+    this.orbitPlanet = null;
+    this.scrape = null;
+    this.homing = null;
+    this.capTime = 0;
+    this.speed = Math.max(this.speed, GameScene.RESCUE_SPEED);
+    this.comet.vx = 0;
+    this.comet.vy = -this.speed;
+    const from = this.novaY;
+    this.novaY = this.comet.y + GameScene.RESCUE_PUSH;
+    this.shockFx = { y: from, push: this.novaY - from, t: 0 };
+    this.closeArmed = false;
+    this.breakChain();
+    this.popText('UNBREAKABLE!', GameScene.hex(CARD_FAMILIES.shield.color), { size: 64, duration: 1200 });
+    this.sfx('rescue');
+    this.sfx('closecall');
+    if (this.hud.flash) this.hud.flash(CARD_FAMILIES.shield.color, 0.16, 260, 0.16);
+    this.cameras.main.shake(260, 0.016);
+    this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.shield.color, 24, 220);
+    this.freeze(FEEL.hitstopPerfect);
+  }
+
+  // Card visuals drawn by the scene itself (the comet's own looks live in art.js via artContext).
+  drawCardFx(dt) {
+    const g = this.cardFxGfx;
+    g.clear();
+    if (this.headless || this.isOver) return;
+    const c = this.comet;
+    const flying = !this.orbit && !this.scrape && this.cometVisible;
+    const slip = this.mods.climbNoDecay && c.vy < 0;
+    if (flying && (this.mods.flightDecayMul < 1 || slip)) {
+      // Aerodynamic / Slipstream: two wind wisps hugging the comet's flanks.
+      const len = Math.hypot(c.vx, c.vy) || 1;
+      const ux = c.vx / len;
+      const uy = c.vy / len;
+      const t = this.time.now / 1000;
+      const color = CARD_FAMILIES.flight.color;
+      for (const side of [-1, 1]) {
+        const pts = [];
+        for (let i = 0; i <= 6; i++) {
+          const k = i / 6;
+          const back = 10 + k * (slip ? 130 : 95);
+          const off = side * (TUNING.cometRadius + 6 + k * 16) + Math.sin(t * 14 + k * 5 + side) * 4 * k;
+          pts.push({ x: c.x - ux * back - uy * off, y: c.y - uy * back + ux * off });
+        }
+        g.lineStyle(9, ART.outline, 0.45);
+        g.strokePoints(pts);
+        g.lineStyle(4, slip ? 0xffffff : color, 0.9);
+        g.strokePoints(pts);
+      }
+    }
+    if (this.shockFx) {
+      // Shockwave: a bright line slamming the supernova front down.
+      const s = this.shockFx;
+      s.t += dt;
+      const k = Math.min(1, s.t / GameScene.SHOCK_FX_TIME);
+      const y = s.y + s.push * (1 - (1 - k) * (1 - k));
+      const view = this.visibleBounds();
+      const a = 1 - k;
+      g.lineStyle(26, ART.outline, 0.5 * a);
+      g.lineBetween(view.left, y, view.right, y);
+      g.lineStyle(16, CARD_FAMILIES.shield.color, a);
+      g.lineBetween(view.left, y, view.right, y);
+      g.lineStyle(5, 0xffffff, a);
+      g.lineBetween(view.left, y, view.right, y);
+      for (let i = 0; i < 7; i++) {
+        const x = view.left + ((i + 0.5) / 7) * (view.right - view.left);
+        g.fillStyle(0xffffff, a);
+        g.fillTriangle(x - 14, y + 6, x + 14, y + 6, x, y + 34 + 20 * k);
+      }
+      if (k >= 1) this.shockFx = null;
+    }
   }
 
   // ---------- world ----------
@@ -225,7 +408,12 @@ class GameScene extends Phaser.Scene {
 
   releaseHold() {
     this.isHolding = false;
-    if (this.isOver) return;
+    if (this.isOver || this.cardPick) return;
+    if (this.inputGuard) {
+      // The finger that tapped a card lifted: not a fling.
+      this.inputGuard = false;
+      return;
+    }
     if (this.orbit) this.fling(false);
   }
 
@@ -243,11 +431,18 @@ class GameScene extends Phaser.Scene {
   fling(overspeed) {
     const v = tangentVelocity(this.orbit, this.speed);
     const assist = this.currentAssist();
-    if (!overspeed && assist && assist.angle < TUNING.perfectAngle) {
+    const perfect = !overspeed && assist && assist.angle < this.perfectAngle();
+    if (perfect) {
       this.addSpeed(TUNING.perfectBonus);
       this.onPerfect();
     } else {
       this.breakChain();
+    }
+    if (!overspeed && this.mods.releaseBonus > 0) {
+      // Slingshot: every release adds a share of the current speed.
+      this.addSpeed(this.speed * this.mods.releaseBonus);
+      this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.fling.color, 8, 120);
+      if (!perfect) this.popText('SLINGSHOT!', GameScene.hex(CARD_FAMILIES.fling.color), { size: 32, duration: 500 });
     }
     if (overspeed) {
       this.noGrabPlanet = this.orbitPlanet;
@@ -288,7 +483,14 @@ class GameScene extends Phaser.Scene {
     this.perfectChain++;
     this.perfectPulseAt = this.time.now;
     const chain = this.perfectChain;
-    this.score += perfectChainBonus(chain);
+    this.score += perfectChainBonus(chain) * this.mods.chainScoreMul;
+    if (this.mods.afterburnerSeconds > 0) this.afterburnerT = this.mods.afterburnerSeconds;
+    if (this.mods.chainSpeed > 0 && chain > 1) {
+      // Chain Reaction: every PERFECT after the first adds more speed, the longer the chain.
+      this.addSpeed(this.mods.chainSpeed * Math.min(chain - 1, CARD_TUNING.chainSpeedMaxSteps));
+      this.popText('CHAIN BOOST!', GameScene.hex(CARD_FAMILIES.fling.color), { size: 30, duration: 600 });
+      this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.fling.color, 10, 200);
+    }
     const heat = Math.min(1, (chain - 1) / 5);
     const label = chain > 1 ? 'PERFECT x' + chain + '!' : 'PERFECT!';
     const color = '#' + lerpColor(0xffe14d, 0xffffff, heat).toString(16).padStart(6, '0');
@@ -323,7 +525,7 @@ class GameScene extends Phaser.Scene {
   nearestGrabbablePlanet() {
     let best = null;
     let bestDist = Infinity;
-    const range = grabRangeForSpeed(this.speed);
+    const range = this.grabRange();
     const c = this.comet;
     for (const p of this.planets) {
       if (p === this.noGrabPlanet || !canGrabPlanet(c.x, c.y, c.vx, c.vy, p)) continue;
@@ -358,11 +560,17 @@ class GameScene extends Phaser.Scene {
       timeScale = slowMoScale(this.slowMoT);
       if (timeScale >= 1) this.slowMoT = -1;
     }
+    if (this.cardPick) {
+      // Deep slow motion while choosing a card: the whole world (supernova included) crawls.
+      timeScale = GameScene.CARD_TIME_SCALE;
+      this.updateCardPickFallback(realDt);
+    }
     this.tweens.timeScale = timeScale;
     const dt = realDt * timeScale;
     const altitude = this.startY - this.comet.y;
+    this.afterburnerT = Math.max(0, this.afterburnerT - dt);
 
-    if (this.noGrabPlanet && this.distanceTo(this.noGrabPlanet) > this.noGrabPlanet.radius + grabRangeForSpeed(this.speed)) {
+    if (this.noGrabPlanet && this.distanceTo(this.noGrabPlanet) > this.noGrabPlanet.radius + this.grabRange()) {
       this.noGrabPlanet = null;
     }
     if (this.scrape) {
@@ -371,7 +579,7 @@ class GameScene extends Phaser.Scene {
       if (this.isHolding) {
         const planet = this.nearestGrabbablePlanet();
         if (planet) this.latch(planet, false);
-      } else if (this.autoCatchTarget && this.distanceTo(this.autoCatchTarget) < this.autoCatchTarget.radius + grabRangeForSpeed(this.speed)) {
+      } else if (this.autoCatchTarget && this.distanceTo(this.autoCatchTarget) < this.autoCatchTarget.radius + this.grabRange()) {
         this.latch(this.autoCatchTarget, true);
       }
     }
@@ -379,16 +587,27 @@ class GameScene extends Phaser.Scene {
     if (this.scrape) {
       // updateScrape already placed the comet on the surface.
     } else if (this.orbit) {
-      const step = orbitStep(this.orbit, this.speed, dt, this.orbitPlanet.radius, this.speedCap());
+      const boost = { gainMul: this.mods.orbitGainMul, closeMul: this.mods.closeOrbitMul };
+      const step = orbitStep(this.orbit, this.speed, dt, this.orbitPlanet.radius, this.speedCap(), boost);
       this.orbit = step.orbit;
       this.speed = step.speed;
+      if (this.mods.orbitGainMul > 1 && this.speed < this.speedCap() - 1) {
+        // Overdrive: teal sparks spray off the comet while it spins up.
+        this.overdriveFxT -= dt;
+        if (this.overdriveFxT <= 0) {
+          this.overdriveFxT = 0.12;
+          this.burst(this.comet.x, this.comet.y, CARD_FAMILIES.orbit.color, 2, 60);
+        }
+      }
       this.comet.x = this.orbitPlanet.x + Math.cos(this.orbit.angle) * this.orbit.radius;
       this.comet.y = this.orbitPlanet.y + Math.sin(this.orbit.angle) * this.orbit.radius;
       this.capTime = this.speed >= this.speedCap() - 1 ? this.capTime + dt : 0;
       const u = tangentVelocity(this.orbit, 1);
       if (overspeedFling(this.capTime, u.vx, u.vy)) this.fling(true);
     } else {
-      this.speed -= flightDecay(altitude) * dt;
+      // Aerodynamic cuts the decay; Afterburner (after a PERFECT) and Slipstream (climbing) stop it.
+      const noDecay = this.afterburnerT > 0 || (this.mods.climbNoDecay && this.comet.vy < 0);
+      if (!noDecay) this.speed -= flightDecay(altitude) * this.mods.flightDecayMul * dt;
       // Keep direction, apply the decayed speed.
       const len = Math.hypot(this.comet.vx, this.comet.vy) || 1;
       this.comet.vx = (this.comet.vx / len) * this.speed;
@@ -417,7 +636,10 @@ class GameScene extends Phaser.Scene {
     this.speed = Math.max(this.speed, TUNING.minSpeed);
     this.updateNova(dt);
     // The supernova is the only way to lose: speed is what keeps you ahead of it.
-    if (this.comet.y + TUNING.cometRadius * 0.5 > this.novaY) return this.gameOver('SUPERNOVA!');
+    if (this.comet.y + TUNING.cometRadius * 0.5 > this.novaY) {
+      if (this.rescuesLeft > 0) this.rescueFromNova();
+      else return this.gameOver('SUPERNOVA!');
+    }
     this.checkCloseCall();
     this.updateStretch(dt);
 
@@ -437,7 +659,8 @@ class GameScene extends Phaser.Scene {
 
   updateNova(dt) {
     this.elapsed += dt;
-    this.novaY -= novaSpeed(this.elapsed, this.bestAltitude) * dt;
+    // Every card makes the wave faster, so upgrades never make the run easy.
+    this.novaY -= novaSpeed(this.elapsed, this.bestAltitude) * this.mods.novaSpeedMul * dt;
     // Never let it fall far behind, so the threat is always close.
     this.novaY = Math.min(this.novaY, this.anchorBottom() + TUNING.novaLeash);
     const gap = this.novaY - this.comet.y;
@@ -458,6 +681,8 @@ class GameScene extends Phaser.Scene {
       from: 0, to: 1, duration: 1500,
       onUpdate: (tw) => this.cameras.main.setBackgroundColor(lerpColor(from, to, tw.getValue())),
     });
+    this.shieldCharges = this.mods.heatShieldCharges;   // Heat Shield recharges every zone
+    this.openCardPick();
   }
 
   bounceWalls() {
@@ -465,11 +690,35 @@ class GameScene extends Phaser.Scene {
     if (this.comet.x < r || this.comet.x > GAME_WIDTH - r) {
       this.comet.x = Phaser.Math.Clamp(this.comet.x, r, GAME_WIDTH - r);
       this.comet.vx = -this.comet.vx;
-      this.speed *= TUNING.wallBounceKeep;
       this.sfx('wall');
+      if (this.mods.wallKick) return this.wallKick();
+      this.speed *= TUNING.wallBounceKeep;
       this.cameras.main.shake(90, 0.006);
       this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
     }
+  }
+
+  // Wall Kick: the bounce turns upward and adds speed instead of costing it.
+  wallKick() {
+    const c = this.comet;
+    const away = c.x < GAME_WIDTH / 2 ? 1 : -1;
+    const len = Math.hypot(c.vx, c.vy) || 1;
+    let ux = c.vx / len;
+    let uy = c.vy / len;
+    if (uy > GameScene.WALL_KICK_UP) {
+      uy = GameScene.WALL_KICK_UP;
+      ux = away * Math.sqrt(1 - uy * uy);
+    }
+    this.homing = null;
+    this.addSpeed(CARD_TUNING.wallKickBonus);
+    c.vx = ux * this.speed;
+    c.vy = uy * this.speed;
+    this.sfx('wallkick');
+    this.popText('WALL KICK!', GameScene.hex(CARD_FAMILIES.flight.color), { size: 40 });
+    this.cameras.main.shake(120, 0.008);
+    this.burst(c.x, c.y, CARD_FAMILIES.flight.color, 14, 150);
+    this.burst(c.x, c.y, 0xffffff, 6, 90);
+    this.zoomKick = Math.max(this.zoomKick, 0.04);
   }
 
   updateAsteroids(dt) {
@@ -488,9 +737,22 @@ class GameScene extends Phaser.Scene {
       if (!a.dead && Phaser.Math.Distance.Between(a.x, a.y, this.comet.x, this.comet.y) < a.radius + TUNING.cometRadius * 0.8) {
         a.dead = true;
         this.burst(a.x, a.y, 0xb8a28c, 14);
-        this.loseSpeed(TUNING.asteroidKeep);
+        if (this.mods.tailArmor) this.shatterAsteroid(a);
+        else this.loseSpeed(TUNING.asteroidKeep);
       }
     }
+  }
+
+  // Tail Armor: the rock bursts apart and the comet gains speed from it.
+  shatterAsteroid(a) {
+    this.addSpeed(CARD_TUNING.armorBonus);
+    this.sfx('shatter');
+    this.sfx('wall');
+    this.popText('SHATTER! +SPEED', GameScene.hex(CARD_FAMILIES.shield.color), { size: 38 });
+    this.cameras.main.shake(140, 0.01);
+    this.burst(a.x, a.y, CARD_FAMILIES.shield.color, 12, 170);
+    this.burst(a.x, a.y, 0xb8a28c, 10, 200);
+    this.jellyT = 0;
   }
 
   applyBlackHoles(dt) {
@@ -594,8 +856,18 @@ class GameScene extends Phaser.Scene {
     this.capTime = 0;
     this.addSpeed(TUNING.catchBonus);
     const close = orbitCloseness(this.orbit.targetRadius, planet.radius) > 0.7;
+    const teal = GameScene.hex(CARD_FAMILIES.orbit.color);
+    if (this.mods.catchBurst > 0) {
+      // Orbit Master: a speed burst on every catch.
+      this.addSpeed(this.mods.catchBurst);
+      this.burst(c.x, c.y, CARD_FAMILIES.orbit.color, 14, 170);
+      this.zoomKick = Math.max(this.zoomKick, 0.04);
+    }
     if (auto) this.popText('AUTO CATCH', '#c9c3e6', { size: 30, duration: 600 });
-    else this.popText(close ? 'CLOSE ORBIT!' : '+SPEED', close ? '#ffe14d' : '#5eff8f');
+    else if (close && this.mods.closeOrbitMul > 1) this.popText('TIGHT SPIN!', teal, { size: 44 });
+    else if (close) this.popText('CLOSE ORBIT!', '#ffe14d');
+    else if (this.mods.catchBurst > 0) this.popText('SPEED BURST!', teal);
+    else this.popText('+SPEED', '#5eff8f');
     this.sfx('grab', { close });
     this.burst(c.x, c.y, 0xffffff, 6);
     planet.wobble = 1;
@@ -622,6 +894,7 @@ class GameScene extends Phaser.Scene {
   }
 
   loseSpeed(keep) {
+    if (this.useHeatShield()) return;
     this.speed = speedAfterHit(this.speed, keep);
     this.breakChain();
     this.jellyT = 0;
@@ -769,6 +1042,14 @@ class GameScene extends Phaser.Scene {
     if (this.hud.flash) this.hud.flash(0xff9a2e, 0.14, 160, 0.14);
     this.cameras.main.shake(200, 0.01);
     this.burst(this.comet.x, this.comet.y + 40, 0xff9a2e, 14, 150);
+    if (this.mods.shockwavePush > 0) {
+      // Shockwave: the escape blasts the supernova back down.
+      this.shockFx = { y: this.novaY, push: this.mods.shockwavePush, t: 0 };
+      this.novaY += this.mods.shockwavePush;
+      this.sfx('shockwave');
+      this.popText('SHOCKWAVE!', GameScene.hex(CARD_FAMILIES.shield.color), { size: 44, duration: 900 });
+      this.cameras.main.shake(220, 0.012);
+    }
   }
 
   checkMultiplier() {
@@ -1049,7 +1330,11 @@ class GameScene extends Phaser.Scene {
       perfectPulse: Math.max(0, 1 - (this.time.now - this.perfectPulseAt) / 400),
       zonePulse: Math.max(0, 1 - (this.time.now - this.zonePulseAt) / 600),
       intro: this.introActive,
-      aimKind: assist ? (assist.angle < TUNING.perfectAngle ? 'perfect' : 'target') : 'none',
+      aimKind: assist ? (assist.angle < this.perfectAngle() ? 'perfect' : 'target') : 'none',
+      // Card hooks for art.js.
+      afterburner: this.mods.afterburnerSeconds > 0 ? this.afterburnerT / this.mods.afterburnerSeconds : 0,
+      shieldReady: this.shieldCharges > 0,
+      grabRangeBonus: grabRangeForSpeed(this.speed) * (this.mods.grabRangeMul - 1),
     };
   }
 
@@ -1073,7 +1358,9 @@ class GameScene extends Phaser.Scene {
     if (!this.introActive || this.explodeT >= 0) ART.drawNova(g, this.novaY, view, ctx);
     if (this.orbit) this.drawAimGuide(g, assist, ctx);
     this.drawCatchRing();
-    this.updateSpeedLines(this.hitstop > 0 ? 0 : Math.min(this.game.loop.delta / 1000, 0.05));
+    const frameDt = this.hitstop > 0 ? 0 : Math.min(this.game.loop.delta / 1000, 0.05);
+    this.drawCardFx(frameDt * (this.cardPick ? GameScene.CARD_TIME_SCALE : 1));
+    this.updateSpeedLines(frameDt);
     this.cometGfx.clear();
     if (this.cometVisible) ART.drawComet(this.cometGfx, this.comet, this.trail, ctx);
     this.drawIntro();
@@ -1088,7 +1375,7 @@ class GameScene extends Phaser.Scene {
     if (this.headless || this.hintStage !== 2 || this.orbit || this.scrape || this.isOver) return;
     const p = this.flightTarget || this.autoCatchTarget || this.nextPlanetAbove();
     if (!p) return;
-    const zone = p.radius + grabRangeForSpeed(this.speed);
+    const zone = p.radius + this.grabRange();
     const gap = this.distanceTo(p) - zone;
     const near = Phaser.Math.Clamp(1 - gap / 600, 0.5, 1);
     const t = this.time.now / 1000;
@@ -1155,6 +1442,10 @@ class GameScene extends Phaser.Scene {
     if (this.isOver) return;
     this.isOver = true;
     this.tweens.timeScale = 1;
+    if (this.cardPick) {
+      this.cardPick = null;
+      this.closeCardScene();
+    }
     const newBestAltitude = this.bestAltitude > this.prevBestAlt;
     if (!this.headless && newBestAltitude) saveBestAltitude(this.bestAltitude);
     this.sfx('gameover', { reason });
@@ -1165,7 +1456,7 @@ class GameScene extends Phaser.Scene {
     // The simulator must never reach GameOver: it would save the bot's score as the real best.
     if (this.headless) return;
     this.time.delayedCall(800, () => {
-      this.scene.start('GameOver', { score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude, bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt) });
+      this.scene.start('GameOver', { score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude, bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt), cards: this.ownedCards.slice() });
     });
   }
 }
@@ -1178,3 +1469,15 @@ GameScene.BEST_LABEL_MIN_Y = 260;
 // Opening scene timeline (seconds): the star swells, explodes, then the comet launches.
 GameScene.INTRO_EXPLODE = 1.7;
 GameScene.INTRO_LAUNCH = 2.1;
+
+// Upgrade card pick: world time scale while the cards are up, and seconds before the middle card is auto-picked.
+GameScene.CARD_TIME_SCALE = 0.06;
+GameScene.CARD_TIMEOUT = 6;
+// Unbreakable rescue: minimum speed after it, and how far below the comet the nova is pushed.
+GameScene.RESCUE_SPEED = 1000;
+GameScene.RESCUE_PUSH = 520;
+// Wall Kick: the bounce leaves at least this steeply upward (unit vy).
+GameScene.WALL_KICK_UP = -0.8;
+GameScene.SHOCK_FX_TIME = 0.5;
+
+GameScene.hex = (color) => '#' + color.toString(16).padStart(6, '0');

@@ -84,10 +84,13 @@ function orbitCloseness(radius, planetRadius) {
 
 // Advances an orbit by dt seconds. Orbits are stable (no crash); closer orbits gain speed
 // faster, so diving in deep before grabbing is the skill.
-function orbitStep(orbit, speed, dt, planetRadius, maxSpeed) {
+// boost (optional, from upgrade cards): { gainMul, closeMul } multiply orbitGain / closeOrbitBonus.
+function orbitStep(orbit, speed, dt, planetRadius, maxSpeed, boost) {
+  const gainMul = boost && boost.gainMul ? boost.gainMul : 1;
+  const closeMul = boost && boost.closeMul ? boost.closeMul : 1;
   const spin = Math.min(speed / orbit.radius, TUNING.maxOrbitSpin);
   const angle = orbit.angle + orbit.dir * spin * dt;
-  const gain = TUNING.orbitGain * (1 + TUNING.closeOrbitBonus * orbitCloseness(orbit.radius, planetRadius));
+  const gain = TUNING.orbitGain * gainMul * (1 + TUNING.closeOrbitBonus * closeMul * orbitCloseness(orbit.radius, planetRadius));
   const target = orbit.targetRadius || orbit.radius;
   const radius = Math.min(target, orbit.radius + TUNING.orbitSettleSpeed * dt);
   return {
