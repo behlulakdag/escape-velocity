@@ -19,11 +19,14 @@ window.botRun = (secs, style) => new Promise((resolve) => {
   const timer = setInterval(() => {
     const s = game.scene.keys.Game;
     if (!s || !s.comet) return;
+    // The Game scene object is reused across restarts, so hook once and read the reason back from it.
     if (!s.__botHooked) {
       s.__botHooked = true;
       const original = s.gameOver.bind(s);
-      s.gameOver = (r) => { reason = r; return original(r); };
+      s.gameOver = (r) => { s.__lastReason = r; return original(r); };
     }
+    if (s.__runId !== t0) { s.__runId = t0; s.__lastReason = null; }
+    reason = s.__lastReason;
     maxSpeed = Math.max(maxSpeed, Math.round(s.speed));
     if (s.isOver || performance.now() - t0 > secs * 1000) return finish(s);
     if (!s.orbit) {
