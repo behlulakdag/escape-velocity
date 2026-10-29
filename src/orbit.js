@@ -257,6 +257,53 @@ function speedColor(fraction) {
   return SPEED_COLOR_STOPS[SPEED_COLOR_STOPS.length - 1][1];
 }
 
+// ---------- game feel (pure, no difficulty impact) ----------
+
+const FEEL = {
+  chainBonus: 50,          // score per PERFECT in the current chain (x1: 50, x2: 100, ...)
+  chainBonusMax: 500,
+  closeCallEnter: 180,     // supernova gap (px) that arms a close call
+  closeCallExit: 420,      // gap you must get back to for it to count
+  closeCallBonus: 250,
+  slowMoHold: 0.35,        // seconds at slowMoScale after a close call
+  slowMoEase: 0.3,         // seconds to ease back to full speed
+  slowMoScale: 0.35,
+  hitstopPerfect: 0.065,   // seconds of freeze on PERFECT
+  hitstopGrab: 0.035,
+};
+
+// Score bonus for the chain-th consecutive PERFECT (chain starts at 1).
+function perfectChainBonus(chain) {
+  if (chain < 1) return 0;
+  return Math.min(FEEL.chainBonusMax, FEEL.chainBonus * chain);
+}
+
+// Close call tracker: arms when the supernova gap drops under closeCallEnter and fires
+// once when the player gets back over closeCallExit. Returns the new armed flag + trigger.
+function closeCallStep(armed, gap) {
+  if (!armed) return { armed: gap < FEEL.closeCallEnter, triggered: false };
+  if (gap > FEEL.closeCallExit) return { armed: false, triggered: true };
+  return { armed: true, triggered: false };
+}
+
+// Simulation time scale `seconds` after a close call: hold low, then ease (smoothstep) back to 1.
+function slowMoScale(seconds) {
+  if (seconds < 0) return 1;
+  if (seconds < FEEL.slowMoHold) return FEEL.slowMoScale;
+  const t = (seconds - FEEL.slowMoHold) / FEEL.slowMoEase;
+  if (t >= 1) return 1;
+  const s = t * t * (3 - 2 * t);
+  return FEEL.slowMoScale + (1 - FEEL.slowMoScale) * s;
+}
+
+// Comet stretch along its velocity: faster and accelerating = longer. Always >= 1.
+// accel is the smoothed speed change in px/s per second (negative = braking, ignored).
+function cometStretch(fraction, accel) {
+  const base = 1 + 0.38 * Math.max(0, Math.min(1, fraction));
+  const kick = Math.max(0, Math.min(0.22, accel / 6000));
+  return Math.min(1.6, base + kick);
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

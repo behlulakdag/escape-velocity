@@ -13,9 +13,17 @@ class HudScene extends Phaser.Scene {
       this.danger.fillStyle(0xff3a1f, 0.07);
       this.danger.fillRect(0, GAME_HEIGHT - 40 - i * 40, GAME_WIDTH, 40 + i * 40);
     }
-    this.scoreText = this.add.text(32, 40, '0', { ...style, fontSize: '60px' });
+    this.targetScore = 0;
+    this.shownScore = 0;
+    this.lastMultiplier = 1;
+    this.chain = 0;
+    // Origin at the left-middle so the count-up bump scales in place.
+    this.scoreText = this.add.text(32, 72, '0', { ...style, fontSize: '60px' }).setOrigin(0, 0.5);
     this.altText = this.add.text(34, 110, '0 m', { ...style, fontSize: '32px', color: '#c9bfff', strokeThickness: 8 });
-    this.speedText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 130, '', { ...style, fontSize: '56px' }).setOrigin(0.5);
+    this.chainText = this.add.text(34, 156, '', { ...style, fontSize: '36px', color: '#ffe14d', strokeThickness: 8 })
+      .setOrigin(0, 0).setAlpha(0);
+    this.speedText = this.add.text(GAME_WIDTH / 2 - 60, GAME_HEIGHT - 130, '', { ...style, fontSize: '52px' }).setOrigin(0.5);
+    this.createMultiplierBadge();
     this.hintText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 240, '', { ...style, fontSize: '44px', color: '#ffe14d' })
       .setOrigin(0.5);
     this.tweens.add({ targets: this.hintText, scale: 1.1, yoyo: true, repeat: -1, duration: 420 });
@@ -26,13 +34,87 @@ class HudScene extends Phaser.Scene {
     addFullscreenButton(this);
   }
 
+  // "x3" badge: outlined plate with a lighter top band, pulses when the multiplier rises.
+  createMultiplierBadge() {
+    this.badgePlate = this.add.graphics();
+    this.tintBadge(speedColor(0));
+    this.badgeText = this.add.text(0, 2, 'x1', {
+      fontFamily: FONT, fontSize: '48px', color: '#1a1033',
+    }).setOrigin(0.5);
+    this.badge = this.add.container(GAME_WIDTH / 2 + 190, GAME_HEIGHT - 130, [this.badgePlate, this.badgeText]);
+  }
+
+  update(time, delta) {
+    if (!this.scoreText) return;
+    // Count up smoothly; never lag far behind on big jumps.
+    const dt = Math.min(delta / 1000, 0.05);
+    const gap = this.targetScore - this.shownScore;
+    if (gap > 0) {
+      this.shownScore = Math.min(this.targetScore, this.shownScore + Math.max(1, gap * Math.min(1, dt * 9)));
+    } else {
+      this.shownScore = this.targetScore;
+    }
+    this.scoreText.setText(Math.floor(this.shownScore));
+  }
+
   setStats(score, altitude, speed) {
-    this.scoreText.setText(score);
+    // A big gain in one go (PERFECT chain, close call) gets a bump.
+    if (score - this.targetScore >= 100) this.bump(this.scoreText, 1.3);
+    this.targetScore = score;
     this.altText.setText(altitude + ' m');
     const f = speedFraction(speed);
-    this.speedText.setText(Math.round(speed / 10) + ' km/s  x' + speedMultiplier(speed));
-    this.speedText.setColor('#' + speedColor(f).toString(16).padStart(6, '0'));
+    const color = speedColor(f);
+    this.speedText.setText(Math.round(speed / 10) + ' km/s');
+    this.speedText.setColor('#' + color.toString(16).padStart(6, '0'));
     this.speedText.setScale(1 + f * 0.15);
+    const level = speedMultiplier(speed);
+    if (level !== this.lastMultiplier) {
+      this.badgeText.setText('x' + level);
+      if (level > this.lastMultiplier) this.bump(this.badge, 1.5);
+      this.lastMultiplier = level;
+    }
+    this.badgeText.setColor(level >= 4 ? '#c2410c' : '#1a1033');
+    this.tintBadge(color);
+  }
+
+  // Graphics cannot be tinted, so redraw the plate color only when it changes.
+  tintBadge(color) {
+    if (color === this.badgeColor) return;
+    this.badgeColor = color;
+    const w = 124;
+    const h = 84;
+    const g = this.badgePlate;
+    g.clear();
+    g.fillStyle(0x1a1033, 1);
+    g.fillRoundedRect(-w / 2 - 6, -h / 2 - 6, w + 12, h + 12, 24);
+    g.fillStyle(color, 1);
+    g.fillRoundedRect(-w / 2, -h / 2, w, h, 18);
+    g.fillStyle(0xffffff, 0.35);
+    g.fillRoundedRect(-w / 2 + 8, -h / 2 + 6, w - 16, h * 0.32, 10);
+  }
+
+  // Current PERFECT chain (0 hides it).
+  setChain(chain) {
+    if (!this.chainText) return;
+    const previous = this.chain;
+    this.chain = chain;
+    this.tweens.killTweensOf(this.chainText);
+    if (chain >= 2) {
+      this.chainText.setText('PERFECT CHAIN x' + chain).setAlpha(1);
+      this.chainText.setColor(chain >= 5 ? '#ffffff' : '#ffe14d');
+      this.chainText.setScale(1.5);
+      this.tweens.add({ targets: this.chainText, scale: 1, duration: 260, ease: 'Back.Out' });
+    } else if (previous >= 2) {
+      // Chain broken: drop and fade.
+      this.chainText.setText('CHAIN LOST').setColor('#ff4d6d').setScale(1);
+      this.tweens.add({ targets: this.chainText, alpha: 0, y: 176, duration: 600, onComplete: () => this.chainText.setY(156) });
+    }
+  }
+
+  bump(target, scale) {
+    this.tweens.killTweensOf(target);
+    target.setScale(scale);
+    this.tweens.add({ targets: target, scale: 1, duration: 300, ease: 'Back.Out' });
   }
 
   showBanner(title, subtitle) {

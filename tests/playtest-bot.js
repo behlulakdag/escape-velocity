@@ -10,7 +10,8 @@
 
   window.simRun = (style, maxSeconds) => {
     ['Menu', 'GameOver', 'Game'].forEach((k) => game.scene.stop(k));
-    game.scene.start('Game');
+    // headless: skips the opening scene, hitstop, slow motion and best-altitude saves.
+    game.scene.start('Game', { headless: true });
     for (let i = 0; i < 5; i++) step();
     const s = game.scene.keys.Game;
     const proto = Object.getPrototypeOf(s);
@@ -18,12 +19,16 @@
     let perfects = 0;
     let warps = 0;
     let hits = 0;
+    let closeCalls = 0;
+    let maxChain = 0;
     s.gameOver = function (r) { reason = r; return proto.gameOver.call(this, r); };
-    s.popText = function (label, color) {
-      if (label === 'PERFECT!') perfects++;
+    s.popText = function (label, color, opts) {
+      if (label.startsWith('PERFECT')) perfects++;
+      if (label === 'CLOSE CALL!') closeCalls++;
+      maxChain = Math.max(maxChain, this.perfectChain);
       if (label === 'WARP!') warps++;
       if (label.startsWith('-')) hits++;
-      return proto.popText.call(this, label, color);
+      return proto.popText.call(this, label, color, opts);
     };
     let left = null;
     let held = 0;
@@ -49,9 +54,11 @@
       step();
       maxSpeed = Math.max(maxSpeed, s.speed);
     }
+    // Phaser reuses the last start data when none is passed: do not leak headless into real play.
+    s.sys.settings.data = {};
     delete s.gameOver;
     delete s.popText;
-    return { style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, warps, hits };
+    return { style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits };
   };
 
   window.playtestSummary = (styles, runsEach) => {
@@ -64,6 +71,8 @@
         medianAlt: median(runs.map((r) => r.alt)),
         medianScore: median(runs.map((r) => r.score)),
         reasons: [...new Set(runs.map((r) => r.reason))].join('/'),
+        maxChain: Math.max(...runs.map((r) => r.maxChain)),
+        closeCalls: runs.reduce((n, r) => n + r.closeCalls, 0),
       };
     }
     return out;

@@ -156,3 +156,38 @@ test('supernova speeds up over time and is capped', () => {
   assert.ok(o.novaSpeed(30) > o.novaSpeed(0));
   assert.strictEqual(o.novaSpeed(1e6), o.TUNING.novaMaxSpeed);
 });
+
+test('PERFECT chain bonus grows with the chain and is capped', () => {
+  assert.strictEqual(o.perfectChainBonus(0), 0);
+  assert.strictEqual(o.perfectChainBonus(1), o.FEEL.chainBonus);
+  assert.ok(o.perfectChainBonus(3) > o.perfectChainBonus(2));
+  assert.strictEqual(o.perfectChainBonus(1000), o.FEEL.chainBonusMax);
+});
+
+test('close call arms near the supernova and fires once on escape', () => {
+  let s = o.closeCallStep(false, 600);
+  assert.deepStrictEqual(s, { armed: false, triggered: false });
+  s = o.closeCallStep(s.armed, 150);
+  assert.strictEqual(s.armed, true);
+  s = o.closeCallStep(s.armed, 300);   // still close: nothing yet
+  assert.deepStrictEqual(s, { armed: true, triggered: false });
+  s = o.closeCallStep(s.armed, 500);
+  assert.deepStrictEqual(s, { armed: false, triggered: true });
+  s = o.closeCallStep(s.armed, 600);
+  assert.strictEqual(s.triggered, false, 'fires only once');
+});
+
+test('slow motion holds low, then eases back to full speed', () => {
+  assert.strictEqual(o.slowMoScale(0), o.FEEL.slowMoScale);
+  const mid = o.slowMoScale(o.FEEL.slowMoHold + o.FEEL.slowMoEase / 2);
+  assert.ok(mid > o.FEEL.slowMoScale && mid < 1);
+  assert.strictEqual(o.slowMoScale(5), 1);
+});
+
+test('comet stretch is >= 1, grows with speed and acceleration, capped at 1.6', () => {
+  assert.strictEqual(o.cometStretch(0, 0), 1);
+  assert.ok(o.cometStretch(1, 0) > o.cometStretch(0.5, 0));
+  assert.ok(o.cometStretch(0.5, 3000) > o.cometStretch(0.5, 0));
+  assert.strictEqual(o.cometStretch(0.5, -5000), o.cometStretch(0.5, 0));
+  assert.ok(o.cometStretch(1, 1e9) <= 1.6);
+});
