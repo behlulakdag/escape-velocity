@@ -34,6 +34,8 @@
 - [x] Bundled Lilita One font; onboarding auto catch only until the player catches once (localStorage flag)
 - [x] Art direction: current look is final (sketchbook and glossy UI-kit restyles were tried and rejected; stashed)
 - [x] Roguelite upgrade cards (src/cards.js, CardScene): 12 cards / 4 families / set bonuses, pick 1 of 3 at every zone from 500 m, 6% slow-mo while picking, +5% supernova speed per card. Critic: Fun 4 (was 3.5), Visual 4, Theme 4.5
+- [x] Sketchbook style is FINAL (user clarified); merged onto the card system: paper pages per zone, ink/crayon look, card UI as taped index cards, notebook game over with stats + build. Frame cost ~0.7ms (was ~5.2ms). Critic: Fun 4, Visual 4.5, Theme 4.5
+- [ ] Sketchbook polish from critic: zone banner then card pick (no overlap), pops away from the comet (one at a time), wall kick shows no red -30%, dark ink HUD on the cream last page, bigger HUD card row and build labels, calmer HYPERSONIC squiggles, death beat before game over
 - [ ] Card polish from critic: pick 1.2s after zone banner, pop lane (no pile-up over comet), visible tells for passive cards (Aerodynamic, Overdrive, Tail Armor), legendaries that change behaviour, game over build shown at once, shield cards more reachable, Shockwave line visible, balance per-card nova cost
 - [ ] Listen to audio on a real phone (never heard yet)
 - [ ] itch page: GIF of PERFECT chain, controls line, menu cover
