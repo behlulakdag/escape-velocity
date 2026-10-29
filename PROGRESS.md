@@ -26,7 +26,10 @@
 - [x] Asteroids (600 m+, any direction, curving) and non-solid black holes (1800 m+, bend path, core warps ~60deg)
 - [x] build.ps1 cache-busts scripts (?v=build) so phones load new code after each update
 - [x] Headless sim (tests/playtest-bot.js), 10 runs each: random 5-32s, careful 20-74s, skilled 23-102s (highest score)
+- [x] Round 3: stable orbits (no crash), smaller grab zone, close-orbit speed bonus; SUPERNOVA wave is the only way to lose (130->160 px/s +5/s, max 250px below screen); minSpeed 140; smooth homing release (96.7% hit) and eased latch
+- [x] Sim (8 runs each): idle 10-17s, random 2-7s, careful 26-105s, skilled 33-104s (highest score)
 - [ ] User phone test of this round
+- [ ] Next: PERFECT chain multiplier, 3s opening scene (star explodes), then design pass (planet faces), sound, itch page
 - [ ] Design pass (art), then sound/music (user wants these last)
 - [ ] Real itch page "Escape Velocity" (currently deploying to the test page)
 

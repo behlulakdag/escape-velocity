@@ -3,7 +3,7 @@
 //   eval(await (await fetch('tests/playtest-bot.js', { cache: 'no-store' })).text())
 //   playtestSummary(['random', 'careful', 'skilled'], 10)
 // Styles: random = releases at a random time (confused new player), careful = releases on the
-// first green aim, skilled = waits for the gold PERFECT window (gives up after 2.5s).
+// first green aim, skilled = waits for the gold PERFECT window (gives up after 2.5s), idle = never touches.
 (() => {
   let clock = performance.now();
   const step = () => { clock += 16.67; game.scene.update(clock, 16.67); };
@@ -34,7 +34,7 @@
       frames++;
       if (!s.orbit) {
         const p = s.nearestGrabbablePlanet();
-        s.isHolding = !!(p && p !== left);
+        s.isHolding = style !== 'idle' && !!(p && p !== left);
         held = 0;
         releaseAfter = 300 + Math.random() * 1200;
       } else {
