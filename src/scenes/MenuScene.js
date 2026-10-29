@@ -29,24 +29,27 @@ class MenuScene extends Phaser.Scene {
       fontFamily: FONT, fontSize: '36px', color: '#ff9ad5', stroke: '#1a1033', strokeThickness: 8,
     }).setOrigin(0.5);
 
-    const play = makeButton(this, cx, 995, 'PLAY', () => this.scene.start('Game'), {
+    // Fresh data object so a previous scene.start's data (e.g. skipIntro from RETRY) never leaks in.
+    const startGame = () => this.scene.start('Game', {});
+    const play = makeButton(this, cx, 950, 'PLAY', startGame, {
       width: 440, height: 130, fontSize: '64px',
     });
     this.tweens.add({ targets: play, scale: 1.05, yoyo: true, repeat: -1, duration: 600, ease: 'Sine.easeInOut' });
 
     const best = loadHighScore();
     if (best > 0) {
-      this.add.text(cx, 1108, 'BEST  ' + best, {
+      this.add.text(cx, 1060, 'BEST  ' + best, {
         fontFamily: FONT, fontSize: '40px', color: '#ffe14d', stroke: '#1a1033', strokeThickness: 8,
       }).setOrigin(0.5);
     }
-    this.add.text(cx, 1172, 'HOLD near a planet to orbit - RELEASE to fling\noutrun the supernova!', {
+    // Kept ~120 px above the bottom edge: browser bars / home indicators cover the last few px on phones.
+    this.add.text(cx, 1122, 'HOLD near a planet to orbit - RELEASE to fling\noutrun the supernova!', {
       fontFamily: FONT, fontSize: '26px', color: '#ffffff', align: 'center', stroke: '#1a1033', strokeThickness: 7,
     }).setOrigin(0.5).setDepth(5);
 
     makeMuteButton(this, 92, 116);
     addFullscreenButton(this);
-    this.input.keyboard.on('keydown-SPACE', () => this.scene.start('Game'));
+    this.input.keyboard.on('keydown-SPACE', startGame);
   }
 
   update(time, delta) {

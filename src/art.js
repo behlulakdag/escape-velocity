@@ -2,7 +2,8 @@
 // game logic. Every function draws into a Phaser Graphics object `g` in world coordinates.
 // `ctx` carries read-only state useful for reactive art:
 //   { time (seconds), comet {x,y,vx,vy}, speed, speedFraction, orbitPlanet, isHolding, danger (0..1),
-//     stretch (>=1), perfectChain (int), closeCall (0..1), aimKind ('none'|'target'|'perfect', optional) }  - newer fields may be undefined.
+//     stretch (>=1), perfectChain (int), closeCall (0..1), squash (0..1, optional),
+//     aimKind ('none'|'target'|'perfect', optional) }  - newer fields may be undefined.
 // Style: bright cartoon space, thick dark outlines, cel shading, cute faces on everything.
 // Performance: everything is redrawn each frame, so shapes stay cheap (circles, short polygons)
 // and per-object geometry that never changes is computed once and cached on the object (`_art`).
@@ -227,11 +228,14 @@ const ART = {
     // Grab zone: dashed ring so players learn where holding works. Green = release now.
     if (isTarget) {
       // ctx.aimKind (optional) lets the zone turn gold together with a PERFECT aim line.
-      const zoneColor = ctx.aimKind === 'perfect' ? ART.gold : ART.green;
-      const pulse = 0.5 + 0.5 * Math.sin(t * 8);
-      g.fillStyle(zoneColor, 0.08 + pulse * 0.07);
+      const perfect = ctx.aimKind === 'perfect';
+      const zoneColor = perfect ? ART.gold : ART.green;
+      const pulse = 0.5 + 0.5 * Math.sin(t * (perfect ? 14 : 8));
+      g.fillStyle(zoneColor, 0.08 + pulse * (perfect ? 0.1 : 0.07));
       g.fillCircle(p.x, p.y, zone);
-      ART.dashedRing(g, p.x, p.y, zone, 28, t * 0.8, 7, zoneColor, 0.95);
+      ART.dashedRing(g, p.x, p.y, zone, 28, t * (perfect ? 1.6 : 0.8), perfect ? 9 : 7, zoneColor, 0.95);
+      // PERFECT: a second thin inner ring so the zone reads as "special", not just recolored.
+      if (perfect) ART.dashedRing(g, p.x, p.y, zone - 14, 20, -t * 1.2, 4, 0xffffff, 0.35 + pulse * 0.3);
     } else {
       ART.dashedRing(g, p.x, p.y, zone, 28, t * 0.25, highlighted ? 5 : 4, 0xffffff, highlighted ? 0.55 : 0.13);
     }
@@ -712,12 +716,16 @@ const ART = {
 
     // Head, stretched along the velocity (squash & stretch keeps the area roughly equal).
     const stretch = Math.max(1, Math.min(2.2, ctx.stretch || 1));
+    // Impact squash (1 right after a grab/hit, decays to 0): shorter along travel, wider across it.
+    const squash = Math.max(0, Math.min(1, ctx.squash || 0));
+    const alongScale = stretch * (1 - 0.32 * squash);
+    const acrossScale = (1 / Math.sqrt(stretch)) * (1 + 0.38 * squash);
     const angle = Math.atan2(dir.y, dir.x);
     const flick = Math.sin(t * 30) * 4;
     g.save();
     g.translateCanvas(comet.x, comet.y);
     g.rotateCanvas(angle);
-    g.scaleCanvas(stretch, 1 / Math.sqrt(stretch));
+    g.scaleCanvas(alongScale, acrossScale);
     g.fillStyle(outer, 0.28);
     g.fillCircle(0, 0, r * 1.55);
     // Flame crown licking backward.

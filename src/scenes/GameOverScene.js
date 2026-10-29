@@ -8,6 +8,8 @@ class GameOverScene extends Phaser.Scene {
     this.finalScore = data.score || 0;
     this.reason = data.reason || 'GAME OVER';
     this.altitude = data.altitude || 0;
+    this.newBestAltitude = !!data.newBestAltitude;
+    this.bestAltitude = Math.max(data.bestAltitude || 0, this.altitude);
   }
 
   create() {
@@ -46,21 +48,31 @@ class GameOverScene extends Phaser.Scene {
     if (isRecord) {
       this.tweens.add({ targets: bestLine, scale: 1.12, angle: 3, yoyo: true, repeat: -1, duration: 380, ease: 'Sine.easeInOut' });
       this.time.delayedCall(500, () => {
-        this.game.events.emit('sfx', 'newbest', {});
+        // A new best altitude already played the fanfare mid-run (flag pass), so a run gets at most one.
+        if (!this.newBestAltitude) this.game.events.emit('sfx', 'newbest', {});
         for (let i = 0; i < 14; i++) this.confetti(cx, 500);
       });
     }
-    this.add.text(cx, 565, 'ALTITUDE  ' + this.altitude + ' m', {
+    this.add.text(cx, 560, 'ALTITUDE  ' + this.altitude + ' m', {
       fontFamily: FONT, fontSize: '32px', color: '#9ff3ff', ...stroke, strokeThickness: 8,
     }).setOrigin(0.5);
+    // Green matches the in-game best-altitude flag and its "NEW BEST!" pop.
+    const altBest = this.add.text(cx, 600, this.newBestAltitude ? 'NEW BEST ALTITUDE!' : 'BEST  ' + this.bestAltitude + ' m', {
+      fontFamily: FONT, fontSize: this.newBestAltitude ? '30px' : '26px', color: this.newBestAltitude ? '#5eff8f' : '#c9bfff',
+      ...stroke, strokeThickness: 7,
+    }).setOrigin(0.5);
+    if (this.newBestAltitude) {
+      this.tweens.add({ targets: altBest, scale: 1.08, yoyo: true, repeat: -1, duration: 420, ease: 'Sine.easeInOut' });
+    }
 
-    makeButton(this, cx, 705, 'RETRY', () => this.scene.start('Game'), { width: 460, height: 140, fontSize: '68px' });
-    makeButton(this, cx, 868, 'MENU', () => this.scene.start('Menu'), {
+    const retry = () => this.scene.start('Game', { skipIntro: true });   // instant restart: no intro
+    makeButton(this, cx, 715, 'RETRY', retry, { width: 460, height: 140, fontSize: '68px' });
+    makeButton(this, cx, 875, 'MENU', () => this.scene.start('Menu'), {
       color: 0x9ff3ff, width: 320, height: 104, fontSize: '44px',
     });
     makeMuteButton(this, 92, 116);
     addFullscreenButton(this);
-    this.input.keyboard.on('keydown-SPACE', () => this.scene.start('Game'));
+    this.input.keyboard.on('keydown-SPACE', retry);
   }
 
   confetti(x, y) {
