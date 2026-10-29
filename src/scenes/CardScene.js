@@ -4,14 +4,19 @@
 // countdown runs out) plays the exit, then emits game.events 'cards:picked' (id) once and stops.
 // The exit runs BEFORE the emit because GameScene stops this scene as soon as it hears the pick.
 // Card data comes from src/cards.js (CARDS, CARD_FAMILIES, SET_BONUSES, activeSetBonuses).
+//
+// Sketchbook look: each card is a taped index card dealt onto the page. Family = crayon patch
+// behind the ink icon; rarity = common plain outline, rare double ink outline, legendary gold
+// crayon border with doodled stars. Everything static is baked into boil-variant textures
+// (src/utils.js uiSketchTexture); only the pencil countdown ring is redrawn, on the boil clock.
 
 const CARD_UI = {
   width: 214,
   height: 380,
+  pad: 24,              // texture margin around the card for shadow / border strokes
   spacing: 234,
   centerY: 850,
-  headerY: 560,
-  trim: 9,
+  headerY: 548,
   inputDelay: 280,      // ms before taps count, so a held finger lifting is not a pick
   autoWarn: 2,          // seconds left when the middle card starts nudging
 };
@@ -19,45 +24,139 @@ const CARD_UI = {
 // Exit animation length (ms) before the pick is reported to the game.
 const EXIT_MS = 360;
 
-const RARITY_STYLE = {
-  common: { label: 'COMMON', trim: null, pill: 0x1a1033, pillText: '#ffffff' },
-  rare: { label: 'RARE', trim: 0xdfe8f5, pill: 0xdfe8f5, pillText: '#1a1033' },
-  legendary: { label: 'LEGENDARY', trim: 0xffe14d, pill: 0xffe14d, pillText: '#1a1033' },
+const CARD_RARITY_WORD = {
+  common: { text: 'common', color: UI_INK.pencilDarkHex },
+  rare: { text: 'rare', color: UI_INK.darkHex },
+  legendary: { text: 'legendary!', color: '#9a6a00' },
 };
 
-function cssColor(color) {
-  return '#' + color.toString(16).padStart(6, '0');
+// ---- baked card textures (white/cream; family color comes from tinting the patch) ----
+
+function cardPaperTexture(scene) {
+  const { width: w, height: h, pad } = CARD_UI;
+  return uiSketchTexture(scene, 'cd_paper', w + pad * 2, h + pad * 2, (ctx, shape, jitter) => {
+    const pts = uiWobblyRect(pad, pad, w, h, shape, jitter, 1);
+    uiTracePath(ctx, pts.map((p) => ({ x: p.x + 7, y: p.y + 11 })), true);
+    ctx.fillStyle = 'rgba(5,6,16,0.45)';
+    ctx.fill();
+    uiTracePath(ctx, pts, true);
+    ctx.fillStyle = uiCss(UI_CRAYON.note);
+    ctx.fill();
+    ctx.save();
+    uiTracePath(ctx, pts, true);
+    ctx.clip();
+    // Index card: red header rule and blue lines under the text area.
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(214,70,70,0.45)';
+    ctx.beginPath();
+    ctx.moveTo(pad, pad + h * 0.56 + (shape() - 0.5) * 2);
+    ctx.lineTo(pad + w, pad + h * 0.56 + (shape() - 0.5) * 3);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(90,135,200,0.32)';
+    for (let k = 1; k <= 4; k++) {
+      const y = pad + h * 0.56 + k * 34;
+      ctx.beginPath();
+      ctx.moveTo(pad, y + (shape() - 0.5) * 2);
+      ctx.lineTo(pad + w, y + (shape() - 0.5) * 2);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 70; i++) {
+      const x = pad + shape() * w;
+      const y = pad + shape() * h;
+      const a = shape() * UI_TAU;
+      ctx.strokeStyle = 'rgba(120,95,50,0.1)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(a) * 14, y + Math.sin(a) * 14);
+      ctx.stroke();
+    }
+    ctx.restore();
+    uiStroke(ctx, pts, jitter, { width: 3, color: UI_INK.dark, closed: true, overshoot: 2, retrace: false });
+    // Tape across the top edge.
+    ctx.save();
+    ctx.translate(pad + w / 2 + (shape() - 0.5) * 20, pad + 2);
+    ctx.rotate(-0.06 + (shape() - 0.5) * 0.1);
+    const tape = [];
+    for (let i = 0; i <= 3; i++) tape.push({ x: 40 + (i % 2 ? 5 : 0), y: -12 + i * 8 });
+    for (let i = 3; i >= 0; i--) tape.push({ x: -40 - (i % 2 ? 4 : 0), y: -12 + i * 8 });
+    uiTracePath(ctx, tape, true);
+    ctx.fillStyle = 'rgba(240,232,190,0.62)';
+    ctx.fill();
+    ctx.restore();
+  });
 }
 
-// Clips a convex polygon to an axis-aligned rect (Sutherland-Hodgman), for the shimmer band.
-function clipToRect(pts, left, top, right, bottom) {
-  const edges = [
-    (p) => p.x >= left, (p) => p.x <= right, (p) => p.y >= top, (p) => p.y <= bottom,
-  ];
-  const cross = [
-    (a, b) => ({ x: left, y: a.y + (b.y - a.y) * (left - a.x) / (b.x - a.x) }),
-    (a, b) => ({ x: right, y: a.y + (b.y - a.y) * (right - a.x) / (b.x - a.x) }),
-    (a, b) => ({ x: a.x + (b.x - a.x) * (top - a.y) / (b.y - a.y), y: top }),
-    (a, b) => ({ x: a.x + (b.x - a.x) * (bottom - a.y) / (b.y - a.y), y: bottom }),
-  ];
-  let out = pts;
-  for (let e = 0; e < 4 && out.length; e++) {
-    const input = out;
-    out = [];
-    for (let i = 0; i < input.length; i++) {
-      const cur = input[i];
-      const prev = input[(i + input.length - 1) % input.length];
-      const curIn = edges[e](cur);
-      const prevIn = edges[e](prev);
-      if (curIn) {
-        if (!prevIn) out.push(cross[e](prev, cur));
-        out.push(cur);
-      } else if (prevIn) {
-        out.push(cross[e](prev, cur));
-      }
+// White crayon patch behind the icon (tinted with the family crayon).
+function cardPatchTexture(scene) {
+  return uiSketchTexture(scene, 'cd_patch', 200, 176, (ctx, shape, jitter) => {
+    const pts = uiLoop(100, 88, 80, 68, shape, jitter, { n: 20, amp: 1.2, lop: 0.09 });
+    uiHatch(ctx, pts, jitter, { color: 0xffffff, spacing: 5, width: 4.5, alpha: 0.9, angle: -0.95, offX: 5, offY: -3, gaps: 0.08 });
+    uiHatch(ctx, pts, jitter, { color: 0xffffff, spacing: 9, width: 3, alpha: 0.5, angle: -0.4, offX: 2, offY: 3, grow: 1, gaps: 0.2 });
+    uiGrain(ctx, 200, 176, jitter, 0.02);
+  });
+}
+
+// Rare: a second, looser ink outline just outside the first.
+function cardRareTexture(scene) {
+  const { width: w, height: h, pad } = CARD_UI;
+  return uiSketchTexture(scene, 'cd_rare', w + pad * 2, h + pad * 2, (ctx, shape, jitter) => {
+    const pts = uiWobblyRect(pad - 9, pad - 9, w + 18, h + 18, shape, jitter, 1.6);
+    uiStroke(ctx, pts, jitter, { width: 4.5, color: UI_INK.cream, closed: true, overshoot: 3, retrace: true });
+    const inner = uiWobblyRect(pad + 7, pad + 7, w - 14, h - 14, shape, jitter, 1.2);
+    uiStroke(ctx, inner, jitter, { width: 2, color: UI_INK.dark, alpha: 0.75, closed: true, overshoot: 2, retrace: false });
+  });
+}
+
+// Legendary: thick gold crayon border scribbled round the card edge.
+function cardLegendTexture(scene) {
+  const { width: w, height: h, pad } = CARD_UI;
+  return uiSketchTexture(scene, 'cd_legend', w + pad * 2, h + pad * 2, (ctx, shape, jitter) => {
+    const outer = uiWobblyRect(pad - 13, pad - 13, w + 26, h + 26, shape, jitter, 1.4);
+    const inner = uiWobblyRect(pad + 9, pad + 9, w - 18, h - 18, shape, jitter, 1.2);
+    // Clip to the band between the two outlines (even-odd ring).
+    ctx.save();
+    const ring = new Path2D();
+    ring.moveTo(outer[0].x, outer[0].y);
+    for (const p of outer) ring.lineTo(p.x, p.y);
+    ring.closePath();
+    ring.moveTo(inner[0].x, inner[0].y);
+    for (let i = inner.length - 1; i >= 0; i--) ring.lineTo(inner[i].x, inner[i].y);
+    ring.closePath();
+    ctx.clip(ring, 'evenodd');
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 260; i++) {
+      // Short crayon strokes all round the band.
+      const t = i / 260;
+      const per = 2 * (w + h);
+      let d = t * per;
+      let x; let y;
+      if (d < w) { x = pad + d; y = pad; } else if ((d -= w) < h) { x = pad + w; y = pad + d; } else if ((d -= h) < w) { x = pad + w - d; y = pad + h; } else { d -= w; x = pad; y = pad + h - d; }
+      ctx.strokeStyle = uiCss(CARD_GOLD, 0.7 + jitter() * 0.3);
+      ctx.lineWidth = 4 + jitter() * 3;
+      ctx.beginPath();
+      ctx.moveTo(x - 12 + (jitter() - 0.5) * 6, y + 12 + (jitter() - 0.5) * 6);
+      ctx.lineTo(x + 12 + (jitter() - 0.5) * 6, y - 12 + (jitter() - 0.5) * 6);
+      ctx.stroke();
     }
-  }
-  return out;
+    ctx.restore();
+    uiStroke(ctx, outer, jitter, { width: 2.4, color: 0x8a5a10, closed: true, retrace: false });
+  });
+}
+
+// Small yellow scrap for the "+1 SET" hint, taped across the bottom of a card.
+function cardSetNoteTexture(scene) {
+  return uiSketchTexture(scene, 'cd_setnote', 250, 92, (ctx, shape, jitter) => {
+    const pts = uiWobblyRect(14, 14, 222, 62, shape, jitter, 0.8);
+    uiTracePath(ctx, pts.map((p) => ({ x: p.x + 4, y: p.y + 6 })), true);
+    ctx.fillStyle = 'rgba(5,6,16,0.4)';
+    ctx.fill();
+    uiTracePath(ctx, pts, true);
+    ctx.fillStyle = uiCss(0xfff6c8);
+    ctx.fill();
+    uiHatch(ctx, pts, jitter, { color: 0xffffff, spacing: 4, width: 4, alpha: 0.9, offX: 2, offY: -1, grow: 0.98 });
+    uiStroke(ctx, pts, jitter, { width: 2.4, color: UI_INK.dark, closed: true, retrace: false });
+  });
 }
 
 class CardScene extends Phaser.Scene {
@@ -79,22 +178,32 @@ class CardScene extends Phaser.Scene {
     // of a freshly launched scene, so a timestamp taken here would expire the countdown at once.
     this.elapsed = 0;
     this.cards = [];
+    cardPaperTexture(this);
+    cardPatchTexture(this);
+    cardRareTexture(this);
+    cardLegendTexture(this);
+    cardSetNoteTexture(this);
+    uiStarTexture(this);
+    uiUnderlineTexture(this);
+    uiCircleTexture(this);
 
     // Dim, not a wash: the slowed game stays readable behind the cards.
-    this.dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x120a2a).setOrigin(0).setAlpha(0);
+    this.dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x0b0d1c).setOrigin(0).setAlpha(0);
     this.tweens.add({ targets: this.dim, alpha: 0.55, duration: 180 });
 
-    const stroke = { stroke: '#1a1033', strokeThickness: 12 };
-    this.header = this.add.text(GAME_WIDTH / 2, CARD_UI.headerY, 'PICK AN UPGRADE', {
-      fontFamily: FONT, fontSize: '66px', color: '#ffe14d', ...stroke, strokeThickness: 14,
-    }).setOrigin(0.5).setShadow(0, 7, '#1a1033', 0, true, true).setScale(0.4);
-    this.tweens.add({ targets: this.header, scale: Math.min(1, (GAME_WIDTH - 60) / this.header.width), duration: 300, ease: 'Back.Out' });
-    // Honest cost: every pick feeds the supernova.
+    this.header = uiTitleText(this, GAME_WIDTH / 2, CARD_UI.headerY, 'PICK AN UPGRADE', { size: 64, rot: -0.03, shadowColor: uiColorHex(UI_CRAYON.orange) });
+    const headerFit = Math.min(1, (GAME_WIDTH - 60) / this.header.main.width);
+    this.header.setScale(headerFit * 0.4);
+    this.tweens.add({ targets: this.header, scale: headerFit, duration: 300, ease: 'Back.Out' });
+    // Honest cost: every pick feeds the supernova. Written in red crayon with a scrawled underline.
     const novaPct = typeof CARD_TUNING !== 'undefined' ? Math.round(CARD_TUNING.novaPerCard * 100) : 5;
-    this.subHeader = this.add.text(GAME_WIDTH / 2, CARD_UI.headerY + 54, 'SUPERNOVA +' + novaPct + '% FASTER', {
-      fontFamily: FONT, fontSize: '28px', color: '#ff9a6b', ...stroke, strokeThickness: 7,
-    }).setOrigin(0.5).setAlpha(0);
+    this.subHeader = uiInkText(this, GAME_WIDTH / 2 + 10, CARD_UI.headerY + 62, 'SUPERNOVA +' + novaPct + '% FASTER', {
+      size: 30, color: uiColorHex(UI_CRAYON.red), rot: 0.02,
+    }).setAlpha(0);
+    this.subLine = uiBoilImage(this, GAME_WIDTH / 2 + 14, CARD_UI.headerY + 86, 'ui_underline')
+      .setTint(UI_CRAYON.red).setScale(0, 0.6).setAlpha(0.8).setRotation(0.02);
     this.tweens.add({ targets: this.subHeader, alpha: 1, delay: 150, duration: 200 });
+    this.tweens.add({ targets: this.subLine, scaleX: 0.66, delay: 260, duration: 220, ease: 'Quad.Out' });
 
     const n = this.choices.length;
     this.choices.forEach((id, i) => {
@@ -103,16 +212,16 @@ class CardScene extends Phaser.Scene {
     });
     this.autoIndex = Math.floor((n - 1) / 2);
 
-    // Countdown ring under the card that gets auto-picked.
+    // Pencil countdown ring under the card that gets auto-picked (redrawn on the boil clock).
     this.ringGfx = this.add.graphics();
-    this.ringText = this.add.text(0, 0, '', {
-      fontFamily: FONT, fontSize: '34px', color: '#ffffff', stroke: '#1a1033', strokeThickness: 7,
-    }).setOrigin(0.5);
+    this.ringText = uiInkText(this, 0, 0, '', { size: 36, rot: -0.04 });
     this.ringAnchor = this.cards[this.autoIndex]
       ? { x: this.cards[this.autoIndex].baseX, y: CARD_UI.centerY + CARD_UI.height / 2 + 96 }
       : { x: GAME_WIDTH / 2, y: CARD_UI.centerY };
     this.ringText.setPosition(this.ringAnchor.x, this.ringAnchor.y + 1).setAlpha(0);
-    this.tweens.add({ targets: this.ringText, alpha: 1, delay: 300, duration: 200 });
+    this.ringGfx.setAlpha(0);
+    this.tweens.add({ targets: [this.ringText, this.ringGfx], alpha: 1, delay: 300, duration: 200 });
+    uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawCountdown(); });
 
     if (this.input.keyboard) {
       this.input.keyboard.on('keydown', (e) => {
@@ -142,127 +251,107 @@ class CardScene extends Phaser.Scene {
 
   makeCard(id, x, y, index, count) {
     const card = CARDS.find(c => c.id === id) || { id, family: 'orbit', rarity: 'common', name: id, desc: '', icon: id };
-    const family = CARD_FAMILIES[card.family] || { name: '', color: 0xffffff };
-    const rarity = RARITY_STYLE[card.rarity] || RARITY_STYLE.common;
     const w = CARD_UI.width;
     const h = CARD_UI.height;
-    const color = family.color;
-    const panelColor = lerpColor(color, ART.outline, 0.58);
+    const crayon = cardCrayon(card.family);
+    const parts = [];
 
-    const frame = this.add.graphics();
-    const tw = CARD_UI.trim;
-    frame.fillStyle(0x000000, 0.3);
-    frame.fillRoundedRect(-w / 2 + 6, -h / 2 + 16, w, h, 28);
-    frame.fillStyle(ART.outline, 1);
-    frame.fillRoundedRect(-w / 2 - 7, -h / 2 - 7, w + 14, h + 14, 32);
-    frame.fillStyle(rarity.trim || lerpColor(color, ART.outline, 0.3), 1);
-    frame.fillRoundedRect(-w / 2, -h / 2, w, h, 26);
-    if (rarity.trim) {
-      // Engraved inner line on the metal trim.
-      frame.fillStyle(lerpColor(rarity.trim, ART.outline, 0.35), 1);
-      frame.fillRoundedRect(-w / 2 + tw - 3, -h / 2 + tw - 3, w - 2 * tw + 6, h - 2 * tw + 6, 21);
+    // Rarity marks sit behind the paper (they stick out around its edge).
+    if (card.rarity === 'legendary') parts.push(uiBoilImage(this, 0, 0, 'cd_legend'));
+    if (card.rarity === 'rare') parts.push(uiBoilImage(this, 0, 0, 'cd_rare'));
+    parts.push(uiBoilImage(this, 0, 0, 'cd_paper'));
+    const iconY = -h / 2 + 100;
+    parts.push(uiBoilImage(this, 4, iconY + 4, 'cd_patch').setTint(crayon));
+    parts.push(uiBoilImage(this, 0, iconY, cardIconTexture(this, card.icon, card.family)).setScale(1.05));
+
+    // Family + rarity, scribbled small under the icon.
+    const family = (CARD_FAMILIES[card.family] && CARD_FAMILIES[card.family].name.toLowerCase()) || card.family;
+    const word = CARD_RARITY_WORD[card.rarity] || CARD_RARITY_WORD.common;
+    const tagFamily = uiInkText(this, -w / 2 + 14, -h / 2 + 182, family, { size: 21, color: cardCrayonInk(card.family), stroke: null, ox: 0, rot: -0.03, boil: false });
+    const tagRarity = uiInkText(this, w / 2 - 14, -h / 2 + 182, word.text, { size: 21, color: word.color, stroke: null, ox: 1, rot: 0.03, boil: false });
+    parts.push(tagFamily, tagRarity);
+
+    const textW = w - 30;
+    const name = uiInkText(this, 0, 42, card.name.toUpperCase(), { size: 32, color: UI_INK.darkHex, stroke: null, rot: -0.015, boil: false });
+    name.setWordWrapWidth(textW).setAlign('center');
+    name.setScale(Math.min(1, textW / name.width, 66 / name.height));
+    const desc = uiInkText(this, 0, 124, card.desc, { size: 25, color: UI_INK.pencilDarkHex, stroke: null, rot: 0.01, boil: false, lineSpacing: 4 });
+    desc.setWordWrapWidth(textW).setAlign('center');
+    desc.setScale(Math.min(1, textW / desc.width, 84 / desc.height));
+    parts.push(name, desc);
+
+    // Legendary: a few doodled gold stars stuck around the border.
+    if (card.rarity === 'legendary') {
+      for (const [sx, sy, s] of [[-w / 2 - 4, -h / 2 + 30, 1.1], [w / 2 + 6, -h / 2 + 140, 0.8], [w / 2 - 2, h / 2 - 22, 1.2], [-w / 2 + 2, h / 2 - 120, 0.7]]) {
+        parts.push(uiBoilImage(this, sx, sy, 'ui_star').setTint(CARD_GOLD).setScale(s));
+      }
     }
-    frame.fillStyle(color, 1);
-    frame.fillRoundedRect(-w / 2 + tw, -h / 2 + tw, w - 2 * tw, h - 2 * tw, 19);
-    // Lower text panel in a deep family tone, with a lip on its top edge.
-    const panelTop = 14;
-    frame.fillStyle(lerpColor(color, ART.outline, 0.3), 1);
-    frame.fillRoundedRect(-w / 2 + tw, panelTop - 6, w - 2 * tw, 12, 4);
-    frame.fillStyle(panelColor, 1);
-    frame.fillRoundedRect(-w / 2 + tw, panelTop, w - 2 * tw, h / 2 - tw - panelTop, { tl: 0, tr: 0, bl: 19, br: 19 });
-    frame.fillStyle(0xffffff, 0.32);
-    frame.fillRoundedRect(-w / 2 + tw + 12, -h / 2 + tw + 8, w - 2 * tw - 24, 14, 7);
-    // Icon disc overlapping the panel edge, so the face is layered rather than one slab.
-    const iconY = -h / 2 + 126;
-    frame.fillStyle(ART.outline, 1);
-    frame.fillCircle(0, iconY + 4, 76);
-    frame.fillStyle(lerpColor(color, 0xffffff, 0.35), 1);
-    frame.fillCircle(0, iconY, 70);
-    frame.fillStyle(panelColor, 1);
-    frame.fillCircle(0, iconY, 60);
-    ART.drawCardIcon(frame, card.icon, 0, iconY, 92, color);
-    frame.fillStyle(0xffffff, 0.3);
-    frame.fillEllipse(-22, iconY - 44, 46, 14);
 
-    // Rarity pill on the top edge.
-    const pillW = rarity === RARITY_STYLE.legendary ? 150 : rarity === RARITY_STYLE.rare ? 92 : 124;
-    const pillY = -h / 2 + 4;
-    frame.fillStyle(ART.outline, 1);
-    frame.fillRoundedRect(-pillW / 2 - 4, pillY - 21, pillW + 8, 42, 21);
-    frame.fillStyle(rarity.pill, 1);
-    frame.fillRoundedRect(-pillW / 2, pillY - 17, pillW, 34, 17);
-    const pillText = this.add.text(0, pillY + 1, rarity.label, {
-      fontFamily: FONT, fontSize: '22px', color: rarity.pillText,
-    }).setOrigin(0.5);
-
-    const textW = w - 2 * tw - 16;
-    const name = this.add.text(0, panelTop + 42, card.name.toUpperCase(), {
-      fontFamily: FONT, fontSize: '32px', color: '#ffffff', stroke: '#1a1033', strokeThickness: 8, align: 'center',
-      wordWrap: { width: textW },
-    }).setOrigin(0.5);
-    name.setScale(Math.min(1, textW / name.width, 74 / name.height));
-    const desc = this.add.text(0, panelTop + 114, card.desc, {
-      fontFamily: FONT, fontSize: '25px', color: cssColor(lerpColor(color, 0xffffff, 0.7)), align: 'center',
-      stroke: '#1a1033', strokeThickness: 5, wordWrap: { width: textW }, lineSpacing: -2,
-    }).setOrigin(0.5);
-    desc.setScale(Math.min(1, textW / desc.width, 70 / desc.height));
-
-    const shimmer = this.add.graphics();
-    const parts = [frame, shimmer, pillText, name, desc];
-
-    // "+1 SET" ribbon hanging off the bottom edge.
+    // "+1 SET" scrap taped across the bottom edge.
     if (this.completesSet(card) && typeof SET_BONUSES !== 'undefined' && SET_BONUSES[card.family]) {
-      const rib = this.add.graphics();
-      const rw = w + 18;
-      const ry = h / 2 + 14;
-      rib.fillStyle(ART.outline, 1);
-      rib.fillRoundedRect(-rw / 2 - 5, ry - 34, rw + 10, 68, 18);
-      // Gold reads as 'bonus'; the gold fling family gets a white ribbon so it does not blend in.
-      rib.fillStyle(card.family === 'fling' ? 0xffffff : ART.gold, 1);
-      rib.fillRoundedRect(-rw / 2, ry - 29, rw, 58, 14);
-      rib.fillStyle(0xffffff, 0.45);
-      rib.fillRoundedRect(-rw / 2 + 10, ry - 25, rw - 20, 10, 5);
-      const ribTop = this.add.text(0, ry - 12, '+1 SET:', {
-        fontFamily: FONT, fontSize: '20px', color: '#1a1033',
-      }).setOrigin(0.5);
-      const ribName = this.add.text(0, ry + 11, SET_BONUSES[card.family].name, {
-        fontFamily: FONT, fontSize: '24px', color: cssColor(lerpColor(color, ART.outline, 0.45)),
-      }).setOrigin(0.5);
-      ribName.setScale(Math.min(1, (rw - 20) / ribName.width));
-      parts.push(rib, ribTop, ribName);
-      this.tweens.add({ targets: [ribTop, ribName], scale: '*=1.08', yoyo: true, repeat: -1, duration: 420, ease: 'Sine.InOut' });
+      const ry = h / 2 + 10;
+      const note = uiBoilImage(this, 0, ry, 'cd_setnote').setRotation(-0.05);
+      const ribTop = uiInkText(this, -88, ry - 12, '+1 SET:', { size: 20, color: UI_INK.darkHex, stroke: null, ox: 0, rot: -0.06, boil: false });
+      const ribName = uiInkText(this, 0, ry + 11, SET_BONUSES[card.family].name, { size: 25, color: cardCrayonInk(card.family), stroke: null, rot: -0.05, boil: false });
+      ribName.setScale(Math.min(1, 200 / ribName.width));
+      const rib = this.add.container(0, 0, [note, ribTop, ribName]);
+      parts.push(rib);
+      this.tweens.add({ targets: rib, angle: { from: -2, to: 2 }, yoyo: true, repeat: -1, duration: 420, ease: 'Sine.InOut' });
     }
 
     const inner = this.add.container(0, 0, parts);
-    const box = this.add.container(x, GAME_HEIGHT + h, [inner]);
+    // Slight resting tilt, as if dealt by hand.
+    const restAngle = ((uiHash(id) % 100) / 100 - 0.5) * 5;
+    const box = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT + h, [inner]);
     box.setSize(w + 14, h + 30);
     box.setInteractive({ useHandCursor: true });
-    const entry = { id, card, box, inner, shimmer, rarity: card.rarity, color, baseX: x, baseY: y, index, landed: false };
+    const entry = { id, card, box, inner, rarity: card.rarity, color: crayon, baseX: x, baseY: y, restAngle, index, landed: false };
 
-    // Fly in from below with a flip (scaleX from edge-on), staggered left to right.
-    const side = index - (count - 1) / 2;
-    box.setAngle(side * -24).setScale(0.2, 0.9);
+    // Dealt from a deck below the screen, spinning a little, then slapped down onto the page.
+    box.setAngle(-30 + index * 25).setScale(0.8);
     this.tweens.add({
-      targets: box, y, angle: 0, scaleX: 1, scaleY: 1, delay: 60 + index * 90, duration: 430, ease: 'Back.Out',
-      onComplete: () => { entry.landed = true; },
+      targets: box, x, y, angle: restAngle, scale: 1.08, delay: 40 + index * 110, duration: 260, ease: 'Quad.Out',
+      onComplete: () => {
+        box.setScale(1.06, 0.92);
+        this.tweens.add({ targets: box, scaleX: 1, scaleY: 1, duration: 200, ease: 'Back.Out', onComplete: () => { entry.landed = true; } });
+        this.slapMarks(x, y);
+      },
     });
 
     box.on('pointerdown', () => {
       if (!this.canPick()) return;
       this.pressed = entry;
       this.tweens.killTweensOf(box);
-      box.setScale(1.07, 0.92);
+      box.setScale(1.07, 0.9);
     });
     box.on('pointerout', () => {
       if (this.pressed !== entry || this.picked) return;
       this.pressed = null;
-      box.setScale(1);
+      this.tweens.add({ targets: box, scaleX: 1, scaleY: 1, duration: 160, ease: 'Back.Out' });
     });
     box.on('pointerup', () => {
       if (this.pressed !== entry) return;
       this.pick(index);
     });
     return entry;
+  }
+
+  // Little ink impact ticks at a card's corners when it lands.
+  slapMarks(x, y) {
+    const g = this.add.graphics();
+    const w = CARD_UI.width / 2 + 10;
+    const h = CARD_UI.height / 2 + 10;
+    const seed = Math.floor(Math.random() * 1000);
+    let i = 0;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      for (const a of [-0.5, 0.5]) {
+        const base = Math.atan2(sy, sx) + a * 0.6;
+        const x0 = x + sx * w + Math.cos(base) * 6;
+        const y0 = y + sy * h + Math.sin(base) * 6;
+        uiScribbleLine(g, x0, y0, x0 + Math.cos(base) * 22, y0 + Math.sin(base) * 22, seed + i++, { width: 3.5, amp: 0.8, passes: 1 });
+      }
+    }
+    this.tweens.add({ targets: g, alpha: 0, delay: 120, duration: 260, onComplete: () => g.destroy() });
   }
 
   canPick() {
@@ -274,18 +363,18 @@ class CardScene extends Phaser.Scene {
     this.picked = true;
     const chosen = this.cards[index];
 
-    // Chosen card squashes, then zooms up and pops; the others fall away.
+    // Chosen card squashes, lifts, then is tossed up toward the HUD's owned-card row.
     this.tweens.killTweensOf(chosen.box);
     chosen.box.setScale(1.14, 0.84).setAngle(0);
     chosen.box.setDepth(5);
     this.tweens.chain({
       targets: chosen.box,
       tweens: [
-        { scaleX: 1.22, scaleY: 1.22, y: chosen.baseY - 50, duration: 150, ease: 'Back.Out' },
-        { scaleX: 1.5, scaleY: 1.5, alpha: 0, duration: 170, delay: 30, ease: 'Quad.In' },
+        { scaleX: 1.18, scaleY: 1.18, y: chosen.baseY - 50, duration: 150, ease: 'Back.Out' },
+        { x: GAME_WIDTH - 120, y: 220, scaleX: 0.25, scaleY: 0.25, angle: 14, alpha: 0, duration: 180, delay: 20, ease: 'Quad.In' },
       ],
     });
-    this.burst(chosen.baseX, chosen.baseY - 50, chosen.color);
+    cardDoodleBurst(this, chosen.baseX, chosen.baseY - 50, [chosen.color, UI_CRAYON.yellow, UI_INK.cream], { count: 10, reach: 240, depth: 6 });
     for (const other of this.cards) {
       if (other === chosen) continue;
       this.tweens.killTweensOf(other.box);
@@ -295,28 +384,12 @@ class CardScene extends Phaser.Scene {
         duration: 340, ease: 'Cubic.In',
       });
     }
-    this.tweens.add({ targets: [this.header, this.subHeader, this.ringText], alpha: 0, duration: 200 });
+    this.tweens.add({ targets: [this.header, this.subHeader, this.subLine, this.ringText, this.ringGfx], alpha: 0, duration: 200 });
     this.tweens.add({ targets: this.dim, alpha: 0, delay: 80, duration: 260 });
-    this.ringGfx.clear();
     this.time.delayedCall(EXIT_MS, () => {
       this.game.events.emit('cards:picked', chosen.id);
       if (this.scene.isActive()) this.scene.stop();
     });
-  }
-
-  // Family-colored shock ring + sparks where the chosen card pops.
-  burst(x, y, color) {
-    const ring = this.add.circle(x, y, 40).setStrokeStyle(14, color).setDepth(6);
-    this.tweens.add({ targets: ring, radius: 260, alpha: 0, duration: 340, ease: 'Cubic.Out', onComplete: () => ring.destroy() });
-    for (let i = 0; i < 12; i++) {
-      const a = (i / 12) * Math.PI * 2;
-      const dot = this.add.circle(x, y, i % 2 ? 9 : 13, i % 3 ? color : 0xffffff).setStrokeStyle(3, ART.outline).setDepth(6);
-      const d = Phaser.Math.Between(170, 280);
-      this.tweens.add({
-        targets: dot, x: x + Math.cos(a) * d, y: y + Math.sin(a) * d, scale: 0.2, alpha: 0,
-        duration: Phaser.Math.Between(260, 340), ease: 'Cubic.Out', onComplete: () => dot.destroy(),
-      });
-    }
   }
 
   update(time, delta) {
@@ -326,76 +399,55 @@ class CardScene extends Phaser.Scene {
     for (const c of this.cards) {
       // Gentle idle float once landed (on the inner layer, so it never fights the box tweens).
       c.inner.y = c.landed && !this.picked ? Math.sin(t * 2.6 + c.index * 1.3) * 4 : 0;
-      this.drawShimmer(c, t);
     }
     if (this.picked) return;
-    this.drawCountdown(left, t);
+    const label = String(Math.ceil(left));
+    if (this.ringText.text !== label) {
+      this.ringText.setText(label);
+      if (left < CARD_UI.autoWarn) {
+        this.ringText.setScale(1.3);
+        this.tweens.add({ targets: this.ringText, scale: 1, duration: 200, ease: 'Back.Out' });
+      }
+    }
     // Last seconds: the default card nudges so the auto-pick is no surprise.
     const auto = this.cards[this.autoIndex];
     if (auto && auto.landed && left < CARD_UI.autoWarn && this.pressed !== auto) {
-      auto.box.setAngle(Math.sin(t * 22) * 2.2 * (1 - left / CARD_UI.autoWarn));
+      auto.box.setAngle(auto.restAngle + Math.sin(t * 22) * 2.2 * (1 - left / CARD_UI.autoWarn));
     }
     if (left <= 0) this.pick(this.autoIndex);
   }
 
-  drawCountdown(left, t) {
+  // Pencil ring: a faint full sketch circle plus a darker arc for the time left, both wobbling
+  // with the boil tick. Never a perfect circle: radius drifts with low-frequency noise.
+  drawCountdown() {
+    if (this.picked || !this.ringGfx) return;
     const g = this.ringGfx;
     const { x, y } = this.ringAnchor;
+    const left = Math.max(0, this.timeout - this.elapsed);
     const frac = left / this.timeout;
-    const r = 30;
     const urgent = left < CARD_UI.autoWarn;
-    const color = urgent ? 0xff6f5c : 0xffffff;
-    const pulse = urgent ? 1 + Math.max(0, Math.sin(t * 14)) * 0.08 : 1;
-    g.clear();
-    g.fillStyle(ART.outline, 0.9);
-    g.fillCircle(x, y, (r + 10) * pulse);
-    g.lineStyle(8, 0x3a2a60, 1);
-    g.strokeCircle(x, y, r);
-    if (frac > 0) {
-      g.lineStyle(8, color, 1);
+    const seed = this.boilTick || 0;
+    const r = 34;
+    const point = (a, k, s) => {
+      const rr = r * (1 + 0.05 * Math.sin(a * 2 + 1.3)) + (uiNoise(seed + s, k) - 0.5) * 2.4;
+      return { x: x + Math.cos(a) * rr, y: y + Math.sin(a) * rr };
+    };
+    const stroke = (a0, a1, width, color, alpha, s) => {
+      const n = Math.max(3, Math.ceil(Math.abs(a1 - a0) / 0.22));
+      g.lineStyle(width, color, alpha);
       g.beginPath();
-      g.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac, false);
-      g.strokePath();
-    }
-    const label = String(Math.ceil(left));
-    if (this.ringText.text !== label) this.ringText.setText(label);
-    this.ringText.setScale(pulse);
-  }
-
-  // Legendary: a gold glint sweeping across the face + twinkles on the trim. Rare: a soft
-  // silver twinkle. Common: nothing.
-  drawShimmer(c, t) {
-    const g = c.shimmer;
-    g.clear();
-    if (c.rarity === 'common') return;
-    const w = CARD_UI.width;
-    const h = CARD_UI.height;
-    const tw = CARD_UI.trim;
-    if (c.rarity === 'legendary') {
-      const cycle = ((t + c.index * 0.4) % 2.4) / 2.4;     // sweep, then rest
-      if (cycle < 0.55) {
-        const k = cycle / 0.55;
-        const cx = -w + k * w * 2;
-        const band = [
-          { x: cx - 26, y: -h / 2 }, { x: cx + 16, y: -h / 2 }, { x: cx - 64, y: h / 2 }, { x: cx - 106, y: h / 2 },
-        ];
-        const clipped = clipToRect(band, -w / 2 + tw + 4, -h / 2 + tw + 4, w / 2 - tw - 4, h / 2 - tw - 4);
-        if (clipped.length > 2) {
-          g.fillStyle(0xffffff, 0.28);
-          g.fillPoints(clipped, true);
-        }
+      for (let i = 0; i <= n; i++) {
+        const p = point(a0 + (a1 - a0) * (i / n), i, s);
+        if (i === 0) g.moveTo(p.x, p.y); else g.lineTo(p.x, p.y);
       }
-      const glow = 0.35 + 0.25 * Math.sin(t * 4 + c.index);
-      g.lineStyle(6, ART.gold, glow);
-      g.strokeRoundedRect(-w / 2 - 12, -h / 2 - 12, w + 24, h + 24, 36);
-      const corners = [[-w / 2 + 6, -h / 2 + 40], [w / 2 - 6, -h / 2 + 90], [w / 2 - 8, h / 2 - 50], [-w / 2 + 8, h / 2 - 110]];
-      corners.forEach(([x, y], i) => {
-        const tw2 = Math.max(0, Math.sin(t * 3.2 + i * 1.7));
-        if (tw2 > 0.05) ART.sparkle(g, x, y, 14 * tw2, t, 0xffffff, tw2);
-      });
-    } else {
-      const tw2 = Math.max(0, Math.sin(t * 2.4 + c.index * 2));
-      if (tw2 > 0.05) ART.sparkle(g, w / 2 - 8, -h / 2 + 60, 12 * tw2, t, 0xffffff, tw2);
+      g.strokePath();
+    };
+    g.clear();
+    stroke(-Math.PI / 2 - 0.3, Math.PI * 1.5 + 0.15, 3, UI_INK.pencil, 0.45, 3);
+    if (frac > 0) {
+      const color = urgent ? UI_CRAYON.red : UI_INK.cream;
+      stroke(-Math.PI / 2, -Math.PI / 2 + UI_TAU * frac, 6, color, 1, 0);
+      stroke(-Math.PI / 2 + 0.1, -Math.PI / 2 + UI_TAU * frac * 0.85, 3, color, 0.6, 7);
     }
   }
 }

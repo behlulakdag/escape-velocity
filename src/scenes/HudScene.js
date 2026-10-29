@@ -1,5 +1,7 @@
 // Overlay scene for score/speed/hints. Lives in its own scene so the game camera can
 // zoom out at high speed without shrinking the UI.
+// Sketchbook look: the score is written on a small taped paper note; speed is written straight
+// on the page with a crayon underline that grows with speed; the multiplier is a circled "x3".
 //
 // Public API used by GameScene:
 //   setStats(score, altitude, speed, displaySpeed?)  displaySpeed (km/s) overrides speed / 10
@@ -9,12 +11,13 @@
 //   showBanner(title, subtitle, { duration }), showHint(label), hideHint()
 //   setCards(ownedIds)        row of owned upgrade-card badges (top right, under fullscreen)
 //   showSetBonus(familyKey)   family-colored SET BONUS banner (SET_BONUSES in src/cards.js)
+//   scoreText / hintText are read by GameScene, so they stay Text objects.
 
 // Pop de-clutter rules (see pop()).
 const POP = {
   mergeWindow: 250,      // ms: pops closer together than this become one line
   maxVisible: 2,
-  top: 270,              // below the stats block (score/alt/chain end around y 245)
+  top: 270,              // below the stats note (note + chain line end around y 245)
   bottomMargin: 300,     // above the hint (y 1040) and the speed/xN band (y ~1130)
   sideMargin: 22,
   minSize: 34,
@@ -24,6 +27,16 @@ const POP = {
   overshoot: 1.12,       // Back.Out scale-in peak; the fit leaves room for it
 };
 
+// Pop color in crayon: the old neon pop colors and the card family colors map to their crayons.
+function hudPopColor(color) {
+  if (typeof CARD_FAMILIES !== 'undefined' && typeof cardCrayon === 'function') {
+    for (const key in CARD_FAMILIES) {
+      if (uiColorHex(CARD_FAMILIES[key].color) === String(color).toLowerCase()) return uiColorHex(cardCrayon(key));
+    }
+  }
+  return uiCrayonHex(color);
+}
+
 // Higher = more important: decides the merged line's order, color and size.
 function popPriority(label) {
   if (/PERFECT/.test(label)) return 4;
@@ -32,8 +45,11 @@ function popPriority(label) {
   return 1;
 }
 
-// Bottom HUD panel (speed readout + multiplier badge) bounds, for fading it under the comet.
+// Bottom HUD band (speed readout + multiplier) bounds, for fading it under the comet.
 const HUD_PANEL = { left: 130, right: 650, top: GAME_HEIGHT - 190, bottom: GAME_HEIGHT - 70 };
+const HUD_SPEED = { x: 300, y: GAME_HEIGHT - 140, lineY: GAME_HEIGHT - 100, minLine: 70, maxLine: 330 };
+// Multiplier circle tint by level (x1..x5): the same warm ramp as the comet.
+const HUD_LEVEL_TINTS = [UI_INK.cream, UI_CRAYON.yellow, UI_CRAYON.orange, UI_CRAYON.red, UI_CRAYON.pink];
 
 class HudScene extends Phaser.Scene {
   constructor() {
@@ -41,14 +57,9 @@ class HudScene extends Phaser.Scene {
   }
 
   create() {
-    const style = { fontFamily: FONT, color: COLORS.text, stroke: '#1a1033', strokeThickness: 10 };
-    // Red glow from the bottom edge that grows as the supernova closes in. Kept to the lower
-    // third and capped (~0.4 at the very edge) so it warns without washing the palette out.
-    this.danger = this.add.graphics().setAlpha(0);
-    for (let i = 0; i < 10; i++) {
-      this.danger.fillStyle(0xff3a1f, 0.05);
-      this.danger.fillRect(0, GAME_HEIGHT - 30 - i * 36, GAME_WIDTH, 30 + i * 36);
-    }
+    uiMakeHudTextures(this);
+    // Red crayon scribble along the bottom edge that thickens as the supernova closes in.
+    this.danger = uiBoilImage(this, GAME_WIDTH / 2, GAME_HEIGHT, 'hud_danger').setOrigin(0.5, 1).setTint(UI_CRAYON.red).setAlpha(0);
     // Soft full-screen flash (PERFECT / close call). Very light, so the palette never goes pale.
     this.flashRect = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0xffffff).setOrigin(0).setAlpha(0);
     this.targetScore = 0;
@@ -59,137 +70,128 @@ class HudScene extends Phaser.Scene {
     this.lastMultiplier = 1;
     this.chain = 0;
     this.pops = [];           // visible pops, oldest first
-    this.panelFade = 1;       // bottom panel alpha (dims when the comet flies behind it)
+    this.panelFade = 1;       // bottom band alpha (dims when the comet flies behind it)
     this.panelFadeTarget = 1;
+    this.lightPage = false;   // true on the cream ESCAPE VELOCITY page: page ink turns dark
     // Last values written to each text, so setText/setColor (which re-render the text texture)
     // only run when something actually changed.
     this.shown = {};
-    // Kept ~45px lower than the notch-safe minimum: on 9:16 phones y=72 sat only ~21 CSS px from the top.
-    this.chainY = 196;
-    // Origin at the left-middle so the count-up bump scales in place.
-    this.scoreText = this.add.text(32, 117, '0', { ...style, fontSize: '60px' }).setOrigin(0, 0.5);
-    this.altText = this.add.text(34, 155, '0 m', { ...style, fontSize: '32px', color: '#c9bfff', strokeThickness: 8 });
-    // Compact: a small tag under the altitude, so it never competes with the pops.
-    this.chainText = this.add.text(34, this.chainY, '', { ...style, fontSize: '26px', color: '#ffe14d', strokeThickness: 7 })
-      .setOrigin(0, 0).setAlpha(0);
-    this.speedBaseX = GAME_WIDTH / 2 - 60;
-    this.speedBaseY = GAME_HEIGHT - 130;
-    this.speedText = this.add.text(this.speedBaseX, this.speedBaseY, '', { ...style, fontSize: '52px' }).setOrigin(0.5);
+    this.chainY = 228;
+
+    // Taped note (top-left, below the notch-safe line): score big, altitude under it.
+    const note = uiBoilImage(this, 0, 0, 'hud_note');
+    this.scoreText = this.add.text(-112, -16, '0', { fontFamily: FONT, fontSize: '64px', color: UI_INK.darkHex })
+      .setOrigin(0, 0.5);
+    this.altText = this.add.text(-108, 40, '0 m', { fontFamily: FONT, fontSize: '30px', color: UI_INK.pencilDarkHex })
+      .setOrigin(0, 0.5);
+    this.note = this.add.container(160, 142, [note, this.scoreText, this.altText]).setRotation(-0.035);
+    uiBoilRotation(this, this.note, 0.006);
+    this.chainText = uiInkText(this, 40, this.chainY, '', { size: 28, color: uiColorHex(UI_CRAYON.yellow), ox: 0, oy: 0, rot: 0.02 })
+      .setAlpha(0);
+
+    // Speed written on the page, with a crayon underline (redrawn only on boil ticks / growth).
+    this.speedLine = this.add.graphics();
+    this.speedBaseX = HUD_SPEED.x;
+    this.speedBaseY = HUD_SPEED.y;
+    this.speedText = uiInkText(this, this.speedBaseX, this.speedBaseY, '', { size: 54, rot: -0.03, boil: false });
     this.createMultiplierBadge();
-    this.bottomPanel = this.add.container(0, 0, [this.speedText, this.badge]);
+    this.bottomPanel = this.add.container(0, 0, [this.speedLine, this.speedText, this.badge]);
     // One layer for the stats, so the intro fade never fights the bump tweens on its children.
-    this.statsLayer = this.add.container(0, 0, [this.scoreText, this.altText, this.bottomPanel]);
+    this.statsLayer = this.add.container(0, 0, [this.note, this.bottomPanel]);
     const game = this.scene.get('Game');
     if (game && game.introActive) this.statsLayer.setAlpha(0);
-    this.hintText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 240, '', { ...style, fontSize: '44px', color: '#ffe14d' })
-      .setOrigin(0.5);
-    this.tweens.add({ targets: this.hintText, scale: 1.1, yoyo: true, repeat: -1, duration: 420 });
-    this.bannerText = this.add.text(GAME_WIDTH / 2, 400, '', { ...style, fontSize: '84px', color: '#ffe14d', strokeThickness: 14 })
-      .setOrigin(0.5).setAlpha(0);
-    this.bannerSub = this.add.text(GAME_WIDTH / 2, 480, '', { ...style, fontSize: '34px', strokeThickness: 8 })
-      .setOrigin(0.5).setAlpha(0);
+    this.hintText = uiInkText(this, GAME_WIDTH / 2, GAME_HEIGHT - 240, '', { size: 46, color: uiColorHex(UI_CRAYON.yellow), rot: -0.03 });
+    this.tweens.add({ targets: this.hintText, scale: 1.08, yoyo: true, repeat: -1, duration: 420 });
+    // Banner: off-register crayon copy behind the ink title, a scribbled underline, a subtitle.
+    this.bannerShadow = this.add.text(GAME_WIDTH / 2 + 6, 407, '', { fontFamily: FONT, fontSize: '84px', color: uiColorHex(UI_CRAYON.orange) })
+      .setOrigin(0.5).setAlpha(0).setRotation(-0.035);
+    this.bannerText = this.add.text(GAME_WIDTH / 2, 400, '', {
+      fontFamily: FONT, fontSize: '84px', color: UI_INK.creamHex, stroke: UI_INK.darkHex, strokeThickness: 10,
+    }).setOrigin(0.5).setAlpha(0).setRotation(-0.035);
+    this.bannerLine = uiBoilImage(this, GAME_WIDTH / 2 + 8, 452, 'ui_underline').setTint(UI_CRAYON.orange).setAlpha(0).setRotation(-0.02);
+    this.bannerSub = uiInkText(this, GAME_WIDTH / 2, 492, '', { size: 34, rot: 0.015 }).setAlpha(0);
     this.cardBadges = [];      // { id, gfx } per owned card, left to right
     this.setBonusLayer = null;
     addFullscreenButton(this);
+    uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawSpeedLine(true); });
   }
 
-  // Owned upgrade cards as small family-colored badges, right-aligned under the fullscreen
-  // button (clear of the score block on the left). New cards pop in; cards whose family set is
-  // complete get a gold rim.
+  // Owned upgrade cards as small taped index-card scraps, right-aligned under the fullscreen
+  // button (clear of the score note on the left). New cards are slapped on with an ink burst;
+  // cards whose family set is complete get a gold crayon loop.
   setCards(ownedIds) {
-    const ids = ownedIds || [];
-    const size = 50;
-    const gap = 60;
-    const y = 204;
-    const right = GAME_WIDTH - 58;
+    const ids = (ownedIds || []).filter(id => typeof cardById === 'function' && cardById(id));
+    const gap = 66;
+    const y = 214;
+    const right = GAME_WIDTH - 62;
     const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(ids) : [];
     const known = this.cardBadges.map(b => b.id);
     for (const b of this.cardBadges) b.gfx.destroy();
     this.cardBadges = [];
     ids.forEach((id, i) => {
-      const card = typeof CARDS !== 'undefined' ? CARDS.find(c => c.id === id) : null;
-      if (!card) return;
-      const color = CARD_FAMILIES[card.family].color;
+      const card = cardById(id);
       const x = right - (ids.length - 1 - i) * gap;
-      const g = this.add.graphics({ x, y });
+      const mini = cardMakeMini(this, 0, 0, id, 0.84);
+      const parts = [mini];
       if (sets.indexOf(card.family) >= 0) {
-        g.fillStyle(ART.outline, 1);
-        g.fillCircle(0, 2, size / 2 + 10);
-        g.fillStyle(ART.gold, 1);
-        g.fillCircle(0, 0, size / 2 + 6);
+        parts.unshift(uiBoilImage(this, 0, 0, cardSetLoopTexture(this)));
       }
-      ART.drawCardBadge(g, card.icon, 0, 0, size, color);
+      const g = this.add.container(x, y, parts);
       this.cardBadges.push({ id, gfx: g });
       if (known.indexOf(id) < 0) {
-        g.setScale(0);
-        this.tweens.add({ targets: g, scale: 1, duration: 380, delay: 120, ease: 'Back.Out' });
-        const ring = this.add.circle(x, y, size / 2).setStrokeStyle(8, color);
-        this.tweens.add({ targets: ring, radius: 70, alpha: 0, delay: 120, duration: 420, ease: 'Cubic.Out', onComplete: () => ring.destroy() });
+        g.setScale(1.8).setAlpha(0);
+        this.tweens.add({ targets: g, scale: 1, alpha: 1, duration: 220, delay: 120, ease: 'Quad.In',
+          onComplete: () => {
+            g.setScale(1.12, 0.86);
+            this.tweens.add({ targets: g, scaleX: 1, scaleY: 1, duration: 200, ease: 'Back.Out' });
+            cardDoodleBurst(this, x, y, [cardCrayon(card.family), UI_INK.cream], { count: 6, reach: 90 });
+          } });
       }
     });
   }
 
-  // Set bonus moment: family-colored title with its badges, below the zone banner band.
+  // Set bonus moment: the set name lettered big in the family crayon between its two cards,
+  // below the zone banner band.
   showSetBonus(familyKey) {
     if (typeof SET_BONUSES === 'undefined' || !SET_BONUSES[familyKey]) return;
     const bonus = SET_BONUSES[familyKey];
-    const color = CARD_FAMILIES[familyKey].color;
-    const css = '#' + color.toString(16).padStart(6, '0');
+    const crayon = cardCrayon(familyKey);
     const y = 610;
     if (this.setBonusLayer) this.setBonusLayer.destroy();
-    const label = this.add.text(0, -78, 'SET BONUS!', {
-      fontFamily: FONT, fontSize: '38px', color: '#ffe14d', stroke: '#1a1033', strokeThickness: 9,
-    }).setOrigin(0.5);
-    const title = this.add.text(0, 0, bonus.name, {
-      fontFamily: FONT, fontSize: '80px', color: css, stroke: '#1a1033', strokeThickness: 14,
-    }).setOrigin(0.5).setShadow(0, 7, '#1a1033', 0, true, true);
-    title.setScale(Math.min(1, (GAME_WIDTH - 260) / title.width));
-    const sub = this.add.text(0, 72, bonus.desc, {
-      fontFamily: FONT, fontSize: '34px', color: '#ffffff', stroke: '#1a1033', strokeThickness: 8,
-    }).setOrigin(0.5);
+    const label = uiInkText(this, 0, -82, 'SET BONUS!', { size: 40, color: uiColorHex(UI_CRAYON.yellow), rot: -0.05 });
+    const title = uiTitleText(this, 0, 0, bonus.name, { size: 78, color: uiColorHex(crayon), shadowColor: UI_INK.darkHex, rot: -0.03 });
+    const titleW = title.main.width;
+    title.setScale(Math.min(1, (GAME_WIDTH - 250) / titleW));
+    const line = uiBoilImage(this, 6, 50, 'ui_underline').setTint(crayon).setScale(Math.min(1, (titleW * title.scaleX + 30) / 540), 0.8);
+    const sub = uiInkText(this, 0, 92, bonus.desc, { size: 34, rot: 0.015 });
     sub.setScale(Math.min(1, (GAME_WIDTH - 60) / sub.width));
-    // Two family badges flank the title (the two cards that made the set), each wiggling in place.
-    const family = typeof CARDS !== 'undefined' ? CARDS.filter(c => c.family === familyKey) : [];
+    // The two family cards that made the set flank the title, each wiggling in place.
     const owned = this.cardBadges.map(b => b.id);
-    const shown = family.filter(c => owned.indexOf(c.id) >= 0);
-    const bx = (title.width * title.scaleX) / 2 + 52;
-    const badges = shown.slice(0, 2).map((c, i) => {
-      const g = this.add.graphics({ x: i ? bx : -bx, y: 0 });
-      ART.drawCardBadge(g, c.icon, 0, 0, 66, color);
-      return g;
-    });
-    const layer = this.add.container(GAME_WIDTH / 2, y, [...badges, label, title, sub]).setScale(0.3).setAlpha(1);
+    const shown = (typeof CARDS !== 'undefined' ? CARDS : []).filter(c => c.family === familyKey && owned.indexOf(c.id) >= 0);
+    const bx = (titleW * title.scaleX) / 2 + 58;
+    const minis = shown.slice(0, 2).map((c, i) => cardMakeMini(this, i ? bx : -bx, 0, c.id, 1.25));
+    const layer = this.add.container(GAME_WIDTH / 2, y, [...minis, line, label, title, sub]).setScale(0.3).setAlpha(1);
     this.setBonusLayer = layer;
     this.tweens.add({ targets: layer, scale: 1, duration: 360, ease: 'Back.Out' });
-    if (badges.length) this.tweens.add({ targets: badges, angle: { from: -10, to: 10 }, yoyo: true, repeat: -1, duration: 260, ease: 'Sine.InOut' });
+    if (minis.length) this.tweens.add({ targets: minis, angle: { from: -10, to: 10 }, yoyo: true, repeat: -1, duration: 260, ease: 'Sine.InOut' });
     this.tweens.add({
       targets: layer, alpha: 0, y: y - 40, delay: 1700, duration: 400,
       onComplete: () => { if (this.setBonusLayer === layer) this.setBonusLayer = null; layer.destroy(); },
     });
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2;
-      const dot = this.add.circle(GAME_WIDTH / 2, y, i % 2 ? 8 : 12, i % 3 ? color : 0xffe14d).setStrokeStyle(3, 0x1a1033);
-      const d = Phaser.Math.Between(220, 330);
-      this.tweens.add({
-        targets: dot, x: GAME_WIDTH / 2 + Math.cos(a) * d, y: y + Math.sin(a) * d * 0.6, alpha: 0, scale: 0.3,
-        duration: Phaser.Math.Between(500, 750), ease: 'Cubic.Out', onComplete: () => dot.destroy(),
-      });
-    }
-    this.flash(color, 0.1, 220);
+    cardDoodleBurst(this, GAME_WIDTH / 2, y, [crayon, UI_CRAYON.yellow, UI_INK.cream], { count: 14, reach: 300, squashY: 0.6 });
+    this.flash(crayon, 0.1, 220);
     // Pops in the banner's band make way, as for zone banners.
     for (const p of this.pops.slice()) {
       if (Math.abs(p.y - y) < 140) this.removePop(p);
     }
   }
 
-  // "x3" badge: outlined plate with a lighter top band, pulses when the multiplier rises.
+  // "x3" written on the page inside a crayon circle that pulses when the multiplier rises.
   createMultiplierBadge() {
-    this.badgePlate = this.add.graphics();
-    this.tintBadge(speedColor(0));
-    this.badgeText = this.add.text(0, 2, 'x1', {
-      fontFamily: FONT, fontSize: '48px', color: '#1a1033',
-    }).setOrigin(0.5);
-    this.badge = this.add.container(GAME_WIDTH / 2 + 190, GAME_HEIGHT - 130, [this.badgePlate, this.badgeText]);
+    this.badgeCircle = uiBoilImage(this, 0, 0, 'ui_circle').setScale(0.62, 0.78).setTint(HUD_LEVEL_TINTS[0]);
+    this.badgeText = uiInkText(this, 0, 0, 'x1', { size: 50, rot: 0.06, boil: false });
+    this.badge = this.add.container(GAME_WIDTH / 2 + 205, HUD_SPEED.y + 4, [this.badgeCircle, this.badgeText]);
+    uiBoilRotation(this, this.badge, 0.02);
   }
 
   // Score, altitude, speed and badge fade in when the comet launches (hidden during the intro).
@@ -221,15 +223,38 @@ class HudScene extends Phaser.Scene {
     } else {
       this.shownScore = this.targetScore;
     }
-    this.setTextIfChanged('score', this.scoreText, String(Math.floor(this.shownScore)));
+    const scoreString = String(Math.floor(this.shownScore));
+    if (scoreString.length !== this.shown.scoreLength) {
+      // Long scores get a smaller pen so they stay on the note.
+      this.shown.scoreLength = scoreString.length;
+      this.scoreText.setFontSize(scoreString.length <= 5 ? 64 : scoreString.length === 6 ? 54 : 46);
+    }
+    this.setTextIfChanged('score', this.scoreText, scoreString);
     this.updateSpeedReadout(time, dt);
-    // Bottom panel eases toward its target alpha, so it does not blink as the comet passes.
-    this.panelFade += (this.panelFadeTarget - this.panelFade) * Math.min(1, dt * 10);
+    this.updatePageInk();
+    // Bottom band eases toward its target alpha, so it does not blink as the comet passes.
+    // The card pick's countdown ring sits over the speed band, so the band steps back meanwhile.
+    const fadeTarget = this.scene.isActive('Cards') ? 0.12 : this.panelFadeTarget;
+    this.panelFade += (fadeTarget - this.panelFade) * Math.min(1, dt * 10);
     this.bottomPanel.setAlpha(this.panelFade);
   }
 
+  // On the cream last page the gel-pen ink would vanish, so page-written text switches to dark ink.
+  updatePageInk() {
+    const game = this.scene.get('Game');
+    const zone = game && typeof game.zoneIndex === 'number' ? game.zoneIndex : 0;
+    const light = !!(UI_PAPERS[zone] && UI_PAPERS[zone].light);
+    if (light === this.lightPage) return;
+    this.lightPage = light;
+    const ink = light ? UI_INK.darkHex : UI_INK.creamHex;
+    const edge = light ? UI_INK.creamHex : UI_INK.darkHex;
+    for (const t of [this.speedText, this.badgeText, this.bannerText, this.bannerSub]) t.setColor(ink).setStroke(edge, t.style.strokeThickness);
+    this.badgeCircle.setTint(light && this.lastMultiplier === 1 ? UI_INK.dark : HUD_LEVEL_TINTS[this.lastMultiplier - 1]);
+    this.drawSpeedLine(true);
+  }
+
   // The number rolls toward the real speed (fast up, a bit slower down) so gains feel like a
-  // climb, and shivers with a hot glow near the top of the range.
+  // climb, and the handwriting shivers near the top of the range.
   updateSpeedReadout(time, dt) {
     const gap = this.targetSpeed - this.shownSpeed;
     const rate = gap > 0 ? 8 : 5;
@@ -245,12 +270,31 @@ class HudScene extends Phaser.Scene {
       this.speedBaseX + (shake ? Math.sin(time * 0.09) * shake : 0),
       this.speedBaseY + (shake ? Math.cos(time * 0.113) * shake * 0.6 : 0),
     );
-    // Glow steps (not every frame) because setShadow re-renders the text texture.
-    const glow = Math.round(hot * 4);
-    if (glow !== this.shown.speedGlow) {
-      this.shown.speedGlow = glow;
-      if (glow > 0) this.speedText.setShadow(0, 0, '#ffe14d', glow * 5, true, true);
-      else this.speedText.setShadow(0, 0, '#000000', 0, false, false);
+    this.drawSpeedLine(false);
+  }
+
+  // Crayon underline whose length tracks speed, plus "zip" dashes trailing the number when fast.
+  // Redrawn only when the length moved a few px or the boil clock ticked (force).
+  drawSpeedLine(force) {
+    if (!this.speedLine) return;
+    const f = this.speedFrac;
+    const len = HUD_SPEED.minLine + (HUD_SPEED.maxLine - HUD_SPEED.minLine) * f;
+    if (!force && Math.abs(len - (this.lineLen || 0)) < 3) return;
+    this.lineLen = len;
+    const g = this.speedLine;
+    const seed = this.boilTick || 0;
+    const color = speedColor(f);
+    const x0 = HUD_SPEED.x - 150;
+    g.clear();
+    uiScribbleLine(g, x0, HUD_SPEED.lineY, x0 + len, HUD_SPEED.lineY - len * 0.03, seed, { width: 7, color, amp: 2.5 });
+    if (f > 0.45) {
+      const ink = this.lightPage ? UI_INK.dark : UI_INK.cream;
+      const marks = 1 + Math.floor((f - 0.45) / 0.18);
+      for (let i = 0; i < marks; i++) {
+        const y = HUD_SPEED.y - 24 + i * 22;
+        const x = x0 - 18 - (i % 2) * 14;
+        uiScribbleLine(g, x - 46 + i * 6, y, x, y - 3, seed + i * 7, { width: 4, color: ink, amp: 1.2, passes: 1 });
+      }
     }
   }
 
@@ -260,44 +304,24 @@ class HudScene extends Phaser.Scene {
     if (score - this.targetScore >= 100) this.bump(this.scoreText, 1.3);
     this.targetScore = score;
     this.setTextIfChanged('alt', this.altText, altitude + ' m');
-    const f = speedFraction(speed);
-    this.speedFrac = f;
+    this.speedFrac = speedFraction(speed);
     this.targetSpeed = displaySpeed !== undefined ? displaySpeed : speed / 10;
-    const color = speedColor(f);
-    this.setColorIfChanged('speedColor', this.speedText, '#' + color.toString(16).padStart(6, '0'));
     const level = speedMultiplier(speed);
     if (level !== this.lastMultiplier) {
       this.badgeText.setText('x' + level);
+      this.badgeCircle.setTint(this.lightPage && level === 1 ? UI_INK.dark : HUD_LEVEL_TINTS[level - 1]);
       if (level > this.lastMultiplier) this.bump(this.badge, 1.5);
       this.lastMultiplier = level;
     }
-    this.setColorIfChanged('badgeColor', this.badgeText, level >= 4 ? '#c2410c' : '#1a1033');
-    this.tintBadge(color);
   }
 
-  // Comet position in screen space (GameScene, every frame). Near the bottom panel the panel
+  // Comet position in screen space (GameScene, every frame). Near the bottom band the band
   // dims so the comet stays visible behind it.
   setCometScreen(x, y) {
     const dx = Math.max(HUD_PANEL.left - x, 0, x - HUD_PANEL.right);
     const dy = Math.max(HUD_PANEL.top - y, 0, y - HUD_PANEL.bottom);
     const near = Math.hypot(dx, dy) < 140;
     this.panelFadeTarget = near ? 0.35 : 1;
-  }
-
-  // Graphics cannot be tinted, so redraw the plate color only when it changes.
-  tintBadge(color) {
-    if (color === this.badgeColor) return;
-    this.badgeColor = color;
-    const w = 124;
-    const h = 84;
-    const g = this.badgePlate;
-    g.clear();
-    g.fillStyle(0x1a1033, 1);
-    g.fillRoundedRect(-w / 2 - 6, -h / 2 - 6, w + 12, h + 12, 24);
-    g.fillStyle(color, 1);
-    g.fillRoundedRect(-w / 2, -h / 2, w, h, 18);
-    g.fillStyle(0xffffff, 0.35);
-    g.fillRoundedRect(-w / 2 + 8, -h / 2 + 6, w - 16, h * 0.32, 10);
   }
 
   // Current PERFECT chain (0 hides it).
@@ -307,20 +331,20 @@ class HudScene extends Phaser.Scene {
     this.chain = chain;
     if (chain >= 2) {
       this.tweens.killTweensOf(this.chainText);
-      this.chainText.setText('PERFECT CHAIN x' + chain).setAlpha(1).setY(this.chainY);
-      this.chainText.setColor(chain >= 5 ? '#ffffff' : '#ffe14d');
+      this.chainText.setText('perfect chain x' + chain).setAlpha(1).setY(this.chainY);
+      this.chainText.setColor(chain >= 5 ? UI_INK.creamHex : uiColorHex(UI_CRAYON.yellow));
       this.chainText.setScale(1.2);
       this.tweens.add({ targets: this.chainText, scale: 1, duration: 200, ease: 'Back.Out' });
     } else if (previous >= 2) {
       // Chain broken: drop and fade.
       this.tweens.killTweensOf(this.chainText);
-      this.chainText.setText('CHAIN LOST').setColor('#ff4d6d').setScale(1).setY(this.chainY);
+      this.chainText.setText('chain lost').setColor(uiColorHex(UI_CRAYON.red)).setScale(1).setY(this.chainY);
       this.tweens.add({
         targets: this.chainText, alpha: 0, y: this.chainY + 14, duration: 500,
         onComplete: () => this.chainText.setY(this.chainY),
       });
     }
-    // chain 0/1 after 0/1: nothing to show, and a running 'CHAIN LOST' fade is left to finish.
+    // chain 0/1 after 0/1: nothing to show, and a running 'chain lost' fade is left to finish.
   }
 
   bump(target, scale) {
@@ -342,15 +366,16 @@ class HudScene extends Phaser.Scene {
   // Screen-space pop text. opts: { x, y, size, stroke, duration (ms) }.
   // De-clutter: pops within POP.mergeWindow of the newest one merge into it ('PERFECT x3! · +SPEED',
   // most important first); at most POP.maxVisible lines; always fully on screen and kept between
-  // the stats block and the bottom HUD band.
+  // the stats note and the bottom HUD band. Written in crayon with a slight random tilt.
   pop(label, color, opts) {
     opts = opts || {};
     const now = this.time.now;
     const entry = {
-      label, color,
+      label,
+      color: hudPopColor(color),
       priority: popPriority(label),
       size: Phaser.Math.Clamp(opts.size || 40, POP.minSize, POP.maxSize),
-      stroke: opts.stroke || '#1a1033',
+      stroke: uiCrayonHex(opts.stroke || UI_INK.darkHex),
     };
     const duration = Math.max(450, opts.duration || 700);
     const newest = this.pops[this.pops.length - 1];
@@ -369,7 +394,8 @@ class HudScene extends Phaser.Scene {
     // into the new line) and bows out early.
     while (this.pops.length >= POP.maxVisible) this.removePop(this.pops[0]);
     for (const older of this.pops) this.retirePop(older);
-    const t = this.add.text(0, 0, '', { fontFamily: FONT, fontSize: entry.size + 'px', color }).setOrigin(0.5);
+    const t = this.add.text(0, 0, '', { fontFamily: FONT, fontSize: entry.size + 'px', color: entry.color }).setOrigin(0.5);
+    t.setRotation((Math.random() - 0.5) * 0.12);
     t.entries = [entry];
     t.bornAt = now;
     t.lifetime = duration;
@@ -389,7 +415,7 @@ class HudScene extends Phaser.Scene {
     t.setText(t.entries.map(e => e.label).join(POP.joiner));
     t.setFontSize(size);
     t.setColor(lead.color);
-    t.setStroke(lead.stroke, Math.round(size / 5));
+    t.setStroke(lead.stroke, Math.round(size / 6));
     const room = GAME_WIDTH - POP.sideMargin * 2;
     t.fitScale = Math.min(1, room / (t.width * POP.overshoot));
   }
@@ -470,27 +496,33 @@ class HudScene extends Phaser.Scene {
     const hasSub = this.bannerSub.text && this.bannerSub.alpha > 0.15;
     return {
       top: this.bannerText.y - titleHalf,
-      bottom: hasSub ? this.bannerSub.y + this.bannerSub.height / 2 : this.bannerText.y + titleHalf,
+      bottom: hasSub ? this.bannerSub.y + this.bannerSub.height / 2 : this.bannerText.y + titleHalf + 30,
     };
   }
 
   // opts.duration: ms fully visible before the fade (default 1400).
   showBanner(title, subtitle, opts) {
     const hold = opts && opts.duration !== undefined ? opts.duration : 1400;
+    const parts = [this.bannerText, this.bannerShadow, this.bannerSub, this.bannerLine];
+    this.tweens.killTweensOf(parts);
     this.bannerText.setText(title).setScale(1).setAlpha(1);
+    this.bannerShadow.setText(title).setAlpha(1);
     const fit = Math.min(1, (GAME_WIDTH - 60) / this.bannerText.width);
     this.bannerFit = fit;
     this.bannerText.setScale(fit * 0.4);
+    this.bannerShadow.setScale(fit * 0.4);
     this.bannerSub.setText(subtitle || '').setAlpha(1);
-    this.tweens.killTweensOf([this.bannerText, this.bannerSub]);
-    this.tweens.add({ targets: this.bannerText, scale: fit, duration: 300, ease: 'Back.Out' });
+    // The underline is scrawled in after the title lands.
+    this.bannerLine.setAlpha(1).setScale(0, 1);
+    this.tweens.add({ targets: [this.bannerText, this.bannerShadow], scale: fit, duration: 300, ease: 'Back.Out' });
+    this.tweens.add({ targets: this.bannerLine, scaleX: Math.min(1.05, (this.bannerText.width * fit + 40) / 540), duration: 220, delay: 200, ease: 'Quad.Out' });
     // Pops already sitting in the banner's band make way.
     const band = this.bannerBand();
     for (const p of this.pops.slice()) {
       const half = (p.height * p.scaleY) / 2;
       if (p.y + half > band.top && p.y - half < band.bottom) this.removePop(p);
     }
-    this.tweens.add({ targets: [this.bannerText, this.bannerSub], alpha: 0, delay: hold, duration: 400 });
+    this.tweens.add({ targets: parts, alpha: 0, delay: hold, duration: 400 });
   }
 
   setDanger(level) {
@@ -511,4 +543,81 @@ class HudScene extends Phaser.Scene {
     this.hintHiding = true;
     this.hintFade = this.tweens.add({ targets: this.hintText, alpha: 0, duration: 150 });
   }
+}
+
+// HUD-only doodle textures (built once per game; existing keys are skipped).
+function uiMakeHudTextures(scene) {
+  uiCircleTexture(scene);
+  uiUnderlineTexture(scene);
+  // Small cream note with faint rule lines, a soft shadow and a strip of tape.
+  uiSketchTexture(scene, 'hud_note', 290, 180, (ctx, shape, jitter) => {
+    const corners = [
+      { x: 20 + shape() * 6, y: 26 + shape() * 4 }, { x: 268 - shape() * 6, y: 22 + shape() * 4 },
+      { x: 272 - shape() * 4, y: 160 - shape() * 6 }, { x: 18 + shape() * 4, y: 164 - shape() * 4 },
+    ];
+    // Slightly curled bottom-right corner: an extra point pulled in.
+    const page = [corners[0], corners[1], corners[2], { x: 140, y: 162 + (jitter() - 0.5) * 1.5 }, corners[3]];
+    uiTracePath(ctx, page.map((p) => ({ x: p.x + 5, y: p.y + 7 })), true);
+    ctx.fillStyle = 'rgba(5,6,16,0.4)';
+    ctx.fill();
+    uiTracePath(ctx, page, true);
+    ctx.fillStyle = uiCss(UI_CRAYON.note);
+    ctx.fill();
+    ctx.save();
+    uiTracePath(ctx, page, true);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(90,135,200,0.35)';
+    ctx.lineWidth = 2;
+    for (const y of [70, 112, 150]) {
+      ctx.beginPath();
+      ctx.moveTo(0, y + (shape() - 0.5) * 2);
+      ctx.lineTo(290, y + (shape() - 0.5) * 3);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 50; i++) {
+      const x = shape() * 290;
+      const y = shape() * 180;
+      ctx.strokeStyle = 'rgba(120,95,50,0.12)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (shape() - 0.5) * 24, y + (shape() - 0.5) * 10);
+      ctx.stroke();
+    }
+    ctx.restore();
+    // Straight edge (uiStroke would round a 5-point outline into a blob).
+    uiTracePath(ctx, page, true);
+    ctx.strokeStyle = 'rgba(138,122,90,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Tape across the top edge.
+    ctx.save();
+    ctx.translate(150, 26);
+    ctx.rotate(-0.08 + (shape() - 0.5) * 0.04);
+    const tape = [];
+    for (let i = 0; i <= 3; i++) tape.push({ x: 48 + (i % 2 ? 5 : 0), y: -13 + i * 8.7 });
+    for (let i = 3; i >= 0; i--) tape.push({ x: -48 - (i % 2 ? 4 : 0), y: -13 + i * 8.7 });
+    uiTracePath(ctx, tape, true);
+    ctx.fillStyle = 'rgba(240,232,190,0.6)';
+    ctx.fill();
+    ctx.restore();
+  });
+  // Crayon scribble that is dense at the bottom edge and thins out upward (white, tinted red).
+  uiSketchTexture(scene, 'hud_danger', GAME_WIDTH, 300, (ctx, shape, jitter) => {
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 520; i++) {
+      const depth = Math.pow(shape(), 2.2);           // 0 = bottom edge
+      const x = shape() * GAME_WIDTH + (jitter() - 0.5) * 6;
+      const y = 300 - depth * 300 + (jitter() - 0.5) * 6;
+      const len = 20 + shape() * 46;
+      ctx.globalAlpha = (1 - depth) * (0.25 + shape() * 0.35);
+      ctx.lineWidth = 3 + shape() * 3;
+      ctx.strokeStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len * 0.55, y - len * 0.8);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  });
 }
