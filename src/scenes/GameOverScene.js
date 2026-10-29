@@ -1,7 +1,7 @@
 // Game over: a torn notebook page taped onto the sketchbook, its bottom edge singed by the
 // supernova. Score, NEW BEST circled in red crayon, a handwritten stats list and the next goal.
 // GameScene passes score, altitude, reason, newBestAltitude, bestAltitude and (optional)
-// topSpeedKmh, maxChain, zoneIndex, seconds; a missing optional stat simply drops its row.
+// topSpeedKmh, maxChain, zoneIndex, seconds, secondWind; a missing optional stat drops its row.
 const GO_CARD = { w: 600, h: 700, pad: 34, x: GAME_WIDTH / 2, y: 548, rowTop: -22, rowStep: 54 };
 // Build strip under the page (strip-local coordinates). Five cards get ~127 px slots; names are
 // written at 26 px (~13 CSS px on a 360 px phone) on up to two lines.
@@ -39,6 +39,7 @@ class GameOverScene extends Phaser.Scene {
     this.topSpeed = goNumber(data.topSpeedKmh);
     this.maxChain = goNumber(data.maxChain);
     this.seconds = goNumber(data.seconds);
+    this.secondWind = !!data.secondWind;   // the run's one-time SECOND WIND rescue was used
     const zone = goNumber(data.zoneIndex);
     this.zoneIndex = zone !== undefined ? Phaser.Math.Clamp(Math.round(zone), 0, ZONES.length - 1) : undefined;
   }
@@ -104,6 +105,11 @@ class GameOverScene extends Phaser.Scene {
       card.add(uiInkText(this, -228, y, row.label, { size: 30, color: pencil, stroke: null, ox: 0, rot: 0.004 * (i % 2 ? 1 : -1) }));
       card.add(uiInkText(this, 250, y - 2, row.value, { size: 36, color: row.color || dark, stroke: null, ox: 1, rot: -0.01 }));
     });
+    if (this.secondWind) {
+      // Pencil aside in the gap of the last stat row (between its label and value).
+      const last = Math.max(0, this.statRows().length - 1);
+      card.add(uiInkText(this, 22, GO_CARD.rowTop + last * GO_CARD.rowStep, '(second wind used)', { size: 25, color: '#2f6fa8', stroke: null, rot: -0.04, boil: false }));
+    }
     const goal = uiInkText(this, 10, GO_CARD.rowTop + 5 * GO_CARD.rowStep + 18, this.nextGoal(), { size: 31, color: '#b4441a', stroke: null, rot: -0.025 });
     goal.setScale(Math.min(1, 480 / goal.width));
     card.add(goal);
@@ -179,7 +185,8 @@ class GameOverScene extends Phaser.Scene {
       color: this.newBestAltitude ? '#2f7d32' : undefined,
     });
     if (this.topSpeed !== undefined) rows.push({ label: 'top speed', value: Math.round(this.topSpeed) + ' km/s' });
-    if (this.maxChain !== undefined) rows.push({ label: 'longest chain', value: this.maxChain >= 2 ? 'x' + this.maxChain + ' perfect' : '-' });
+    // 'combo N' as in the HUD: the 'x' only ever means the score multiplier.
+    if (this.maxChain !== undefined) rows.push({ label: 'best combo', value: this.maxChain >= 1 ? this.maxChain + ' perfect' : '-' });
     if (this.zoneIndex !== undefined) rows.push({ label: 'reached', value: ZONES[this.zoneIndex].name });
     if (this.seconds !== undefined) rows.push({ label: 'time', value: goFormatTime(this.seconds) });
     return rows;

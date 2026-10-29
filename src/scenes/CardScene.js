@@ -17,7 +17,7 @@ const CARD_UI = {
   spacing: 234,
   centerY: 850,
   headerY: 548,
-  inputDelay: 280,      // ms before taps count, so a held finger lifting is not a pick
+  hitSlop: 18,          // px of forgiveness round a card for a tap
   autoWarn: 2,          // seconds left when the middle card starts nudging
 };
 
@@ -229,6 +229,12 @@ class CardScene extends Phaser.Scene {
     this.tweens.add({ targets: [this.ringText, this.ringGfx], alpha: 1, delay: 300, duration: 200 });
     uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawCountdown(); });
 
+    // A tap picks on release. Only a press that started in this scene counts (a finger already
+    // holding the comet when the pick opened never picks); no time guard beyond that.
+    this.input.on('pointerdown', (p) => this.onPointerDown(p));
+    this.input.on('pointerup', () => this.onPointerUp());
+    this.input.on('pointerupoutside', () => this.onPointerUp());
+
     if (this.input.keyboard) {
       this.input.keyboard.on('keydown', (e) => {
         const k = parseInt(e.key, 10);
@@ -310,6 +316,8 @@ class CardScene extends Phaser.Scene {
     const restAngle = ((uiHash(id) % 100) / 100 - 0.5) * 5;
     const box = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT + h, [inner]);
     box.setSize(w + 14, h + 30);
+    // Only for the hand cursor: taps are hit-tested by the scene (see onPointerDown), so a card
+    // still dealing in (moving under the finger) takes the very first tap.
     box.setInteractive({ useHandCursor: true });
     const entry = { id, card, box, inner, rarity: card.rarity, color: crayon, baseX: x, baseY: y, restAngle, index, landed: false };
 
@@ -324,22 +332,6 @@ class CardScene extends Phaser.Scene {
       },
     });
 
-    box.on('pointerdown', () => {
-      if (!this.canPick()) return;
-      this.pressed = entry;
-      this.tweens.killTweensOf(box);
-      // The squash widens the card: an edge card steps inward so its labels stay on screen.
-      box.setScale(1.07, 0.9).setX(cardSafeX(x, 1.07));
-    });
-    box.on('pointerout', () => {
-      if (this.pressed !== entry || this.picked) return;
-      this.pressed = null;
-      this.tweens.add({ targets: box, x, scaleX: 1, scaleY: 1, duration: 160, ease: 'Back.Out' });
-    });
-    box.on('pointerup', () => {
-      if (this.pressed !== entry) return;
-      this.pick(index);
-    });
     return entry;
   }
 
@@ -362,7 +354,53 @@ class CardScene extends Phaser.Scene {
   }
 
   canPick() {
-    return !this.picked && this.elapsed * 1000 > CARD_UI.inputDelay;
+    return !this.picked;
+  }
+
+  // Card under a screen point: where it is drawn right now (also mid deal-in) or where it is
+  // landing; only cards already on screen count. The nearest center wins.
+  cardAtPoint(px, py) {
+    const pad = CARD_UI.hitSlop;
+    let best = -1;
+    let bestD = Infinity;
+    this.cards.forEach((c, i) => {
+      const hw = (CARD_UI.width / 2) * Math.max(1, c.box.scaleX) + pad;
+      const hh = (CARD_UI.height / 2) * Math.max(1, c.box.scaleY) + pad;
+      const onScreen = c.box.y - hh < GAME_HEIGHT;
+      if (!onScreen) return;
+      const inNow = Math.abs(px - c.box.x) <= hw && Math.abs(py - c.box.y) <= hh;
+      const inRest = Math.abs(px - c.baseX) <= CARD_UI.width / 2 + pad && Math.abs(py - c.baseY) <= CARD_UI.height / 2 + pad;
+      if (!inNow && !inRest) return;
+      const d = Math.min(Math.hypot(px - c.box.x, py - c.box.y), Math.hypot(px - c.baseX, py - c.baseY));
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
+  onPointerDown(p) {
+    if (!this.canPick()) return;
+    const index = this.cardAtPoint(p.x, p.y);
+    if (index < 0) return;
+    const entry = this.cards[index];
+    if (this.pressed && this.pressed !== entry) this.release(this.pressed);
+    this.pressed = entry;
+    // Pressed: the card snaps to its spot (ending the deal-in) and squashes under the finger.
+    // The squash widens it, so an edge card steps inward to keep its labels on screen.
+    this.tweens.killTweensOf(entry.box);
+    entry.landed = true;
+    entry.box.setPosition(cardSafeX(entry.baseX, 1.07), entry.baseY).setAngle(entry.restAngle).setAlpha(1).setScale(1.07, 0.9);
+  }
+
+  // A press that ends without a pick (another card pressed instead) springs back.
+  release(entry) {
+    this.tweens.add({ targets: entry.box, x: entry.baseX, scaleX: 1, scaleY: 1, duration: 160, ease: 'Back.Out' });
+  }
+
+  // Release anywhere commits the pressed card: the deal-in moves cards under the finger, so a
+  // drift off the card between press and release must not cost the pick.
+  onPointerUp() {
+    if (!this.pressed || this.picked) return;
+    this.pick(this.pressed.index);
   }
 
   pick(index) {
@@ -423,7 +461,8 @@ class CardScene extends Phaser.Scene {
     if (auto && auto.landed && left < CARD_UI.autoWarn && this.pressed !== auto) {
       auto.box.setAngle(auto.restAngle + Math.sin(t * 22) * 2.2 * (1 - left / CARD_UI.autoWarn));
     }
-    if (left <= 0) this.pick(this.autoIndex);
+    // Time up: a card under the finger wins over the default pick.
+    if (left <= 0) this.pick(this.pressed ? this.pressed.index : this.autoIndex);
   }
 
   // Pencil ring: a faint full sketch circle plus a darker arc for the time left, both wobbling
