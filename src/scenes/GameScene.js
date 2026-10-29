@@ -28,7 +28,10 @@ class GameScene extends Phaser.Scene {
     this.createStarfield();
     this.worldGfx = this.add.graphics();
     this.cometGfx = this.add.graphics();
-    this.createHud();
+    this.scene.launch('Hud');
+    this.hud = this.scene.get('Hud');
+    this.hintStage = 0;   // 0: teach hold, 1: teach release, 2: done
+    this.events.once('shutdown', () => this.scene.stop('Hud'));
 
     this.input.on('pointerdown', () => { this.isHolding = true; });
     this.input.on('pointerup', () => this.releaseHold());
@@ -36,8 +39,6 @@ class GameScene extends Phaser.Scene {
     // Keyboard is an optional extra for desktop testing.
     this.input.keyboard.on('keydown-SPACE', () => { this.isHolding = true; });
     this.input.keyboard.on('keyup-SPACE', () => this.releaseHold());
-
-    addFullscreenButton(this).setScrollFactor(0);
   }
 
   // ---------- world ----------
@@ -58,15 +59,14 @@ class GameScene extends Phaser.Scene {
 
   // Keeps planets generated a screen ahead.
   fillPlanets() {
-    const viewTop = this.cameras.main.scrollY;
-    while (this.nextPlanetY > viewTop - GAME_HEIGHT) {
+    const view = this.visibleBounds();
+    while (this.nextPlanetY > view.top - GAME_HEIGHT) {
       const layout = nextPlanetLayout(this.planetSide, this.startY - this.nextPlanetY, GAME_WIDTH, Math.random);
       this.addPlanet(layout.x, this.nextPlanetY, layout.radius);
       this.planetSide = layout.side;
       this.nextPlanetY -= layout.gap;
     }
-    const viewBottom = viewTop + GAME_HEIGHT;
-    this.planets = this.planets.filter((p) => p.y - p.radius < viewBottom + 400);
+    this.planets = this.planets.filter((p) => p.y - p.radius < view.bottom + 400);
   }
 
   createStarfield() {
@@ -78,19 +78,23 @@ class GameScene extends Phaser.Scene {
     g.generateTexture('stars', 512, 512);
     g.destroy();
     this.cameras.main.setBackgroundColor(0x2b1d5c);
-    this.starsFar = this.add.tileSprite(0, 0, GAME_WIDTH, GAME_HEIGHT, 'stars').setOrigin(0).setScrollFactor(0).setAlpha(0.5);
-    this.starsNear = this.add.tileSprite(0, 0, GAME_WIDTH, GAME_HEIGHT, 'stars').setOrigin(0).setScrollFactor(0).setTileScale(1.6);
+    // Oversized so the background still fills the screen when the camera zooms out.
+    const w = GAME_WIDTH / TUNING.minZoom;
+    const h = GAME_HEIGHT / TUNING.minZoom;
+    const ox = (GAME_WIDTH - w) / 2;
+    const oy = (GAME_HEIGHT - h) / 2;
+    this.starsFar = this.add.tileSprite(ox, oy, w, h, 'stars').setOrigin(0).setScrollFactor(0).setAlpha(0.5);
+    this.starsNear = this.add.tileSprite(ox, oy, w, h, 'stars').setOrigin(0).setScrollFactor(0).setTileScale(1.6);
   }
 
-  createHud() {
-    const style = { fontFamily: FONT, color: COLORS.text, stroke: '#1a1033', strokeThickness: 10 };
-    this.altText = this.add.text(32, 40, '0 m', { ...style, fontSize: '56px' }).setScrollFactor(0).setDepth(100);
-    this.speedText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 120, '', { ...style, fontSize: '64px' })
-      .setOrigin(0.5).setScrollFactor(0).setDepth(100);
-    this.hintText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 220, 'HOLD near a planet', { ...style, fontSize: '44px', color: '#ffe14d' })
-      .setOrigin(0.5).setScrollFactor(0).setDepth(100);
-    this.tweens.add({ targets: this.hintText, scale: 1.1, yoyo: true, repeat: -1, duration: 420 });
-    this.hintStage = 0;   // 0: teach hold, 1: teach release, 2: done
+  // World-space rectangle the camera currently shows (zoom scales around the screen center).
+  visibleBounds() {
+    const cam = this.cameras.main;
+    const halfW = GAME_WIDTH / (2 * cam.zoom);
+    const halfH = GAME_HEIGHT / (2 * cam.zoom);
+    const cx = cam.scrollX + GAME_WIDTH / 2;
+    const cy = cam.scrollY + GAME_HEIGHT / 2;
+    return { left: cx - halfW, right: cx + halfW, top: cy - halfH, bottom: cy + halfH };
   }
 
   // ---------- input ----------
@@ -117,7 +121,7 @@ class GameScene extends Phaser.Scene {
     this.orbitPlanet = null;
     if (this.hintStage === 1) {
       this.hintStage = 2;
-      this.tweens.add({ targets: this.hintText, alpha: 0, duration: 400 });
+      this.hud.hideHint();
     }
   }
 
@@ -145,6 +149,7 @@ class GameScene extends Phaser.Scene {
 
   update(time, delta) {
     if (this.isOver) return;
+    if (this.hintStage === 0 && this.hud.hintText && !this.hud.hintText.text) this.hud.showHint('HOLD near a planet');
     const dt = Math.min(delta / 1000, 0.05);
     const altitude = this.startY - this.comet.y;
 
@@ -158,7 +163,7 @@ class GameScene extends Phaser.Scene {
         this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
         if (this.hintStage === 0) {
           this.hintStage = 1;
-          this.hintText.setText('RELEASE to fling!');
+          this.hud.showHint('RELEASE to fling!');
         }
       }
     }
@@ -235,7 +240,7 @@ class GameScene extends Phaser.Scene {
 
   // The bottom of the screen is a floor: falling behind bounces you back up, at a cost.
   bounceFloor() {
-    const floor = this.cameras.main.scrollY + GAME_HEIGHT - TUNING.cometRadius;
+    const floor = this.visibleBounds().bottom - TUNING.cometRadius;
     if (this.comet.y > floor && !this.orbit) {
       this.comet.y = floor;
       this.comet.vy = -Math.abs(this.comet.vy);
@@ -258,11 +263,16 @@ class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: t, y: t.y - 90, alpha: 0, duration: 700, onComplete: () => t.destroy() });
   }
 
-  // Camera only climbs; it eases toward keeping the comet in the lower part of the screen.
+  // Camera only climbs, keeps the comet in the lower part of the view, and zooms out with
+  // speed: more warning at high speed, and the shrinking world sells the speed.
   updateCamera(dt) {
     const cam = this.cameras.main;
-    const target = this.comet.y - GAME_HEIGHT * 0.62;
-    if (target < cam.scrollY) cam.scrollY = Phaser.Math.Linear(cam.scrollY, target, Math.min(1, dt * 8));
+    const targetZoom = 1 - speedFraction(this.speed) * (1 - TUNING.minZoom);
+    cam.setZoom(Phaser.Math.Linear(cam.zoom, targetZoom, Math.min(1, dt * 2)));
+    let center = cam.scrollY + GAME_HEIGHT / 2;
+    const targetCenter = this.comet.y - (0.12 * GAME_HEIGHT) / cam.zoom;
+    if (targetCenter < center) center = Phaser.Math.Linear(center, targetCenter, Math.min(1, dt * 8));
+    cam.scrollY = center - GAME_HEIGHT / 2;
     this.starsFar.tilePositionY = cam.scrollY * 0.15;
     this.starsNear.tilePositionY = cam.scrollY * 0.4;
   }
@@ -278,6 +288,7 @@ class GameScene extends Phaser.Scene {
   draw() {
     const g = this.worldGfx;
     g.clear();
+    this.drawWalls(g);
     const grab = this.isHolding ? null : this.nearestGrabbablePlanet();
     const assist = this.currentAssist();
     for (const p of this.planets) {
@@ -285,6 +296,18 @@ class GameScene extends Phaser.Scene {
     }
     if (this.orbit) this.drawAimGuide(g, assist);
     this.drawComet();
+  }
+
+  // Side walls only show when zoomed out; shade the outside so the play area stays clear.
+  drawWalls(g) {
+    const v = this.visibleBounds();
+    if (v.left >= 0) return;
+    g.fillStyle(0x120a2a, 0.75);
+    g.fillRect(v.left, v.top, -v.left, v.bottom - v.top);
+    g.fillRect(GAME_WIDTH, v.top, v.right - GAME_WIDTH, v.bottom - v.top);
+    g.lineStyle(8, 0xff6fb5, 0.8);
+    g.lineBetween(0, v.top, 0, v.bottom);
+    g.lineBetween(GAME_WIDTH, v.top, GAME_WIDTH, v.bottom);
   }
 
   drawPlanet(g, p, highlighted, isTarget) {
@@ -377,11 +400,8 @@ class GameScene extends Phaser.Scene {
   }
 
   updateHud() {
-    this.altText.setText(this.bestAltitude + ' m');
-    const f = speedFraction(this.speed);
-    this.speedText.setText(Math.round(this.speed / 10) + ' km/s');
-    this.speedText.setColor('#' + speedColor(f).toString(16).padStart(6, '0'));
-    this.speedText.setScale(1 + f * 0.35);
+    if (!this.hud.scoreText) return;   // HUD scene still starting
+    this.hud.setStats(this.bestAltitude, this.bestAltitude, this.speed);
   }
 
   gameOver(reason) {

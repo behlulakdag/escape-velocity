@@ -19,6 +19,9 @@ const TUNING = {
   catchBonus: 60,         // instant speed for every planet caught
   hitKeep: 0.7,           // speed kept after hitting a planet
   floorBounceKeep: 0.8,   // speed kept after falling to the bottom of the screen
+  maxOrbitSpin: 5,        // rad/s cap on visible orbit rotation so high speed stays readable
+  assistMaxBelow: 40,     // assist never steers toward planets further below than this
+  minZoom: 0.68,          // camera zoom at top speed
   hitGrace: 120,          // a hit never leaves you closer than this to minSpeed
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,
@@ -43,7 +46,8 @@ function startOrbit(cx, cy, x, y, vx, vy, planetRadius) {
 // Advances an orbit by dt seconds. Returns the new orbit and speed; crashed=true when the
 // tightening orbit reaches the planet surface.
 function orbitStep(orbit, speed, dt, planetRadius) {
-  const angle = orbit.angle + orbit.dir * (speed / orbit.radius) * dt;
+  const spin = Math.min(speed / orbit.radius, TUNING.maxOrbitSpin);
+  const angle = orbit.angle + orbit.dir * spin * dt;
   const radius = orbit.radius - TUNING.orbitShrink * dt;
   const newSpeed = Math.min(TUNING.maxSpeed, speed + TUNING.orbitGain * dt);
   return {
@@ -70,7 +74,7 @@ function pickAssistTarget(x, y, dirX, dirY, planets, exclude) {
   const uy = dirY / len;
   let best = null;
   for (const p of planets) {
-    if (p === exclude) continue;
+    if (p === exclude || p.y > y + TUNING.assistMaxBelow) continue;
     const passDist = p.radius + TUNING.assistPassGap;
     const dx = p.x - x;
     const dy = p.y - y;

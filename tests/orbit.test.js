@@ -100,3 +100,14 @@ test('planet layout zigzags, stays on screen and spreads out with altitude', () 
   assert.strictEqual(low, o.TUNING.minPlanetGap);
   assert.strictEqual(high, o.TUNING.maxPlanetGap);
 });
+
+test('orbit spin is capped so fast orbits stay readable', () => {
+  const orbit = { angle: 0, radius: 100, dir: 1 };
+  const step = o.orbitStep(orbit, 2000, 0.1, 30);
+  assert.ok(Math.abs(step.orbit.angle - o.TUNING.maxOrbitSpin * 0.1) < 1e-9);
+});
+
+test('assist never steers toward planets below', () => {
+  const below = { x: 0, y: 500, radius: 70 };
+  assert.strictEqual(o.pickAssistTarget(0, 0, 0, 1, [below], null), null);
+});
