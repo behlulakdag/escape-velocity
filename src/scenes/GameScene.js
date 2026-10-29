@@ -171,6 +171,7 @@ class GameScene extends Phaser.Scene {
     this.shieldCharges = 0;     // Heat Shield charges left in this zone
     this.rescuesLeft = 0;       // Unbreakable
     this.secondWindUsed = false; // one-time SECOND WIND (any run, no card needed)
+    this.lastCatchPopAt = -1e9;
     this.catches = 0;            // planets caught this run (SECOND WIND needs a few)
     this.afterburnerT = 0;      // seconds of afterburner left
     this.overdriveFxT = 0;
@@ -1108,9 +1109,14 @@ class GameScene extends Phaser.Scene {
     }
     if (auto) this.popText('AUTO CATCH', '#c9c3e6', { size: 30, duration: 600, low: true });
     else if (close && this.mods.closeOrbitMul > 1) this.popText('TIGHT SPIN!', teal, { size: 44 });
-    else if (close) this.popText('CLOSE ORBIT! +SPEED', '#ffe14d');
-    else if (this.mods.catchBurst > 0) this.popText('SPEED BURST!', teal, { low: true });
-    else this.popText('+SPEED', '#5eff8f', { low: true });
+    else if (this.time.now - this.lastCatchPopAt > GameScene.CATCH_POP_QUIET) {
+      // Catches happen every second or two: name the gain only now and then, the speedometer
+      // and speed lines carry it the rest of the time.
+      this.lastCatchPopAt = this.time.now;
+      if (close) this.popText('CLOSE ORBIT! +SPEED', '#ffe14d');
+      else if (this.mods.catchBurst > 0) this.popText('SPEED BURST!', teal, { low: true });
+      else this.popText('+SPEED', '#5eff8f', { low: true });
+    }
     this.sfx('grab', { close });
     this.burst(c.x, c.y, 0xffffff, 6);
     planet.wobble = 1;
@@ -1768,6 +1774,7 @@ class GameScene extends Phaser.Scene {
         topSpeedKmh: Math.round(this.topSpeed / 10), maxChain: this.maxChain,
         zoneIndex: this.zoneIndex, seconds: Math.floor(this.elapsed),
         cards: this.ownedCards.slice(),
+        secondWind: this.secondWindUsed,
       });
     });
   }
@@ -1797,6 +1804,7 @@ GameScene.KICK_GRACE = 0.45;
 GameScene.PICK_DELAY = 1.2;
 // ms after any pop in which routine (low) pops are skipped.
 GameScene.LOW_POP_QUIET = 600;
+GameScene.CATCH_POP_QUIET = 4000;   // ms between catch pops (+SPEED / CLOSE ORBIT / SPEED BURST)
 // Death beat (seconds, real time): jaws closing, then the hold before the game over page.
 GameScene.DEATH_CLOSE = 0.3;
 GameScene.DEATH_HOLD = 0.55;

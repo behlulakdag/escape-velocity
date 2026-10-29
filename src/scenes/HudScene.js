@@ -345,7 +345,7 @@ class HudScene extends Phaser.Scene {
     if (live && Math.abs(live.y - y) < 160) this.removePop(live);
   }
 
-  // PERFECT chain milestone (GameScene at chain 5 / 10 / 25 / +25): the name rubber-stamped
+  // PERFECT chain milestone (GameScene at chain 3 / 6 / 12 / +12): the name rubber-stamped
   // onto the page in crayon with an ink burst and a slight random tilt; bigger and hotter per
   // level (1 NICE!, 2 BLAZING!, 3 UNSTOPPABLE!). ~0.9 s. Placed off the comet and its tail and
   // off any banner; the current pop line makes way.
@@ -553,10 +553,10 @@ class HudScene extends Phaser.Scene {
     return level === 1 ? UI_INK.dark : hudDeepen(tint, 0.72);
   }
 
-  // Combo number crayon by milestone tier (5 / 10 / 25): yellow, orange, red; pressed harder
+  // Combo number crayon by milestone tier (3 / 6 / 12): yellow, orange, red; pressed harder
   // on the cream page.
   chainColor(chain) {
-    const crayon = chain >= 25 ? UI_CRAYON.red : chain >= 10 ? UI_CRAYON.orange : chain >= 5 ? UI_CRAYON.yellow : null;
+    const crayon = chain >= 12 ? UI_CRAYON.red : chain >= 6 ? UI_CRAYON.orange : chain >= 3 ? UI_CRAYON.yellow : null;
     if (this.lightPage) return crayon ? uiColorHex(hudDeepen(crayon, 0.72)) : UI_INK.darkHex;
     return crayon ? uiColorHex(crayon) : UI_INK.creamHex;
   }

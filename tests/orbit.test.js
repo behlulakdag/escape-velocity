@@ -271,10 +271,10 @@ test('orbitStep boost multiplies the orbit gain and the close-orbit bonus', () =
 });
 
 test('chain milestones: 5 NICE, 10 BLAZING, 25 and every +25 UNSTOPPABLE, nothing else', () => {
-  assert.strictEqual(o.chainMilestoneLevel(5), 1);
-  assert.strictEqual(o.chainMilestoneLevel(10), 2);
-  for (const c of [25, 50, 75, 100]) assert.strictEqual(o.chainMilestoneLevel(c), 3, String(c));
-  for (const c of [0, 1, 2, 4, 6, 9, 11, 15, 20, 24, 26, 30, 49, 51]) assert.strictEqual(o.chainMilestoneLevel(c), 0, String(c));
+  assert.strictEqual(o.chainMilestoneLevel(3), 1);
+  assert.strictEqual(o.chainMilestoneLevel(6), 2);
+  for (const c of [12, 24, 36, 48]) assert.strictEqual(o.chainMilestoneLevel(c), 3, String(c));
+  for (const c of [0, 1, 2, 4, 5, 7, 10, 11, 13, 20, 23, 25, 30]) assert.strictEqual(o.chainMilestoneLevel(c), 0, String(c));
   assert.deepStrictEqual(o.CHAIN_MILESTONE_NAMES.slice(1), ['NICE!', 'BLAZING!', 'UNSTOPPABLE!']);
 });
 

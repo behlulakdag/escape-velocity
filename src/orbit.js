@@ -361,14 +361,14 @@ function perfectChainBonus(chain) {
   return Math.min(FEEL.chainBonusMax, FEEL.chainBonus * chain);
 }
 
-// PERFECT chain milestones: chain 5 = NICE! (1), 10 = BLAZING! (2), 25 and every +25 = UNSTOPPABLE! (3).
-// Returns 0 for every other chain, so ordinary PERFECTs stay quiet.
+// PERFECT chain milestones: chain 3 = NICE! (1), 6 = BLAZING! (2), 12 and every +12 = UNSTOPPABLE! (3).
+// Low enough that mid-skill players reach the first stamps; 0 for every other chain.
 const CHAIN_MILESTONE_NAMES = ['', 'NICE!', 'BLAZING!', 'UNSTOPPABLE!'];
 
 function chainMilestoneLevel(chain) {
-  if (chain === 5) return 1;
-  if (chain === 10) return 2;
-  if (chain >= 25 && chain % 25 === 0) return 3;
+  if (chain === 3) return 1;
+  if (chain === 6) return 2;
+  if (chain >= 12 && chain % 12 === 0) return 3;
   return 0;
 }
 
