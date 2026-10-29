@@ -28,8 +28,11 @@
 - [x] Headless sim (tests/playtest-bot.js), 10 runs each: random 5-32s, careful 20-74s, skilled 23-102s (highest score)
 - [x] Round 3: stable orbits (no crash), smaller grab zone, close-orbit speed bonus; SUPERNOVA wave is the only way to lose (130->160 px/s +5/s, max 250px below screen); minSpeed 140; smooth homing release (96.7% hit) and eased latch
 - [x] Sim (8 runs each): idle 10-17s, random 2-7s, careful 26-105s, skilled 33-104s (highest score)
-- [ ] User phone test of this round
-- [ ] Next: PERFECT chain multiplier, 3s opening scene (star explodes), then design pass (planet faces), sound, itch page
+- [x] Agent round (feel/audio/art in parallel + 2 reviewers, then 3 fixers + QA 20/20): hitstop, PERFECT chain, close call slow-mo, best-altitude flag, speed lines, look-ahead camera, squash/stretch, star-explosion intro (RETRY skips it), procedural audio + reactive music + mute, characters with faces (comet, planets, angry supernova), themed menu/game over, screen-space pops, gentle flashes
+- [x] Player critic scores: Fun 3.5, Visual 4, Theme 4.5
+- [ ] Critic top fixes: teach re-grab + auto-catch first flings; forgiving catch at speed; cut text clutter; lower full-screen flashes/intro white-out; keep speed escalating past 240 km/s (zone names match); keep comet out of bottom HUD; only grab planets at/above the comet
+- [ ] Listen to audio on a real phone (never heard yet)
+- [ ] itch page: GIF of PERFECT chain, controls line, menu cover
 - [ ] Design pass (art), then sound/music (user wants these last)
 - [ ] Real itch page "Escape Velocity" (currently deploying to the test page)
 
