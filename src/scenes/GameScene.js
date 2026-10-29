@@ -99,6 +99,8 @@ class GameScene extends Phaser.Scene {
     this.prevBestAlt = loadBestAltitude();
     this.passedBest = false;
     this.explodeT = -1;         // seconds since the intro star exploded, -1 = not yet
+    // The scene instance is reused between runs, so this must be reset or later runs skip launch().
+    this.launched = false;
   }
 
   pressHold() {
@@ -167,8 +169,12 @@ class GameScene extends Phaser.Scene {
     const h = GAME_HEIGHT / TUNING.minZoom;
     const ox = (GAME_WIDTH - w) / 2;
     const oy = (GAME_HEIGHT - h) / 2;
-    this.starsFar = this.add.tileSprite(ox, oy, w, h, 'stars').setOrigin(0).setScrollFactor(0).setAlpha(0.5);
-    this.starsNear = this.add.tileSprite(ox, oy, w, h, 'stars').setOrigin(0).setScrollFactor(0).setTileScale(1.6);
+    // Optional extra layers made by ART.makeStarTexture (slowest nebula, fastest sparkles).
+    const layer = (key) => this.add.tileSprite(ox, oy, w, h, key).setOrigin(0).setScrollFactor(0);
+    this.starsNebula = this.textures.exists('stars_nebula') ? layer('stars_nebula') : null;
+    this.starsFar = layer('stars').setAlpha(0.5);
+    this.starsNear = layer('stars').setTileScale(1.6);
+    this.starsSparkle = this.textures.exists('stars_sparkle') ? layer('stars_sparkle') : null;
   }
 
   // World-space rectangle the camera currently shows (zoom scales around the screen center).
@@ -183,6 +189,7 @@ class GameScene extends Phaser.Scene {
 
   // Announces a game moment for the audio layer (src/audio.js listens on game.events).
   sfx(name, data) {
+    if (this.headless) return;   // the simulator plays hundreds of runs: keep it silent
     this.game.events.emit('sfx', name, data || {});
   }
 
@@ -227,7 +234,8 @@ class GameScene extends Phaser.Scene {
     const color = '#' + lerpColor(0xffe14d, 0xffffff, heat).toString(16).padStart(6, '0');
     this.popText(label, color, { size: 44 + Math.min(chain, 6) * 8, stroke: heat > 0.5 ? '#c2410c' : '#1a1033' });
     this.sfx('perfect', { chain });
-    this.cameras.main.flash(120 + heat * 80, 255, 225, 77);
+    // Gentle overlay instead of a solid camera flash, so the comet stays visible at high chains.
+    if (this.hud.flash) this.hud.flash(0xffe14d, 0.2 + heat * 0.15, 150 + heat * 60);
     this.cameras.main.shake(140, 0.006 + heat * 0.008);
     this.burst(this.comet.x, this.comet.y, 0xffe14d, 8 + Math.min(chain, 6) * 3, 160);
     this.freeze(FEEL.hitstopPerfect);
@@ -476,18 +484,40 @@ class GameScene extends Phaser.Scene {
     this.popText('-' + Math.round((1 - keep) * 100) + '% SPEED', '#ff4d6d');
   }
 
-  // opts: { size (px), stroke, duration (ms) }. Pops in with an overshoot, then floats away.
+  // opts: { size (px), stroke, duration (ms) }. Drawn by the HUD in screen space, so it stays
+  // readable at any zoom and is not left behind (and dragged onto the bottom HUD) at high speed.
   popText(label, color, opts) {
+    if (this.headless || !this.hud.scoreText) return;   // simulator, or HUD scene still starting
     opts = opts || {};
-    const size = opts.size || 40;
-    const t = this.add.text(this.comet.x, this.comet.y - 50, label, {
-      fontFamily: FONT, fontSize: size + 'px', color, stroke: opts.stroke || '#1a1033', strokeThickness: Math.round(size / 5),
-    }).setOrigin(0.5).setDepth(50).setScale(0.4);
-    // Keep it inside the side walls.
-    t.x = Phaser.Math.Clamp(t.x, t.width / 2 + 10, GAME_WIDTH - t.width / 2 - 10);
-    const duration = opts.duration || 700;
-    this.tweens.add({ targets: t, scale: 1, duration: 160, ease: 'Back.Out' });
-    this.tweens.add({ targets: t, y: t.y - 90, alpha: 0, delay: duration * 0.35, duration: duration * 0.65, onComplete: () => t.destroy() });
+    const f = speedFraction(this.speed);
+    // Spawn ahead of the comet along its flight direction, where the player is looking.
+    let ux = this.comet.vx;
+    let uy = this.comet.vy;
+    if (this.orbit) {
+      const v = tangentVelocity(this.orbit, 1);
+      ux = v.vx;
+      uy = v.vy;
+    }
+    const len = Math.hypot(ux, uy) || 1;
+    const ahead = 70 + 110 * f;
+    const p = this.worldToScreen(this.comet.x, this.comet.y);
+    this.hud.pop(label, color, {
+      size: opts.size,
+      stroke: opts.stroke,
+      // Faster flight = shorter pops, so they never pile up.
+      duration: (opts.duration || 700) * (1 - 0.35 * f),
+      x: p.x + (ux / len) * ahead,
+      y: p.y + (uy / len) * ahead - 50,
+    });
+  }
+
+  // Camera zoom scales around the screen center: screen = (world - scroll - center) * zoom + center.
+  worldToScreen(x, y) {
+    const cam = this.cameras.main;
+    return {
+      x: (x - cam.scrollX - GAME_WIDTH / 2) * cam.zoom + GAME_WIDTH / 2,
+      y: (y - cam.scrollY - GAME_HEIGHT / 2) * cam.zoom + GAME_HEIGHT / 2,
+    };
   }
 
   // Camera only climbs, keeps the comet in the lower part of the view, and zooms out with
@@ -526,6 +556,14 @@ class GameScene extends Phaser.Scene {
     this.starsNear.tilePositionY = cam.scrollY * 0.4;
     this.starsFar.tilePositionX = cam.scrollX * 0.15;
     this.starsNear.tilePositionX = cam.scrollX * 0.4;
+    if (this.starsNebula) {
+      this.starsNebula.tilePositionY = cam.scrollY * 0.05;
+      this.starsNebula.tilePositionX = cam.scrollX * 0.05;
+    }
+    if (this.starsSparkle) {
+      this.starsSparkle.tilePositionY = cam.scrollY * 0.7;
+      this.starsSparkle.tilePositionX = cam.scrollX * 0.7;
+    }
   }
 
   // Bottom of the gameplay view (no look-ahead / punch): what the supernova leash follows.
@@ -564,7 +602,7 @@ class GameScene extends Phaser.Scene {
     if (!this.headless) this.slowMoT = 0;
     this.popText('CLOSE CALL!', '#ff9a2e', { size: 56, duration: 1000 });
     this.sfx('closecall');
-    this.cameras.main.flash(110, 255, 154, 46);
+    if (this.hud.flash) this.hud.flash(0xff9a2e, 0.28, 160);
     this.cameras.main.shake(200, 0.01);
     this.burst(this.comet.x, this.comet.y + 40, 0xff9a2e, 14, 150);
   }
@@ -579,9 +617,10 @@ class GameScene extends Phaser.Scene {
 
   createBestMarker() {
     this.bestY = this.startY - this.prevBestAlt * 10;
-    this.bestLabel = this.add.text(GAME_WIDTH - 96, this.bestY - 18, 'BEST ' + this.prevBestAlt + ' m', {
-      fontFamily: FONT, fontSize: '30px', color: '#5eff8f', stroke: '#1a1033', strokeThickness: 7,
-    }).setOrigin(1, 1).setVisible(this.prevBestAlt > 0);
+    // Left side: the flag and the right wall are on the right, the zone banner is centered.
+    this.bestLabel = this.add.text(24, this.bestY - 18, 'BEST ' + this.prevBestAlt + ' m', {
+      fontFamily: FONT, fontSize: '38px', color: '#5eff8f', stroke: '#1a1033', strokeThickness: 9,
+    }).setOrigin(0, 1).setVisible(this.prevBestAlt > 0);
   }
 
   checkBest() {
@@ -605,14 +644,18 @@ class GameScene extends Phaser.Scene {
     const t = this.time.now / 1000;
     const alpha = this.passedBest ? 0.35 : 1;
     g.fillStyle(0x5eff8f, 0.1 * alpha);
-    g.fillRect(view.left, y - 14, view.right - view.left, 28);
-    // Dashed line with a dark outline under each dash, scrolling slowly.
+    g.fillRect(0, y - 14, GAME_WIDTH, 28);
+    // Dashed line with a dark outline under each dash, scrolling slowly, clipped to the play area.
     const offset = (t * 40) % 48;
-    for (let x = view.left - 48 + offset; x < view.right; x += 48) {
+    for (let x = offset - 48; x < GAME_WIDTH; x += 48) {
+      const x0 = Math.max(0, x);
+      const x1 = Math.min(GAME_WIDTH, x + 28);
+      if (x1 <= x0) continue;
       g.fillStyle(ART.outline, 0.8 * alpha);
-      g.fillRect(x - 2, y - 5, 32, 10);
+      const ox0 = Math.max(0, x0 - 2);
+      g.fillRect(ox0, y - 5, Math.min(GAME_WIDTH, x1 + 2) - ox0, 10);
       g.fillStyle(0x5eff8f, alpha);
-      g.fillRect(x, y - 3, 28, 6);
+      g.fillRect(x0, y - 3, x1 - x0, 6);
     }
     // Flag on a pole at the right side.
     const px = GAME_WIDTH - 70;
@@ -743,6 +786,8 @@ class GameScene extends Phaser.Scene {
       this.burst(this.comet.x, this.comet.y, 0xffe14d, 10, 140);
       this.cameras.main.shake(160, 0.01);
     }
+    // The HUD hides its stats during the opening scene (on a skipped intro it is not created yet).
+    if (this.hud && this.hud.revealStats) this.hud.revealStats();
     this.sfx('launch');
   }
 
@@ -816,7 +861,8 @@ class GameScene extends Phaser.Scene {
 
   // ---------- drawing (art lives in src/art.js) ----------
 
-  artContext() {
+  // assist: this frame's currentAssist(), computed once in draw().
+  artContext(assist) {
     return {
       time: this.time.now / 1000,
       comet: this.comet,
@@ -830,18 +876,19 @@ class GameScene extends Phaser.Scene {
       perfectChain: this.perfectChain,
       closeCall: this.closeCall,
       intro: this.introActive,
+      aimKind: assist ? (assist.angle < TUNING.perfectAngle ? 'perfect' : 'target') : 'none',
     };
   }
 
   draw() {
     const g = this.worldGfx;
     g.clear();
-    const ctx = this.artContext();
+    const assist = this.currentAssist();
+    const ctx = this.artContext(assist);
     const view = this.visibleBounds();
     ART.drawWalls(g, view);
     this.drawBestMarker(view);
     const grab = this.isHolding ? null : this.nearestGrabbablePlanet();
-    const assist = this.currentAssist();
     for (const h of this.blackHoles) ART.drawBlackHole(g, h, ctx);
     for (const p of this.planets) {
       const isTarget = !!(assist && assist.planet === p);
@@ -865,8 +912,7 @@ class GameScene extends Phaser.Scene {
       const dx = assist.aimX - this.comet.x;
       const dy = assist.aimY - this.comet.y;
       const length = Math.hypot(dx, dy);
-      const kind = assist.angle < TUNING.perfectAngle ? 'perfect' : 'target';
-      ART.drawAimGuide(g, this.comet.x, this.comet.y, dx / length, dy / length, length, kind, ctx);
+      ART.drawAimGuide(g, this.comet.x, this.comet.y, dx / length, dy / length, length, ctx.aimKind, ctx);
     } else {
       const v = tangentVelocity(this.orbit, 1);
       ART.drawAimGuide(g, this.comet.x, this.comet.y, v.vx, v.vy, 520, 'none', ctx);
@@ -904,6 +950,8 @@ class GameScene extends Phaser.Scene {
     this.cameras.main.shake(300, 0.02);
     this.cameras.main.flash(200, 255, 255, 255);
     this.burst(this.comet.x, this.comet.y, 0xff9a2e, 22);
+    // The simulator must never reach GameOver: it would save the bot's score as the real best.
+    if (this.headless) return;
     this.time.delayedCall(800, () => {
       this.scene.start('GameOver', { score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude, bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt) });
     });

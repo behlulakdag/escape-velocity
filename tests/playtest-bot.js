@@ -75,6 +75,10 @@
         closeCalls: runs.reduce((n, r) => n + r.closeCalls, 0),
       };
     }
+    // Leave the game as a player would find it: no headless Game scene left running in the background.
+    game.scene.stop('Game');
+    game.scene.start('Menu');
+    step();
     return out;
   };
 })();
