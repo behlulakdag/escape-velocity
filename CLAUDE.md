@@ -38,5 +38,11 @@
 (Fill in when the theme is revealed on Oct 29, 18:00 Turkey time.)
 Theme: Speed
 Game: ESCAPE VELOCITY. You are a burning comet; speed is your life, score and visuals.
-Core mechanic: hold near a planet to lock into orbit and gain speed (gravity assist), release to fling along the tangent. Speed decays in flight; below the minimum the comet freezes (game over). Orbits slowly tighten, so orbiting too long crashes you.
-Art style prompt (reuse for every asset): bright cartoon space, thick dark outlines, saturated purple/blue sky, colorful planets with craters and rings, never too dark.
+Core mechanic: hold near a planet to lock into orbit and gain speed (gravity assist; closer orbit = faster), release to fling along the tangent. A rising supernova wave is the only way to lose.
+Art direction (user decision, Oct 29): SKETCHBOOK. The game must look hand-made by a person, never generic or AI-generated.
+- Space drawn on dark navy construction paper (visible paper grain/fibers); lines in cream/white gel-pen ink with "line boil" (outlines re-wobble ~10 times per second, slightly irregular shapes, varying line weight); fills in colored-pencil/crayon hatching that does not perfectly match the outline (like real coloring).
+- Small limited palette: cream ink, crayon orange/red/yellow (comet + supernova), plus a few muted crayon colors for planets. Light tells the story: warm orange rim light from the supernova below, cool light from above.
+- Faces ONLY on the comet (hero) and the supernova (villain). Planets are worlds with drawn features (mountains on the silhouette, craters, rings, small moons, tiny details), no faces.
+- Effects are ink doodles: scribble bursts, dashed speed lines, hand-drawn stars/asterisks. Use effects only when they mean something.
+- HUD and UI are hand-lettered ink on paper (numbers written directly on the page, or on a taped paper note); buttons are hand-drawn wobbly shapes with crayon fill.
+- AVOID (these read as AI/template): glossy gradient panels, pill-shaped label tags ("SCORE", "BONUS"), icon+label UI-kit plates, progress bars, perfect geometric circles, sparkle/glow spam, smiley faces on everything, generic purple-space gradients.
