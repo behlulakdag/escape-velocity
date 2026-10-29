@@ -16,10 +16,19 @@
 - Template: portrait 720x1280, FIT scaling, touch input, Menu/Game/GameOver scenes, high score, fullscreen button
 - Example dodge game in GameScene (to be replaced)
 
+## Jam game: ESCAPE VELOCITY (theme: Speed)
+- [x] Prototype: hold near planet = orbit + gain speed, release = fling. Speed decays in flight; too slow / crash / fall off screen = game over. Score = altitude (m).
+- [x] Pure orbit math in src/orbit.js, tests: `node --test tests/orbit.test.js` (7 pass)
+- [x] Bot playtest: survived 25s, 1911 m with ASAP releases (speed stays ~700). Extra loops double speed -> risk/reward works.
+- [ ] Feel tuning on a real phone
+- [ ] Polish: ring in front of planet, stronger aim guide, speed lines, sound, music
+- [ ] Hazards later (asteroids), near-miss / perfect fling bonus
+- [ ] Real itch page "Escape Velocity" (currently deploying to the test page)
+
 ## Next
-- [ ] Theme revealed -> fill the Theme section in CLAUDE.md
-- [ ] Decide core mechanic
-- [ ] Replace GameScene with the jam game
+- [x] Theme revealed -> fill the Theme section in CLAUDE.md
+- [x] Decide core mechanic
+- [x] Replace GameScene with the jam game
 - [ ] Art (one model + one style prompt)
 - [ ] Music (Suno) + SFX (ElevenLabs)
 - [ ] Upload a build to itch.io on day one
