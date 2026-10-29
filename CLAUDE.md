@@ -36,6 +36,7 @@
 
 ## Theme
 (Fill in when the theme is revealed on Oct 29, 18:00 Turkey time.)
-Theme:
-Core mechanic:
-Art style prompt (reuse for every asset):
+Theme: Speed
+Game: ESCAPE VELOCITY. You are a burning comet; speed is your life, score and visuals.
+Core mechanic: hold near a planet to lock into orbit and gain speed (gravity assist), release to fling along the tangent. Speed decays in flight; below the minimum the comet freezes (game over). Orbits slowly tighten, so orbiting too long crashes you.
+Art style prompt (reuse for every asset): bright cartoon space, thick dark outlines, saturated purple/blue sky, colorful planets with craters and rings, never too dark.
