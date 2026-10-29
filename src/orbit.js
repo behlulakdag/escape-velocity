@@ -1,18 +1,24 @@
 // Pure comet/orbit math, kept free of Phaser so it can be unit-tested with node.
 
 const TUNING = {
-  cometRadius: 22,
+  cometRadius: 28,
   startSpeed: 620,
-  minSpeed: 260,          // below this the comet freezes
+  minSpeed: 220,          // below this the comet freezes
   maxSpeed: 2400,
-  flightDecay: 70,        // px/s lost per second while flying
-  flightDecayPerKm: 9,    // extra decay per 1000 px of altitude (difficulty ramp)
-  maxFlightDecay: 190,
+  flightDecay: 40,        // px/s lost per second while flying
+  flightDecayPerKm: 6,    // extra decay per 1000 px of altitude (difficulty ramp)
+  maxFlightDecay: 140,
   orbitGain: 300,         // px/s gained per second while orbiting
-  orbitShrink: 24,        // orbit radius lost per second (orbiting forever = crash)
-  grabRange: 210,         // extra distance beyond the planet surface where holding catches the orbit
-  minOrbitGap: 46,        // closest orbit allowed when latching
-  wallBounceKeep: 0.85,   // speed kept after bouncing off a side wall
+  orbitShrink: 18,        // orbit radius lost per second (orbiting forever = crash)
+  grabRange: 240,         // extra distance beyond the planet surface where holding catches the orbit
+  minOrbitGap: 50,        // closest orbit allowed when latching
+  wallBounceKeep: 0.92,   // speed kept after bouncing off a side wall
+  assistMaxAngle: 0.45,   // ~25 degrees: releases this close to a planet get steered onto it
+  assistMaxDist: 1100,
+  assistPassGap: 110,     // how far from the surface an assisted fling passes the planet
+  catchBonus: 60,         // instant speed for every planet caught
+  hitKeep: 0.7,           // speed kept after hitting a planet
+  floorBounceKeep: 0.8,   // speed kept after falling to the bottom of the screen
 };
 
 // Rotation direction from the comet's position relative to the planet and its velocity,
@@ -49,6 +55,37 @@ function tangentVelocity(orbit, speed) {
     vx: -Math.sin(orbit.angle) * orbit.dir * speed,
     vy: Math.cos(orbit.angle) * orbit.dir * speed,
   };
+}
+
+// Aim assist: among planets roughly in front of the release direction, pick the one closest
+// in angle and return a point beside it (inside its grab zone, outside its surface), so a
+// near-miss release still flies into a catchable orbit instead of into empty space.
+function pickAssistTarget(x, y, dirX, dirY, planets, exclude) {
+  const len = Math.hypot(dirX, dirY) || 1;
+  const ux = dirX / len;
+  const uy = dirY / len;
+  let best = null;
+  for (const p of planets) {
+    if (p === exclude) continue;
+    const passDist = p.radius + TUNING.assistPassGap;
+    const dx = p.x - x;
+    const dy = p.y - y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > TUNING.assistMaxDist || dist <= passDist) continue;
+    // The two side points that pass the planet at passDist; take the one nearest the aim.
+    const nx = -dy / dist;
+    const ny = dx / dist;
+    for (const side of [1, -1]) {
+      const ax = p.x + nx * passDist * side;
+      const ay = p.y + ny * passDist * side;
+      const al = Math.hypot(ax - x, ay - y);
+      const angle = Math.acos(Math.max(-1, Math.min(1, ((ax - x) * ux + (ay - y) * uy) / al)));
+      if (angle <= TUNING.assistMaxAngle && (!best || angle < best.angle)) {
+        best = { planet: p, aimX: ax, aimY: ay, angle };
+      }
+    }
+  }
+  return best;
 }
 
 function flightDecay(altitude) {
@@ -93,5 +130,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, startOrbit, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, startOrbit, pickAssistTarget, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

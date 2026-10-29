@@ -51,3 +51,22 @@ test('speed fraction and color ends', () => {
   assert.strictEqual(o.speedColor(0), 0x8a8aa0);
   assert.strictEqual(o.speedColor(1), 0x8fe3ff);
 });
+
+test('assist steers a slightly-off release onto the planet ahead', () => {
+  const planet = { x: 0, y: -600, radius: 70 };
+  // Aimed straight up but offset 150px to the side: misses without help.
+  const hit = o.pickAssistTarget(150, 0, 0.2, -1, [planet], null);
+  assert.ok(hit, 'should find the planet');
+  assert.strictEqual(hit.planet, planet);
+  const passDist = Math.hypot(hit.aimX - planet.x, hit.aimY - planet.y);
+  assert.ok(passDist > planet.radius + o.TUNING.cometRadius, 'aim point must not be inside the planet');
+  assert.ok(passDist < planet.radius + o.TUNING.grabRange, 'aim point must be catchable');
+});
+
+test('assist ignores planets behind, far away, or the one being left', () => {
+  const behind = { x: 0, y: 600, radius: 70 };
+  const far = { x: 0, y: -5000, radius: 70 };
+  const current = { x: 0, y: -500, radius: 70 };
+  assert.strictEqual(o.pickAssistTarget(0, 0, 0, -1, [behind, far], null), null);
+  assert.strictEqual(o.pickAssistTarget(0, 0, 0, -1, [current], current), null);
+});
