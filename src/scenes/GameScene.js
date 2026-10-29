@@ -8,7 +8,8 @@ class GameScene extends Phaser.Scene {
   create() {
     this.isOver = false;
     this.isHolding = false;
-    this.orbit = null;          // { angle, radius, dir } while orbiting
+    this.orbit = null;          // { angle, radius, targetRadius, dir } while orbiting
+    this.homing = null;         // { x, y, time }: assisted release curving onto its target
     this.orbitPlanet = null;
     this.speed = TUNING.startSpeed;
     this.startY = GAME_HEIGHT - 260;
@@ -141,16 +142,11 @@ class GameScene extends Phaser.Scene {
       this.popText('PERFECT!', '#ffe14d');
       this.cameras.main.flash(120, 255, 225, 77);
     }
-    if (assist) {
-      const dx = assist.aimX - this.comet.x;
-      const dy = assist.aimY - this.comet.y;
-      const len = Math.hypot(dx, dy);
-      this.comet.vx = (dx / len) * this.speed;
-      this.comet.vy = (dy / len) * this.speed;
-    } else {
-      this.comet.vx = v.vx;
-      this.comet.vy = v.vy;
-    }
+    // Leave along the tangent; an assisted release then curves onto its target over a
+    // fraction of a second instead of snapping direction on the release frame.
+    this.comet.vx = v.vx;
+    this.comet.vy = v.vy;
+    this.homing = assist ? { x: assist.aimX, y: assist.aimY, time: TUNING.homingTime } : null;
     const kick = speedFraction(this.speed);
     this.cameras.main.shake(120, 0.004 + kick * 0.01);
     this.burst(this.comet.x, this.comet.y, speedColor(kick), 10);
@@ -188,7 +184,7 @@ class GameScene extends Phaser.Scene {
     if (this.isOver) return;
     if (this.hintStage === 0 && this.hud.hintText && !this.hud.hintText.text) {
       this.hud.showHint('HOLD near a planet');
-      this.hud.showBanner('ESCAPE THE', 'SUPERNOVA!');
+      this.hud.showBanner('ESCAPE THE SUPERNOVA!', '');
     }
     const dt = Math.min(delta / 1000, 0.05);
     const altitude = this.startY - this.comet.y;
@@ -197,9 +193,10 @@ class GameScene extends Phaser.Scene {
       const planet = this.nearestGrabbablePlanet();
       if (planet) {
         this.orbit = startOrbit(planet.x, planet.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, planet.radius);
+        this.homing = null;
         this.orbitPlanet = planet;
         this.speed = Math.min(TUNING.maxSpeed, this.speed + TUNING.catchBonus);
-        const close = orbitCloseness(this.orbit.radius, planet.radius);
+        const close = orbitCloseness(this.orbit.targetRadius, planet.radius);
         this.popText(close > 0.7 ? 'CLOSE ORBIT!' : '+SPEED', close > 0.7 ? '#ffe14d' : '#5eff8f');
         this.burst(this.comet.x, this.comet.y, 0xffffff, 6);
         if (this.hintStage === 0) {
@@ -221,6 +218,13 @@ class GameScene extends Phaser.Scene {
       const len = Math.hypot(this.comet.vx, this.comet.vy) || 1;
       this.comet.vx = (this.comet.vx / len) * this.speed;
       this.comet.vy = (this.comet.vy / len) * this.speed;
+      if (this.homing) {
+        const h = steerToward(this.comet.vx, this.comet.vy, this.homing.x - this.comet.x, this.homing.y - this.comet.y, TUNING.homingTurn * dt);
+        this.comet.vx = h.vx;
+        this.comet.vy = h.vy;
+        this.homing.time -= dt;
+        if (this.homing.time <= 0) this.homing = null;
+      }
       this.comet.x += this.comet.vx * dt;
       this.comet.y += this.comet.vy * dt;
       this.bounceWalls();

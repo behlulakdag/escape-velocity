@@ -11,9 +11,19 @@ test('latching keeps the comet moving the same way', () => {
   assert.ok(Math.abs(v.vx) < 1e-6);
 });
 
-test('latching too close is pushed out to the minimum orbit', () => {
-  const orbit = o.startOrbit(0, 0, 70, 0, 0, -600, 60);
+test('latching too close starts in place, then eases out to the minimum orbit', () => {
+  let orbit = o.startOrbit(0, 0, 70, 0, 0, -600, 60);
+  assert.strictEqual(orbit.radius, 70, 'no snap on the grab frame');
+  for (let i = 0; i < 60; i++) orbit = o.orbitStep(orbit, 600, 1 / 60, 60).orbit;
   assert.strictEqual(orbit.radius, 60 + o.TUNING.minOrbitGap);
+});
+
+test('steerToward turns by at most maxTurn and keeps speed', () => {
+  const v = o.steerToward(0, -500, 1, 0, 0.1);
+  assert.ok(Math.abs(Math.atan2(v.vy, v.vx) - (-Math.PI / 2 + 0.1)) < 1e-9);
+  assert.ok(Math.abs(Math.hypot(v.vx, v.vy) - 500) < 1e-9);
+  const done = o.steerToward(0, -500, 0, -1, 0.1);
+  assert.ok(Math.abs(done.vx) < 1e-9 && Math.abs(done.vy + 500) < 1e-9);
 });
 
 test('orbiting gains speed and the orbit stays stable', () => {

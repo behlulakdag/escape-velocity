@@ -12,6 +12,9 @@ const TUNING = {
   closeOrbitBonus: 1.6,   // hugging the surface gains up to (1 + this) times faster
   grabRange: 160,         // extra distance beyond the planet surface where holding catches the orbit
   minOrbitGap: 34,        // closest orbit: just clear of the surface
+  orbitSettleSpeed: 220,  // px/s the orbit radius eases out to minOrbitGap after a too-close grab
+  homingTurn: 2.6,        // rad/s an assisted release curves toward its target
+  homingTime: 0.45,       // seconds the release keeps curving
   wallBounceKeep: 0.92,   // speed kept after bouncing off a side wall
   assistMaxAngle: 0.45,   // ~25 degrees: releases this close to a planet get steered onto it
   assistMaxDist: 1100,
@@ -50,11 +53,12 @@ function startOrbit(cx, cy, x, y, vx, vy, planetRadius) {
   const rx = x - cx;
   const ry = y - cy;
   const dist = Math.hypot(rx, ry);
-  const radius = Math.max(dist, planetRadius + TUNING.minOrbitGap);
   const cross = rx * vy - ry * vx;
+  // Start exactly where the comet is (no snap) and ease out if it grabbed too close.
   return {
     angle: Math.atan2(ry, rx),
-    radius,
+    radius: dist,
+    targetRadius: Math.max(dist, planetRadius + TUNING.minOrbitGap),
     dir: cross < 0 ? -1 : 1,
   };
 }
@@ -71,8 +75,10 @@ function orbitStep(orbit, speed, dt, planetRadius) {
   const spin = Math.min(speed / orbit.radius, TUNING.maxOrbitSpin);
   const angle = orbit.angle + orbit.dir * spin * dt;
   const gain = TUNING.orbitGain * (1 + TUNING.closeOrbitBonus * orbitCloseness(orbit.radius, planetRadius));
+  const target = orbit.targetRadius || orbit.radius;
+  const radius = Math.min(target, orbit.radius + TUNING.orbitSettleSpeed * dt);
   return {
-    orbit: { angle, radius: orbit.radius, dir: orbit.dir },
+    orbit: { angle, radius, targetRadius: target, dir: orbit.dir },
     speed: Math.min(TUNING.maxSpeed, speed + gain * dt),
   };
 }
@@ -174,6 +180,17 @@ function speedMultiplier(speed) {
   return 1 + Math.min(4, Math.floor(speedFraction(speed) * 5));
 }
 
+// Rotates velocity (vx, vy) toward direction (dx, dy) by at most maxTurn radians, keeping speed.
+function steerToward(vx, vy, dx, dy, maxTurn) {
+  const speed = Math.hypot(vx, vy);
+  const current = Math.atan2(vy, vx);
+  let diff = Math.atan2(dy, dx) - current;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const angle = current + Math.max(-maxTurn, Math.min(maxTurn, diff));
+  return { vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed };
+}
+
 // Black hole pull: bends the velocity toward the hole, stronger when closer, without
 // changing speed. Returns the new velocity.
 function blackHolePull(hx, hy, x, y, vx, vy, dt) {
@@ -181,15 +198,7 @@ function blackHolePull(hx, hy, x, y, vx, vy, dt) {
   const dy = hy - y;
   const dist = Math.hypot(dx, dy);
   if (dist >= TUNING.blackHolePullRadius || dist === 0) return { vx, vy };
-  const speed = Math.hypot(vx, vy);
-  const current = Math.atan2(vy, vx);
-  const toward = Math.atan2(dy, dx);
-  let diff = toward - current;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  const maxTurn = TUNING.blackHoleTurn * (1 - dist / TUNING.blackHolePullRadius) * dt;
-  const angle = current + Math.max(-maxTurn, Math.min(maxTurn, diff));
-  return { vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed };
+  return steerToward(vx, vy, dx, dy, TUNING.blackHoleTurn * (1 - dist / TUNING.blackHolePullRadius) * dt);
 }
 
 // Flying through a black hole's core turns your direction by blackHoleWarp, toward the
@@ -249,5 +258,5 @@ function speedColor(fraction) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { TUNING, orbitCloseness, novaSpeed, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
