@@ -13,6 +13,7 @@ if (Test-Path "assets") { $items += "assets" }
 # her zaman "/" ile yazıyoruz.
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+$buildId = Get-Date -Format "yyyyMMddHHmmss"
 $zip = [System.IO.Compression.ZipFile]::Open($out, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
   foreach ($item in $items) {
@@ -20,6 +21,15 @@ try {
     foreach ($file in $files) {
       # index.html zip'in EN ÜST seviyesinde olmalı
       $entryName = $file.FullName.Substring($PSScriptRoot.Length + 1).Replace('\', '/')
+      if ($entryName -eq "index.html") {
+        # itch serves every build at the same URL, so phones keep old cached .js files.
+        # A per-build ?v= on each script forces them to load the new code.
+        $html = [System.IO.File]::ReadAllText($file.FullName) -replace '(src="[^"]+\.js)"', "`$1?v=$buildId`""
+        $writer = New-Object System.IO.StreamWriter($zip.CreateEntry($entryName).Open())
+        $writer.Write($html)
+        $writer.Dispose()
+        continue
+      }
       [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName) | Out-Null
     }
   }
