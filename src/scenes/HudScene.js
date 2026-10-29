@@ -7,6 +7,8 @@
 //   pop(label, color, opts)   the only pop path; merges / limits / clamps itself
 //   flash(color, alpha, duration, maxAlpha?)  alpha capped at 0.12 (maxAlpha may raise it to 0.18)
 //   showBanner(title, subtitle, { duration }), showHint(label), hideHint()
+//   setCards(ownedIds)        row of owned upgrade-card badges (top right, under fullscreen)
+//   showSetBonus(familyKey)   family-colored SET BONUS banner (SET_BONUSES in src/cards.js)
 
 // Pop de-clutter rules (see pop()).
 const POP = {
@@ -86,7 +88,98 @@ class HudScene extends Phaser.Scene {
       .setOrigin(0.5).setAlpha(0);
     this.bannerSub = this.add.text(GAME_WIDTH / 2, 480, '', { ...style, fontSize: '34px', strokeThickness: 8 })
       .setOrigin(0.5).setAlpha(0);
+    this.cardBadges = [];      // { id, gfx } per owned card, left to right
+    this.setBonusLayer = null;
     addFullscreenButton(this);
+  }
+
+  // Owned upgrade cards as small family-colored badges, right-aligned under the fullscreen
+  // button (clear of the score block on the left). New cards pop in; cards whose family set is
+  // complete get a gold rim.
+  setCards(ownedIds) {
+    const ids = ownedIds || [];
+    const size = 50;
+    const gap = 60;
+    const y = 204;
+    const right = GAME_WIDTH - 58;
+    const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(ids) : [];
+    const known = this.cardBadges.map(b => b.id);
+    for (const b of this.cardBadges) b.gfx.destroy();
+    this.cardBadges = [];
+    ids.forEach((id, i) => {
+      const card = typeof CARDS !== 'undefined' ? CARDS.find(c => c.id === id) : null;
+      if (!card) return;
+      const color = CARD_FAMILIES[card.family].color;
+      const x = right - (ids.length - 1 - i) * gap;
+      const g = this.add.graphics({ x, y });
+      if (sets.indexOf(card.family) >= 0) {
+        g.fillStyle(ART.outline, 1);
+        g.fillCircle(0, 2, size / 2 + 10);
+        g.fillStyle(ART.gold, 1);
+        g.fillCircle(0, 0, size / 2 + 6);
+      }
+      ART.drawCardBadge(g, card.icon, 0, 0, size, color);
+      this.cardBadges.push({ id, gfx: g });
+      if (known.indexOf(id) < 0) {
+        g.setScale(0);
+        this.tweens.add({ targets: g, scale: 1, duration: 380, delay: 120, ease: 'Back.Out' });
+        const ring = this.add.circle(x, y, size / 2).setStrokeStyle(8, color);
+        this.tweens.add({ targets: ring, radius: 70, alpha: 0, delay: 120, duration: 420, ease: 'Cubic.Out', onComplete: () => ring.destroy() });
+      }
+    });
+  }
+
+  // Set bonus moment: family-colored title with its badges, below the zone banner band.
+  showSetBonus(familyKey) {
+    if (typeof SET_BONUSES === 'undefined' || !SET_BONUSES[familyKey]) return;
+    const bonus = SET_BONUSES[familyKey];
+    const color = CARD_FAMILIES[familyKey].color;
+    const css = '#' + color.toString(16).padStart(6, '0');
+    const y = 610;
+    if (this.setBonusLayer) this.setBonusLayer.destroy();
+    const label = this.add.text(0, -78, 'SET BONUS!', {
+      fontFamily: FONT, fontSize: '38px', color: '#ffe14d', stroke: '#1a1033', strokeThickness: 9,
+    }).setOrigin(0.5);
+    const title = this.add.text(0, 0, bonus.name, {
+      fontFamily: FONT, fontSize: '80px', color: css, stroke: '#1a1033', strokeThickness: 14,
+    }).setOrigin(0.5).setShadow(0, 7, '#1a1033', 0, true, true);
+    title.setScale(Math.min(1, (GAME_WIDTH - 260) / title.width));
+    const sub = this.add.text(0, 72, bonus.desc, {
+      fontFamily: FONT, fontSize: '34px', color: '#ffffff', stroke: '#1a1033', strokeThickness: 8,
+    }).setOrigin(0.5);
+    sub.setScale(Math.min(1, (GAME_WIDTH - 60) / sub.width));
+    // Two family badges flank the title (the two cards that made the set), each wiggling in place.
+    const family = typeof CARDS !== 'undefined' ? CARDS.filter(c => c.family === familyKey) : [];
+    const owned = this.cardBadges.map(b => b.id);
+    const shown = family.filter(c => owned.indexOf(c.id) >= 0);
+    const bx = (title.width * title.scaleX) / 2 + 52;
+    const badges = shown.slice(0, 2).map((c, i) => {
+      const g = this.add.graphics({ x: i ? bx : -bx, y: 0 });
+      ART.drawCardBadge(g, c.icon, 0, 0, 66, color);
+      return g;
+    });
+    const layer = this.add.container(GAME_WIDTH / 2, y, [...badges, label, title, sub]).setScale(0.3).setAlpha(1);
+    this.setBonusLayer = layer;
+    this.tweens.add({ targets: layer, scale: 1, duration: 360, ease: 'Back.Out' });
+    if (badges.length) this.tweens.add({ targets: badges, angle: { from: -10, to: 10 }, yoyo: true, repeat: -1, duration: 260, ease: 'Sine.InOut' });
+    this.tweens.add({
+      targets: layer, alpha: 0, y: y - 40, delay: 1700, duration: 400,
+      onComplete: () => { if (this.setBonusLayer === layer) this.setBonusLayer = null; layer.destroy(); },
+    });
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      const dot = this.add.circle(GAME_WIDTH / 2, y, i % 2 ? 8 : 12, i % 3 ? color : 0xffe14d).setStrokeStyle(3, 0x1a1033);
+      const d = Phaser.Math.Between(220, 330);
+      this.tweens.add({
+        targets: dot, x: GAME_WIDTH / 2 + Math.cos(a) * d, y: y + Math.sin(a) * d * 0.6, alpha: 0, scale: 0.3,
+        duration: Phaser.Math.Between(500, 750), ease: 'Cubic.Out', onComplete: () => dot.destroy(),
+      });
+    }
+    this.flash(color, 0.1, 220);
+    // Pops in the banner's band make way, as for zone banners.
+    for (const p of this.pops.slice()) {
+      if (Math.abs(p.y - y) < 140) this.removePop(p);
+    }
   }
 
   // "x3" badge: outlined plate with a lighter top band, pulses when the multiplier rises.

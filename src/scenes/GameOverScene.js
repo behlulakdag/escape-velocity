@@ -10,6 +10,9 @@ class GameOverScene extends Phaser.Scene {
     this.altitude = data.altitude || 0;
     this.newBestAltitude = !!data.newBestAltitude;
     this.bestAltitude = Math.max(data.bestAltitude || 0, this.altitude);
+    this.cards = (data.cards || []).filter(id => typeof CARDS !== 'undefined' && CARDS.some(c => c.id === id));
+    // The run's card list sits under MENU, so the chomping supernova moves down to make room.
+    this.novaY = this.cards.length ? 1080 : 1010;
   }
 
   create() {
@@ -70,9 +73,38 @@ class GameOverScene extends Phaser.Scene {
     makeButton(this, cx, 875, 'MENU', () => this.scene.start('Menu'), {
       color: 0x9ff3ff, width: 320, height: 104, fontSize: '44px',
     });
+    if (this.cards.length) this.showRunCards(980);
     makeMuteButton(this, 92, 116);
     addFullscreenButton(this);
     this.input.keyboard.on('keydown-SPACE', retry);
+  }
+
+  // The run's upgrade cards: family-colored badges with their names, popping in one by one.
+  showRunCards(y) {
+    const n = this.cards.length;
+    const slot = Math.min(140, (GAME_WIDTH - 40) / n);
+    const size = n > 5 ? 44 : 54;
+    const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(this.cards) : [];
+    this.cards.forEach((id, i) => {
+      const card = CARDS.find(c => c.id === id);
+      const color = CARD_FAMILIES[card.family].color;
+      const x = GAME_WIDTH / 2 + (i - (n - 1) / 2) * slot;
+      const g = this.add.graphics();
+      if (sets.indexOf(card.family) >= 0) {
+        g.fillStyle(0x1a1033, 1);
+        g.fillCircle(0, 2, size / 2 + 10);
+        g.fillStyle(ART.gold, 1);
+        g.fillCircle(0, 0, size / 2 + 6);
+      }
+      ART.drawCardBadge(g, card.icon, 0, 0, size, color);
+      const name = this.add.text(0, size / 2 + 20, card.name.toUpperCase(), {
+        fontFamily: FONT, fontSize: '22px', color: '#' + lerpColor(color, 0xffffff, 0.45).toString(16).padStart(6, '0'),
+        stroke: '#1a1033', strokeThickness: 6, align: 'center', wordWrap: { width: slot - 10 }, lineSpacing: -4,
+      }).setOrigin(0.5, 0.5);
+      name.setScale(Math.min(1, (slot - 8) / name.width));
+      const item = this.add.container(x, y, [g, name]).setScale(0);
+      this.tweens.add({ targets: item, scale: 1, delay: 650 + i * 90, duration: 320, ease: 'Back.Out' });
+    });
   }
 
   confetti(x, y) {
@@ -90,7 +122,7 @@ class GameOverScene extends Phaser.Scene {
     const t = time / 1000;
     scrollStarLayers(this, delta, 0.02);
     // The comet is caught in the supernova's mouth (drawn after the nova so it sits over the teeth).
-    const novaY = 1010;
+    const novaY = this.novaY;
     this.comet.x = GAME_WIDTH / 2 + Math.sin(t * 1.7) * 12;
     this.comet.y = novaY + 118 + Math.sin(t * 2.4) * 6 + Math.sin(t * 9) * 3;
     const ctx = {

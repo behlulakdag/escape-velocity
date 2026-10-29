@@ -8,7 +8,11 @@
 //       drawComet draws a gold shock ring + rays bursting out of the comet (a LOCAL effect, use it
 //       instead of a full-screen flash),
 //     zonePulse (0..1, optional, default 0): same, for entering a new zone; a wider cyan/white
-//       double ring around the comet }  - newer fields may be undefined.
+//       double ring around the comet,
+//     afterburner (0..1, optional): Afterburner card active; the tail turns blue/white,
+//     shieldReady (bool, optional): a Heat Shield charge is ready; a bubble surrounds the comet,
+//     grabRangeBonus (px, optional): added to TUNING.grabRange so drawn grab rings match the real range }
+//   - newer fields may be undefined.
 // No function here draws large full-screen translucent fills: big moments stay local to the
 // comet / planet / nova front so the palette never washes out at high speed or danger.
 // Style: bright cartoon space, thick dark outlines, cel shading, cute faces on everything.
@@ -230,7 +234,7 @@ const ART = {
     const t = ctx.time;
     const orbiting = ctx.orbitPlanet === p;
     const look = ctx.comet ? ART.lookAt(p.x, p.y, ctx.comet.x, ctx.comet.y) : { x: 0, y: -1, dist: 9999 };
-    const zone = R + TUNING.grabRange;
+    const zone = R + TUNING.grabRange + (ctx.grabRangeBonus || 0);
 
     // The release target only gets a soft rim glow hugging the planet (green, gold for PERFECT):
     // a big filled zone read like a debug hitbox. The grab-zone ring shows only when you could grab.
@@ -244,6 +248,8 @@ const ART = {
       g.strokeCircle(p.x, p.y, R + 12);
     } else if (highlighted && !orbiting) {
       ART.dashedRing(g, p.x, p.y, zone, 28, t * 0.25, 4, 0xffffff, 0.3);
+      // Gravity Well: the widened ring reads in the orbit family's teal so the bigger reach shows.
+      if (ctx.grabRangeBonus > 0) ART.dashedRing(g, p.x, p.y, zone, 28, t * 0.25, 7, 0x2ee6c8, 0.55);
     }
 
     let mood = 'idle';
@@ -683,22 +689,37 @@ const ART = {
     const r = TUNING.cometRadius;
     const dir = ART.cometDir(comet, trail);
     const n = trail.length;
+    // Afterburner swaps the tail (not the head) to an electric blue/white burn.
+    const burn = Math.max(0, Math.min(1, ctx.afterburner || 0));
+    const tailColor = burn > 0 ? lerpColor(color, 0x4da6ff, burn) : color;
+    const tailOuter = burn > 0 ? lerpColor(outer, 0x2b5cff, burn) : outer;
+    const tailHot = burn > 0 ? lerpColor(hot, 0xffffff, burn) : hot;
 
     // Flame trail: wide soft glow, colored body, white-hot core line.
     for (let i = n - 1; i >= 1; i--) {
       const f = 1 - i / n;
-      g.fillStyle(outer, 0.3 * f);
-      g.fillCircle(trail[i].x, trail[i].y, r * 1.25 * f + 3);
+      g.fillStyle(tailOuter, (0.3 + 0.15 * burn) * f);
+      g.fillCircle(trail[i].x, trail[i].y, r * (1.25 + 0.35 * burn) * f + 3);
     }
     for (let i = n - 1; i >= 1; i--) {
       const f = 1 - i / n;
-      g.fillStyle(color, 0.9 * f);
+      g.fillStyle(tailColor, 0.9 * f);
       g.fillCircle(trail[i].x, trail[i].y, r * 0.85 * f + 2);
     }
     for (let i = n - 1; i >= 1; i--) {
       const f = 1 - i / n;
-      g.lineStyle(r * 0.7 * f + 1, hot, f);
+      g.lineStyle(r * (0.7 + 0.2 * burn) * f + 1, tailHot, f);
       g.lineBetween(trail[i].x, trail[i].y, trail[i - 1].x, trail[i - 1].y);
+    }
+    // Afterburner: blue diamond sparks shed along the burn.
+    if (burn > 0 && n > 4) {
+      for (let k = 0; k < 6; k++) {
+        const i = Math.min(n - 1, 1 + ((k * 3 + Math.floor(t * 24)) % (n - 1)));
+        const f = 1 - i / n;
+        const side = Math.sin(t * 17 + k * 1.7) * r * 1.1;
+        ART.sparkle(g, trail[i].x - dir.y * side, trail[i].y + dir.x * side, (6 + 6 * f) * burn, t * 6 + k,
+          k % 2 ? 0xffffff : 0x9fd8ff, burn * (0.4 + 0.6 * f));
+      }
     }
     // Sparks flicking off the sides of the trail.
     if (n > 4) {
@@ -731,15 +752,20 @@ const ART = {
     g.translateCanvas(comet.x, comet.y);
     g.rotateCanvas(angle);
     g.scaleCanvas(alongScale, acrossScale);
-    g.fillStyle(outer, 0.28);
+    g.fillStyle(tailOuter, 0.28);
     g.fillCircle(0, 0, r * 1.55);
-    // Flame crown licking backward.
-    g.fillStyle(outer, 1);
-    g.fillTriangle(r * 0.1, -r * 1.05, r * 0.1, r * 1.05, -r * 2.3 - flick, 0);
-    g.fillTriangle(0, -r * 0.95, -r * 0.6, -r * 0.2, -r * 1.6, -r * 1.25 + flick * 0.5);
-    g.fillTriangle(0, r * 0.95, -r * 0.6, r * 0.2, -r * 1.6, r * 1.25 - flick * 0.5);
-    g.fillStyle(color, 1);
-    g.fillTriangle(r * 0.1, -r * 0.7, r * 0.1, r * 0.7, -r * 1.7 + flick, 0);
+    // Flame crown licking backward (longer while the afterburner burns).
+    const crown = 1 + 0.45 * burn;
+    g.fillStyle(tailOuter, 1);
+    g.fillTriangle(r * 0.1, -r * 1.05, r * 0.1, r * 1.05, (-r * 2.3 - flick) * crown, 0);
+    g.fillTriangle(0, -r * 0.95, -r * 0.6, -r * 0.2, -r * 1.6 * crown, -r * 1.25 + flick * 0.5);
+    g.fillTriangle(0, r * 0.95, -r * 0.6, r * 0.2, -r * 1.6 * crown, r * 1.25 - flick * 0.5);
+    g.fillStyle(tailColor, 1);
+    g.fillTriangle(r * 0.1, -r * 0.7, r * 0.1, r * 0.7, (-r * 1.7 + flick) * crown, 0);
+    if (burn > 0) {
+      g.fillStyle(0xffffff, burn);
+      g.fillTriangle(r * 0.1, -r * 0.38, r * 0.1, r * 0.38, (-r * 1.2 + flick) * crown, 0);
+    }
     g.fillStyle(ART.outline, 1);
     g.fillCircle(0, 0, r + 5);
     g.fillStyle(color, 1);
@@ -751,6 +777,42 @@ const ART = {
     g.fillCircle(comet.x - r * 0.42, comet.y - r * 0.45, r * 0.18);
 
     ART.drawCometFace(g, comet.x + dir.x * r * 0.2, comet.y + dir.y * r * 0.2, r, dir, ctx);
+    if (ctx.shieldReady) ART.drawShieldBubble(g, comet.x, comet.y, r, t);
+  },
+
+  // Heat Shield charge ready: a pink soap-bubble around the comet with a rim, a glint and
+  // little hex plates drifting round it. Thin and see-through so the face stays readable.
+  drawShieldBubble(g, x, y, r, t) {
+    const pink = 0xff6fb5;
+    const R = r * 2.05 + Math.sin(t * 4) * 2;
+    g.fillStyle(pink, 0.2);
+    g.fillCircle(x, y, R);
+    g.lineStyle(11, ART.outline, 0.5);
+    g.strokeCircle(x, y, R);
+    g.lineStyle(6, pink, 1);
+    g.strokeCircle(x, y, R);
+    g.lineStyle(2, 0xffffff, 0.6);
+    g.strokeCircle(x, y, R - 6);
+    // Curved glint on the upper left.
+    g.lineStyle(5, 0xffffff, 0.85);
+    g.beginPath();
+    g.arc(x, y, R - 10, Math.PI * 1.08, Math.PI * 1.38, false);
+    g.strokePath();
+    // Three small hexagonal plates orbiting the rim.
+    for (let i = 0; i < 3; i++) {
+      const a = t * 1.3 + (i * Math.PI * 2) / 3;
+      const px = x + Math.cos(a) * R;
+      const py = y + Math.sin(a) * R;
+      const hex = [];
+      for (let k = 0; k < 6; k++) {
+        const ha = (k * Math.PI) / 3 + a;
+        hex.push({ x: px + Math.cos(ha) * 8, y: py + Math.sin(ha) * 8 });
+      }
+      g.fillStyle(0xffd1f0, 1);
+      g.fillPoints(hex, true);
+      g.lineStyle(3, ART.outline, 1);
+      g.strokePoints(hex, true);
+    }
   },
 
   // Expanding shock ring + rays around (x, y). p: 1 at the moment of the event, fading to 0.
@@ -864,6 +926,237 @@ const ART = {
     } else {
       ART.smile(g, x, ey + er * 1.6, er * 0.7, false, 4);
     }
+  },
+
+  // ---------- upgrade card icons ----------
+
+  // Strokes one path twice: thick dark outline under the colored line (the game's ink look).
+  inkStroke(g, width, color, drawPath) {
+    g.lineStyle(width + 7, ART.outline, 1);
+    drawPath();
+    g.lineStyle(width, color, 1);
+    drawPath();
+  },
+
+  inkPoly(g, pts, color, outlineWidth) {
+    g.fillStyle(color, 1);
+    g.fillPoints(pts, true);
+    g.lineStyle(outlineWidth, ART.outline, 1);
+    g.strokePoints(pts, true);
+  },
+
+  inkCircle(g, x, y, r, color, outlineWidth) {
+    g.fillStyle(ART.outline, 1);
+    g.fillCircle(x, y, r + outlineWidth);
+    g.fillStyle(color, 1);
+    g.fillCircle(x, y, r);
+  },
+
+  arrowHead(g, x, y, angle, size, color, ow) {
+    const pts = [
+      { x: x + Math.cos(angle) * size, y: y + Math.sin(angle) * size },
+      { x: x + Math.cos(angle + 2.4) * size * 0.85, y: y + Math.sin(angle + 2.4) * size * 0.85 },
+      { x: x + Math.cos(angle - 2.4) * size * 0.85, y: y + Math.sin(angle - 2.4) * size * 0.85 },
+    ];
+    ART.inkPoly(g, pts, color, ow);
+  },
+
+  // Card glyph `key` centered on (x, y), fitting a size x size box, in `color` with ink outlines
+  // and white accents. Shared by the pick cards, the HUD row and the game over list.
+  drawCardIcon(g, key, x, y, size, color) {
+    const r = size / 2;
+    const w = Math.max(3, r * 0.16);          // main stroke width
+    const ow = Math.max(2.5, r * 0.09);       // outline width for filled shapes
+    const light = lerpColor(color, 0xffffff, 0.55);
+    const P = (px, py) => ({ x: x + px * r, y: y + py * r });
+    switch (key) {
+      case 'well': {
+        // Planet pulling everything in: ring + four arrows pointing at it.
+        ART.inkStroke(g, w * 0.7, light, () => g.strokeCircle(x, y, r * 0.82));
+        for (let i = 0; i < 4; i++) {
+          const a = Math.PI / 4 + (i * Math.PI) / 2;
+          ART.arrowHead(g, x + Math.cos(a) * r * 0.6, y + Math.sin(a) * r * 0.6, a + Math.PI, r * 0.2, color, ow);
+        }
+        ART.inkCircle(g, x, y, r * 0.3, color, ow);
+        g.fillStyle(0xffffff, 0.8);
+        g.fillCircle(x - r * 0.1, y - r * 0.1, r * 0.09);
+        break;
+      }
+      case 'spin': {
+        // Tiny planet with a tight orbit arrow wrapping it.
+        const a0 = -Math.PI * 0.35;
+        const a1 = Math.PI * 1.25;
+        const orbitR = r * 0.62;
+        ART.inkStroke(g, w, color, () => { g.beginPath(); g.arc(x, y, orbitR, a0, a1, false); g.strokePath(); });
+        ART.arrowHead(g, x + Math.cos(a1) * orbitR, y + Math.sin(a1) * orbitR, a1 + Math.PI / 2, r * 0.3, color, ow);
+        ART.inkCircle(g, x, y, r * 0.26, light, ow);
+        ART.sparkle(g, x + Math.cos(a0) * orbitR, y + Math.sin(a0) * orbitR, r * 0.22, 0, 0xffffff, 1);
+        break;
+      }
+      case 'overdrive': {
+        // Speedometer pinned at the top end.
+        const cy = y + r * 0.22;
+        const gr = r * 0.72;
+        ART.inkStroke(g, w * 1.1, light, () => { g.beginPath(); g.arc(x, cy, gr, Math.PI, Math.PI * 2, false); g.strokePath(); });
+        g.lineStyle(w * 1.1, 0xff4d2e, 1);
+        g.beginPath(); g.arc(x, cy, gr, Math.PI * 1.7, Math.PI * 2, false); g.strokePath();
+        const na = -Math.PI * 0.18;
+        ART.inkStroke(g, w * 0.9, color, () => g.lineBetween(x, cy, x + Math.cos(na) * gr * 0.85, cy + Math.sin(na) * gr * 0.85));
+        ART.inkCircle(g, x, cy, r * 0.14, color, ow);
+        ART.inkStroke(g, w * 0.7, color, () => g.lineBetween(x - gr * 0.9, cy + r * 0.4, x + gr * 0.9, cy + r * 0.4));
+        break;
+      }
+      case 'sling': {
+        // Slingshot fork launching a ball up.
+        ART.inkStroke(g, w * 1.1, color, () => {
+          g.lineBetween(x, y + r * 0.85, x, y + r * 0.2);
+          g.lineBetween(x, y + r * 0.22, x - r * 0.5, y - r * 0.35);
+          g.lineBetween(x, y + r * 0.22, x + r * 0.5, y - r * 0.35);
+        });
+        g.lineStyle(w * 0.5, 0xffffff, 1);
+        g.lineBetween(x - r * 0.5, y - r * 0.35, x, y - r * 0.05);
+        g.lineBetween(x + r * 0.5, y - r * 0.35, x, y - r * 0.05);
+        ART.inkCircle(g, x, y - r * 0.68, r * 0.2, light, ow);
+        g.lineStyle(w * 0.45, 0xffffff, 0.9);
+        g.lineBetween(x - r * 0.12, y - r * 0.36, x - r * 0.12, y - r * 0.2);
+        g.lineBetween(x + r * 0.12, y - r * 0.36, x + r * 0.12, y - r * 0.2);
+        break;
+      }
+      case 'perfect': {
+        // Bullseye with a star in the center and crosshair ticks.
+        ART.inkStroke(g, w * 0.8, color, () => g.strokeCircle(x, y, r * 0.66));
+        ART.inkStroke(g, w * 0.8, light, () => g.strokeCircle(x, y, r * 0.38));
+        ART.inkStroke(g, w * 0.7, color, () => {
+          g.lineBetween(x, y - r * 0.98, x, y - r * 0.78);
+          g.lineBetween(x, y + r * 0.98, x, y + r * 0.78);
+          g.lineBetween(x - r * 0.98, y, x - r * 0.78, y);
+          g.lineBetween(x + r * 0.98, y, x + r * 0.78, y);
+        });
+        ART.sparkle(g, x, y, r * 0.3, 0, ART.outline, 1);
+        ART.sparkle(g, x, y, r * 0.22, 0, 0xffffff, 1);
+        break;
+      }
+      case 'chain': {
+        // Three stacked chevrons growing upward: each PERFECT pushes harder.
+        for (let i = 0; i < 3; i++) {
+          const cy = y + r * (0.55 - i * 0.48);
+          const hw = r * (0.42 + i * 0.13);
+          const c = i === 2 ? 0xffffff : i === 1 ? light : color;
+          ART.inkStroke(g, w * 1.05, c, () => g.strokePoints([
+            { x: x - hw, y: cy + hw * 0.55 }, { x, y: cy - hw * 0.15 }, { x: x + hw, y: cy + hw * 0.55 },
+          ], false));
+        }
+        break;
+      }
+      case 'aero': {
+        // Streamlined teardrop slicing up-right with speed lines behind.
+        const a = -Math.PI / 4;
+        const ux = Math.cos(a);
+        const uy = Math.sin(a);
+        const pts = [];
+        for (let k = 0; k <= 10; k++) {
+          const t = Math.PI / 2 + (k / 10) * Math.PI;   // back half circle
+          pts.push({ x: x - ux * r * 0.1 + Math.cos(t + a) * r * 0.36, y: y - uy * r * 0.1 + Math.sin(t + a) * r * 0.36 });
+        }
+        pts.push({ x: x + ux * r * 0.78, y: y + uy * r * 0.78 });
+        ART.inkStroke(g, w * 0.6, light, () => {
+          for (let i = -1; i <= 1; i++) {
+            const ox = -uy * i * r * 0.3;
+            const oy = ux * i * r * 0.3;
+            const back = 0.5 + (i === 0 ? 0.08 : 0);
+            g.lineBetween(x - ux * r * back + ox, y - uy * r * back + oy, x - ux * r * (back + 0.36) + ox, y - uy * r * (back + 0.36) + oy);
+          }
+        });
+        ART.inkPoly(g, pts, color, ow);
+        g.fillStyle(0xffffff, 0.85);
+        g.fillCircle(x - r * 0.05, y - r * 0.17, r * 0.1);
+        break;
+      }
+      case 'afterburner': {
+        // Two-tone jet flame.
+        const outer = [P(0, -0.92), P(0.32, -0.42), P(0.5, 0.1), P(0.42, 0.55), P(0, 0.85), P(-0.42, 0.55), P(-0.5, 0.1), P(-0.22, -0.2), P(-0.16, -0.55)];
+        ART.inkPoly(g, outer, color, ow);
+        const inner = [P(0.02, -0.32), P(0.22, 0.1), P(0.22, 0.45), P(0, 0.62), P(-0.22, 0.45), P(-0.2, 0.12)];
+        g.fillStyle(0xffffff, 1);
+        g.fillPoints(inner, true);
+        break;
+      }
+      case 'wallkick': {
+        // Wall on the left, arrow bouncing off it upward, burst at the kick point.
+        const wx = x - r * 0.6;
+        g.fillStyle(ART.outline, 1);
+        g.fillRect(wx - r * 0.2 - ow, y - r * 0.9 - ow, r * 0.26 + ow * 2, r * 1.8 + ow * 2);
+        g.fillStyle(light, 1);
+        g.fillRect(wx - r * 0.2, y - r * 0.9, r * 0.26, r * 1.8);
+        g.lineStyle(Math.max(2, ow * 0.7), ART.outline, 1);
+        for (let i = 1; i < 4; i++) g.lineBetween(wx - r * 0.2, y - r * 0.9 + i * r * 0.45, wx + r * 0.06, y - r * 0.9 + i * r * 0.45);
+        const kick = P(-0.3, 0.15);
+        const end = P(0.55, -0.62);
+        ART.inkStroke(g, w, color, () => g.strokePoints([P(0.35, 0.8), kick, end], false));
+        ART.arrowHead(g, end.x, end.y, Math.atan2(end.y - kick.y, end.x - kick.x), r * 0.3, color, ow);
+        ART.sparkle(g, kick.x + r * 0.02, kick.y, r * 0.32, 0.4, ART.outline, 1);
+        ART.sparkle(g, kick.x + r * 0.02, kick.y, r * 0.24, 0.4, 0xffffff, 1);
+        break;
+      }
+      case 'heatshield': {
+        // Heater shield with a white flame emblem.
+        const shield = [P(-0.66, -0.7), P(0, -0.86), P(0.66, -0.7), P(0.62, 0.05), P(0.36, 0.55), P(0, 0.86), P(-0.36, 0.55), P(-0.62, 0.05)];
+        ART.inkPoly(g, shield, color, ow * 1.2);
+        g.fillStyle(lerpColor(color, ART.outline, 0.25), 1);
+        g.fillPoints([P(0, -0.8), P(0.6, -0.66), P(0.56, 0.05), P(0.32, 0.52), P(0, 0.8)], true);
+        g.fillStyle(0xffffff, 1);
+        g.fillPoints([P(0, -0.45), P(0.2, -0.12), P(0.24, 0.18), P(0, 0.42), P(-0.24, 0.18), P(-0.14, -0.06), P(-0.04, 0.06)], true);
+        break;
+      }
+      case 'armor': {
+        // Asteroid cracking in two with shards flying off.
+        const left = [P(-0.08, -0.62), P(-0.48, -0.5), P(-0.7, -0.05), P(-0.52, 0.45), P(-0.14, 0.6), P(-0.02, 0.18), P(-0.18, -0.12)];
+        const right = [P(0.08, -0.66), P(0.5, -0.46), P(0.7, 0.02), P(0.46, 0.5), P(0.04, 0.62), P(0.14, 0.2), P(-0.02, -0.12)];
+        ART.inkPoly(g, left.map(p => ({ x: p.x - r * 0.08, y: p.y })), 0xa78fb8, ow);
+        ART.inkPoly(g, right.map(p => ({ x: p.x + r * 0.08, y: p.y })), 0xa78fb8, ow);
+        g.fillStyle(0x7a6290, 1);
+        g.fillCircle(x - r * 0.42, y + r * 0.12, r * 0.12);
+        g.fillCircle(x + r * 0.42, y - r * 0.18, r * 0.1);
+        ART.inkPoly(g, [P(-0.05, -0.98), P(0.12, -0.78), P(-0.12, -0.74)], color, ow * 0.8);
+        ART.inkPoly(g, [P(0.82, -0.62), P(0.98, -0.4), P(0.74, -0.42)], color, ow * 0.8);
+        ART.inkPoly(g, [P(-0.84, 0.56), P(-0.66, 0.74), P(-0.9, 0.8)], color, ow * 0.8);
+        ART.inkStroke(g, w * 0.5, color, () => {
+          g.lineBetween(x - r * 0.2, y + r * 0.72, x - r * 0.3, y + r * 0.92);
+          g.lineBetween(x + r * 0.2, y + r * 0.72, x + r * 0.3, y + r * 0.92);
+        });
+        break;
+      }
+      case 'shockwave': {
+        // Comet on top, shock arcs blasting downward (toward the supernova).
+        const cy = y - r * 0.62;
+        for (let i = 0; i < 3; i++) {
+          const ar = r * (0.5 + i * 0.32);
+          ART.inkStroke(g, w * (1.05 - i * 0.18), i === 0 ? 0xffffff : i === 1 ? light : color, () => {
+            g.beginPath(); g.arc(x, cy, ar, Math.PI * 0.22, Math.PI * 0.78, false); g.strokePath();
+          });
+        }
+        ART.inkCircle(g, x, cy, r * 0.22, color, ow);
+        g.fillStyle(0xffffff, 0.85);
+        g.fillCircle(x - r * 0.07, cy - r * 0.07, r * 0.07);
+        break;
+      }
+      default:
+        ART.sparkle(g, x, y, r * 0.7, 0, color, 1);
+    }
+  },
+
+  // Round icon badge: ink rim, family ring, dark tinted disc, glyph, shine. HUD row and lists.
+  drawCardBadge(g, key, x, y, size, color) {
+    const r = size / 2;
+    g.fillStyle(ART.outline, 1);
+    g.fillCircle(x, y + 2, r + 4);
+    g.fillStyle(color, 1);
+    g.fillCircle(x, y, r);
+    g.fillStyle(lerpColor(color, ART.outline, 0.62), 1);
+    g.fillCircle(x, y, r * 0.84);
+    ART.drawCardIcon(g, key, x, y, size * 0.72, color);
+    g.fillStyle(0xffffff, 0.35);
+    g.fillEllipse(x - r * 0.3, y - r * 0.55, r * 0.7, r * 0.22);
   },
 
   // ---------- background ----------
