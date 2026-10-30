@@ -847,8 +847,9 @@ const ART = {
         const len = 220 + st() * 260;
         const ca = Math.cos(a);
         const sa = Math.sin(a);
-        const w = 1.8 + st() * 2.2;
-        const alpha = (0.13 + st() * 0.13) * Math.min(1, (d1 - 850) / 300);
+        // Kraft paper is mid-brown, so the cream ink needs about twice the weight it has on navy.
+        const w = 2.6 + st() * 2.8;
+        const alpha = (0.26 + st() * 0.2) * Math.min(1, (d1 - 850) / 300);
         if (alpha <= 0.02) continue;
         g.lineStyle(w, ink, alpha);
         // Three dashes, shorter toward the vanishing point.

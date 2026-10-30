@@ -6,7 +6,7 @@
 // then SHOP / JOURNAL; everything clear of the top corner buttons and ~90 px off the bottom.
 // First visit (no finished run yet): only title, orbit doodle, how-to line and PLAY (firstPlayY).
 const MENU_LAYOUT = {
-  bestY: 104, titleY: 190, orbitY: 524, orbitR: 120, howY: 692,
+  bestY: 104, titleY: 190, orbitY: 524, orbitR: 120, howY: 692, taglineX: 112, taglineY: 432,
   noteY: 842, noteW: 620, noteH: 200,
   playY: 1016, firstPlayY: 900, metaY: 1140, metaW: 280, metaH: 100, metaX: [200, 520],
 };
@@ -50,7 +50,10 @@ class MenuScene extends Phaser.Scene {
     const underline = uiBoilImage(this, cx + 10, L.titleY + 166, 'ui_underline').setTint(UI_CRAYON.orange).setRotation(-0.02);
     underline.setScale(0, 1);
     this.tweens.add({ targets: underline, scaleX: 1, duration: 380, delay: 700, ease: 'Quad.Out' });
-    uiInkText(this, cx + 30, L.titleY + 218, 'speed is your life', { size: 36, color: uiColorHex(UI_CRAYON.pink), rot: -0.04 });
+    // A margin note left of the orbit doodle: under the title it sat on the comet's path.
+    uiInkText(this, L.taglineX, L.taglineY, 'speed is\nyour life!', {
+      size: 34, color: uiColorHex(UI_CRAYON.pink), rot: -0.1, lineSpacing: -4,
+    });
 
     // First visit: just the title, the doodle, the how-to line and PLAY. The meta layer
     // (missions, coins, SHOP, JOURNAL) shows up after the first finished run.

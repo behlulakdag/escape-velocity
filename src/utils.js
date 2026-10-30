@@ -463,25 +463,62 @@ function makeButton(scene, x, y, label, onClick, opts = {}) {
   return btn;
 }
 
-// Doodled speaker. AUDIO comes from src/audio.js and may be missing, so every call is guarded.
+// Small torn scrap of paper scribbled over with crayon, glued under a corner icon so it reads as
+// a doodle stuck in the sketchbook (not a floating white UI-kit glyph) on dark and pale pages alike.
+function uiIconScrap(ctx, shape, jitter, cx, cy, w, h, color) {
+  const rot = (shape() - 0.5) * 0.3;
+  const pts = uiWobblyRect(-w / 2, -h / 2, w, h, shape, jitter, 1.1).map((p, i) => {
+    // Torn edges: every other point nicked in or out a little.
+    const nick = (i % 2 ? 1 : -1) * (1.5 + shape() * 2.5);
+    const len = Math.hypot(p.x, p.y) || 1;
+    const x = p.x + (p.x / len) * nick;
+    const y = p.y + (p.y / len) * nick;
+    return { x: cx + x * Math.cos(rot) - y * Math.sin(rot), y: cy + x * Math.sin(rot) + y * Math.cos(rot) };
+  });
+  uiTracePath(ctx, pts.map((p) => ({ x: p.x + 4, y: p.y + 6 })), true);
+  ctx.fillStyle = 'rgba(5,6,16,0.38)';
+  ctx.fill();
+  uiTracePath(ctx, pts, true);
+  ctx.fillStyle = uiCss(UI_INK.dark, 0.92);
+  ctx.fill();
+  uiHatch(ctx, pts, jitter, { color, spacing: 5, width: 4, alpha: 0.85, gaps: 0.06, angle: -0.8, offX: 2, offY: -2, grow: 0.96 });
+  uiHatch(ctx, pts, jitter, { color, spacing: 9, width: 2.5, alpha: 0.45, gaps: 0.15, angle: 0.55, offX: -1, offY: 1, grow: 0.9 });
+  uiStroke(ctx, pts, jitter, { width: 2, color: UI_INK.cream, alpha: 0.35, closed: true, retrace: false });
+}
+
+// Gel-pen line with a dark under-stroke so it reads on the crayon scrap and on pale pages.
+function uiIconLine(ctx, pts, jitter, o) {
+  o = o || {};
+  uiStroke(ctx, pts, jitter, { width: (o.width || 5) + 5, color: UI_INK.dark, alpha: 0.75, retrace: false, closed: o.closed });
+  uiStroke(ctx, pts, jitter, { width: o.width || 5, color: o.color === undefined ? UI_INK.cream : o.color, closed: o.closed, retrace: o.retrace });
+}
+
+const UI_ICON_SIZE = 120;   // texture px; the touch target around it is larger (>= 110)
+
+// Doodled speaker on a blue crayon scrap: ink waves when on, a red crayon X when muted.
+// AUDIO comes from src/audio.js and may be missing, so every call is guarded.
 function uiSpeakerTexture(scene, muted) {
-  return uiSketchTexture(scene, muted ? 'ui_speaker_off' : 'ui_speaker_on', 130, 130, (ctx, shape, jitter) => {
-    const body = [
-      { x: 26, y: 52 }, { x: 46, y: 51 }, { x: 70, y: 30 }, { x: 72, y: 100 }, { x: 47, y: 80 }, { x: 25, y: 79 },
-    ].map((p) => ({ x: p.x + (shape() - 0.5) * 4 + (jitter() - 0.5) * 2.4, y: p.y + (shape() - 0.5) * 4 + (jitter() - 0.5) * 2.4 }));
-    uiHatch(ctx, body, jitter, { color: muted ? UI_INK.pencil : UI_CRAYON.blue, spacing: 5, width: 4, offX: 3, offY: -2 });
-    uiStroke(ctx, body, jitter, { width: 5, closed: true });
+  const S = UI_ICON_SIZE;
+  return uiSketchTexture(scene, muted ? 'ui_speaker_off' : 'ui_speaker_on', S, S, (ctx, shape, jitter) => {
+    uiIconScrap(ctx, shape, jitter, S / 2, S / 2, 84, 74, muted ? UI_INK.pencilDark : UI_CRAYON.blue);
+    // Magnet box + cone as two strokes; corner points doubled so the pen curve keeps them sharp.
+    const wob = (p) => ({ x: p.x + (shape() - 0.5) * 3 + (jitter() - 0.5) * 2.2, y: p.y + (shape() - 0.5) * 3 + (jitter() - 0.5) * 2.2 });
+    const box = uiWobblyRect(22, 49, 18, 24, shape, jitter, 0.8);
+    const cone = [{ x: 40, y: 50 }, { x: 40, y: 50 }, { x: 62, y: 31 }, { x: 62, y: 31 }, { x: 63, y: 91 }, { x: 63, y: 91 }, { x: 40, y: 72 }, { x: 40, y: 72 }].map(wob);
+    uiHatch(ctx, cone, jitter, { color: UI_INK.cream, spacing: 6, width: 2.5, alpha: 0.6, offX: 1, offY: -1, grow: 0.85 });
+    uiIconLine(ctx, box, jitter, { width: 4.5, closed: true, retrace: false });
+    uiIconLine(ctx, cone, jitter, { width: 5, closed: true });
     if (muted) {
-      uiStroke(ctx, [{ x: 84, y: 48 }, { x: 96, y: 64 }, { x: 110, y: 82 }], jitter, { width: 6, color: UI_CRAYON.red, retrace: false });
-      uiStroke(ctx, [{ x: 110, y: 46 }, { x: 98, y: 63 }, { x: 85, y: 84 }], jitter, { width: 6, color: UI_CRAYON.red, retrace: false });
+      uiIconLine(ctx, [{ x: 74, y: 46 }, { x: 84, y: 60 }, { x: 96, y: 76 }], jitter, { width: 6, color: UI_CRAYON.red });
+      uiIconLine(ctx, [{ x: 97, y: 44 }, { x: 86, y: 59 }, { x: 75, y: 78 }], jitter, { width: 6, color: UI_CRAYON.red });
     } else {
-      for (const r of [16, 32]) {
+      for (const r of [14, 28]) {
         const arc = [];
         for (let i = 0; i <= 6; i++) {
           const a = -0.85 + (i / 6) * 1.7;
-          arc.push({ x: 76 + Math.cos(a) * r + (jitter() - 0.5) * 2, y: 65 + Math.sin(a) * r + (jitter() - 0.5) * 2 });
+          arc.push({ x: 66 + Math.cos(a) * r + (jitter() - 0.5) * 2, y: 61 + Math.sin(a) * r + (jitter() - 0.5) * 2 });
         }
-        uiStroke(ctx, arc, jitter, { width: 5, retrace: false });
+        uiIconLine(ctx, arc, jitter, { width: 4.5, retrace: false });
       }
     }
   });
@@ -489,8 +526,8 @@ function uiSpeakerTexture(scene, muted) {
 
 function makeMuteButton(scene, x, y) {
   const size = 104;
-  const onImg = uiBoilImage(scene, 0, 0, uiSpeakerTexture(scene, false));
-  const offImg = uiBoilImage(scene, 0, 0, uiSpeakerTexture(scene, true));
+  const onImg = uiBoilImage(scene, 0, 0, uiSpeakerTexture(scene, false)).setRotation(-0.05);
+  const offImg = uiBoilImage(scene, 0, 0, uiSpeakerTexture(scene, true)).setRotation(-0.05);
   const btn = scene.add.container(x, y, [onImg, offImg]);
   const isMuted = () => (typeof AUDIO !== 'undefined' && AUDIO.isMuted ? AUDIO.isMuted() : false);
   const redraw = () => {
@@ -531,29 +568,38 @@ function saveHighScore(score) {
   return false;
 }
 
-// Four doodled corner brackets; dark under-stroke keeps them readable on light paper too.
+// Four doodled corner brackets with little outward ticks, gel pen on an orange crayon scrap.
 function uiFullscreenTexture(scene) {
-  return uiSketchTexture(scene, 'ui_fullscreen', 110, 110, (ctx, shape, jitter) => {
-    const c = 55;
-    const r = 30;
-    const arm = 16;
+  const S = UI_ICON_SIZE;
+  return uiSketchTexture(scene, 'ui_fullscreen', S, S, (ctx, shape, jitter) => {
+    uiIconScrap(ctx, shape, jitter, S / 2, S / 2, 80, 76, UI_CRAYON.orange);
+    const c = S / 2;
+    const r = 27;
+    const arm = 15;
     for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      // Each corner a slightly different size, like four separate pen strokes.
+      const rr = r + (shape() - 0.5) * 4;
+      const aa = arm + (shape() - 0.5) * 5;
       const pts = [
-        { x: c + sx * r, y: c + sy * (r - arm) },
-        { x: c + sx * r + (jitter() - 0.5) * 2, y: c + sy * r + (jitter() - 0.5) * 2 },
-        { x: c + sx * (r - arm), y: c + sy * r },
+        { x: c + sx * rr, y: c + sy * (rr - aa) },
+        { x: c + sx * rr + (jitter() - 0.5) * 2, y: c + sy * rr + (jitter() - 0.5) * 2 },
+        { x: c + sx * (rr - aa), y: c + sy * rr },
       ].map((p) => ({ x: p.x + (shape() - 0.5) * 3, y: p.y + (shape() - 0.5) * 3 }));
-      uiStroke(ctx, pts, jitter, { width: 10, color: UI_INK.dark, alpha: 0.8, retrace: false });
-      uiStroke(ctx, pts, jitter, { width: 5, retrace: false });
+      uiIconLine(ctx, pts, jitter, { width: 5.5, retrace: false });
+      // A short dash pointing out of the middle toward the corner: "make it bigger".
+      uiIconLine(ctx, [{ x: c + sx * 7, y: c + sy * 7 }, { x: c + sx * 15 + (jitter() - 0.5) * 2, y: c + sy * 15 + (jitter() - 0.5) * 2 }],
+        jitter, { width: 3.5, retrace: false });
     }
   });
 }
 
 // Sağ üst köşeye tam ekran butonu (çentikten uzak dursun diye biraz aşağıda)
-function addFullscreenButton(scene) {
-  const icon = uiBoilImage(scene, 0, 0, uiFullscreenTexture(scene));
-  const btn = scene.add.container(GAME_WIDTH - 92, 116, [icon]).setDepth(1000);
-  btn.setSize(110, 110);
+// o (optional): { x, y } to move it where a scene's own UI leaves room.
+function addFullscreenButton(scene, o) {
+  o = o || {};
+  const icon = uiBoilImage(scene, 0, 0, uiFullscreenTexture(scene)).setRotation(0.05);
+  const btn = scene.add.container(o.x === undefined ? GAME_WIDTH - 92 : o.x, o.y === undefined ? 116 : o.y, [icon]).setDepth(1000);
+  btn.setSize(116, 116);
   btn.setInteractive({ useHandCursor: true });
   btn.on('pointerdown', () => btn.setScale(0.9));
   btn.on('pointerout', () => btn.setScale(1));
@@ -615,6 +661,23 @@ function uiMissionProgressLabel(m) {
 function uiMissionRowLabel(m, fresh) {
   if (fresh && m && !m.done && !(m.progress > 0)) return 'next run';
   return uiMissionProgressLabel(m);
+}
+
+// Zones never end: orbit.js's zoneAt() names the pages past the last drawn one (BEYOND II, III...).
+// Without it (orbit.js missing or older) fall back to the fixed ZONES list, clamped.
+// strict: past the end of a fixed list return undefined instead of the last zone.
+function uiZone(index, strict) {
+  const i = Math.max(0, Math.floor(index || 0));
+  if (typeof zoneAt === 'function') return zoneAt(i);
+  if (typeof ZONES === 'undefined' || !ZONES.length) return strict ? undefined : { name: '?', from: 0 };
+  if (i < ZONES.length) return ZONES[i];
+  return strict ? undefined : ZONES[ZONES.length - 1];
+}
+
+function uiClampZoneIndex(index) {
+  const i = Math.max(0, Math.round(index || 0));
+  if (typeof zoneAt === 'function' || typeof ZONES === 'undefined') return i;
+  return Math.min(i, ZONES.length - 1);
 }
 
 // Menu onboarding flags, one small JSON key: runDone (a run has reached the game over page),

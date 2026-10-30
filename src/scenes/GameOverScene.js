@@ -8,6 +8,8 @@ const GO_CARD = { w: 600, h: 700, pad: 34, x: GAME_WIDTH / 2, y: 548 };
 const GO_HEAD = { y: -16, labelX: -228, numX: 150, numSize: 96, unitSize: 40 };
 const GO_ROWS = { top: 58, step: 52 };
 const GO_GOAL_Y = 264;
+// Sound / fullscreen doodles: between the two tape strips, above the page's top edge.
+const GO_CORNER_BUTTONS = { muteX: 206, fullX: 514, y: 100 };
 // 'NEW CARD FOUND' sticky note, page-local: hangs over the page's right edge between the score and
 // the top speed flames (clear of a 6-digit score).
 const GO_NEWCARD = { x: 256, y: -166, w: 172, h: 112 };
@@ -103,7 +105,8 @@ class GameOverScene extends Phaser.Scene {
     this.seconds = goNumber(data.seconds);
     this.secondWind = !!data.secondWind;   // the run's one-time SECOND WIND rescue was used
     const zone = goNumber(data.zoneIndex);
-    this.zoneIndex = zone !== undefined ? Phaser.Math.Clamp(Math.round(zone), 0, ZONES.length - 1) : undefined;
+    // Past the last drawn page the zones go on (BEYOND II, III...), so only clamp from below.
+    this.zoneIndex = zone !== undefined ? uiClampZoneIndex(zone) : undefined;
     this.progress = data.progress && typeof data.progress === 'object' ? data.progress : null;   // PROGRESS.endRun() result
   }
 
@@ -199,8 +202,9 @@ class GameOverScene extends Phaser.Scene {
       this.showMissions(lay);
       this.showNewCards(card);
     }
-    makeMuteButton(this, 92, 116);
-    addFullscreenButton(this);
+    // Pulled in from the corners and up a little: the page's tape strips hold the top corners.
+    makeMuteButton(this, GO_CORNER_BUTTONS.muteX, GO_CORNER_BUTTONS.y);
+    addFullscreenButton(this, { x: GO_CORNER_BUTTONS.fullX, y: GO_CORNER_BUTTONS.y });
     this.input.keyboard.on('keydown-SPACE', retry);
   }
 
@@ -441,7 +445,7 @@ class GameOverScene extends Phaser.Scene {
     // Top speed is not a row: it is the page's headline (showTopSpeed).
     // 'combo N' as in the HUD: the 'x' only ever means the score multiplier.
     if (this.maxChain !== undefined) rows.push({ label: 'best combo', value: this.maxChain >= 1 ? this.maxChain + ' perfect' : '-' });
-    if (this.zoneIndex !== undefined) rows.push({ label: 'reached', value: ZONES[this.zoneIndex].name });
+    if (this.zoneIndex !== undefined) rows.push({ label: 'reached', value: uiZone(this.zoneIndex).name });
     if (this.seconds !== undefined) rows.push({ label: 'time', value: goFormatTime(this.seconds) });
     return rows;
   }
@@ -451,7 +455,7 @@ class GameOverScene extends Phaser.Scene {
   nextGoal() {
     const zone = this.zoneIndex !== undefined ? this.zoneIndex : zoneIndexForAltitude(this.altitude);
     const best = this.bestAltitude;
-    const next = ZONES[zone + 1];
+    const next = uiZone(zone + 1, true);
     if (next) {
       if (!this.newBestAltitude && best > this.altitude && best < next.from) return 'Next: beat ' + best + ' m';
       return 'Next: reach ' + next.name + ' (' + next.from + ' m)';

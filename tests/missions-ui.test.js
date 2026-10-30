@@ -29,3 +29,30 @@ test('an old mission keeps its pencil progress', () => {
 test('a finished mission has no label', () => {
   assert.strictEqual(ui.uiMissionRowLabel({ progress: 5, goal: 5, done: true }, true), '');
 });
+
+// Game over 'reached' / 'Next: reach ...' must follow the endless pages (BEYOND II, III...).
+function loadUtilsWith(files, names) {
+  const context = vm.createContext({ Phaser: { Scene: class {} }, console });
+  for (const file of files) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
+  }
+  return vm.runInContext('({ ' + names.join(', ') + ' })', context);
+}
+
+test('zones past BEYOND are named by zoneAt, not clamped', () => {
+  const z = loadUtilsWith(['src/config.js', 'src/orbit.js', 'src/utils.js'], ['uiZone', 'uiClampZoneIndex', 'ZONES']);
+  const last = z.ZONES.length - 1;
+  assert.strictEqual(z.uiZone(last).name, 'BEYOND');
+  assert.strictEqual(z.uiClampZoneIndex(last + 1), last + 1);
+  assert.strictEqual(z.uiZone(last + 1).name, 'BEYOND II');
+  assert.strictEqual(z.uiZone(last + 2, true).name, 'BEYOND III');
+  assert.strictEqual(z.uiClampZoneIndex(-3), 0);
+});
+
+test('without zoneAt the fixed list is clamped and strict lookups past it are undefined', () => {
+  const z = loadUtilsWith(['src/config.js', 'src/utils.js'], ['uiZone', 'uiClampZoneIndex']);
+  // No orbit.js loaded: no ZONES either, so it must not throw.
+  assert.strictEqual(z.uiZone(3, true), undefined);
+  assert.strictEqual(typeof z.uiZone(3).name, 'string');
+  assert.strictEqual(z.uiClampZoneIndex(7), 7);
+});
