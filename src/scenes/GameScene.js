@@ -2061,7 +2061,7 @@ class GameScene extends Phaser.Scene {
         this.burst(a.x, a.y, 0xb8a28c, 14);
         if (this.mods.tailArmor) this.shatterAsteroid(a);
         else if (this.learning) this.softBump();
-        else this.loseSpeed(TUNING.asteroidKeep);
+        else this.loseSpeed(TUNING.asteroidKeep, { noShield: true });   // owner: rocks never break the Heat Shield
       }
     }
   }
@@ -2393,13 +2393,14 @@ class GameScene extends Phaser.Scene {
     return Math.hypot(this.comet.x - p.x, this.comet.y - p.y);
   }
 
-  loseSpeed(keep) {
+  // opts.noShield: the hit costs speed even with a Heat Shield charge left, and leaves the charge (asteroids).
+  loseSpeed(keep, opts) {
     if (this.windGraceT > 0) {
       // Right after SECOND WIND / UNBREAKABLE: a bump into the next planet is free (no shield used).
       this.burst(this.comet.x, this.comet.y, 0x5eff8f, 6, 110);
       return;
     }
-    if (this.useHeatShield()) return;
+    if (!(opts && opts.noShield) && this.useHeatShield()) return;
     this.speed = speedAfterHit(this.speed, keep);
     this.breakChain();
     this.jellyT = 0;

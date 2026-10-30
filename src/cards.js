@@ -19,7 +19,7 @@ const CARDS = [
   { id: 'aero', family: 'flight', rarity: 'common', name: 'Aerodynamic', desc: '30% less speed loss', icon: 'aero' },
   { id: 'wallkick', family: 'flight', rarity: 'rare', name: 'Wall Kick', desc: 'Upward flings: walls kick you up', icon: 'wallkick' },
   { id: 'afterburner', family: 'flight', rarity: 'legendary', name: 'Afterburner', desc: 'No speed loss after PERFECT', icon: 'afterburner' },
-  { id: 'heatshield', family: 'shield', rarity: 'common', name: 'Heat Shield', desc: 'First hit each zone: free', icon: 'heatshield' },
+  { id: 'heatshield', family: 'shield', rarity: 'common', name: 'Heat Shield', desc: 'First planet bump each zone: free', icon: 'heatshield' },
   { id: 'armor', family: 'shield', rarity: 'rare', name: 'Tail Armor', desc: 'Smash asteroids for speed', icon: 'armor' },
   { id: 'shockwave', family: 'shield', rarity: 'legendary', name: 'Shockwave', desc: 'CLOSE CALL pushes nova back', icon: 'shockwave' },
 ];
