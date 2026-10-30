@@ -264,7 +264,7 @@ test('auto catch only covers the first assisted flings, early in the run', () =>
 test('the supernova climbs faster at higher altitude, still capped', () => {
   assert.strictEqual(o.novaSpeed(10), o.novaSpeed(10, 0));
   assert.ok(o.novaSpeed(10, 3000) > o.novaSpeed(10, 0));
-  assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxLate);
+  assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxLate + o.TUNING.novaBeyondMax);
   // Past ESCAPE VELOCITY the wave gets faster with altitude even early in a run.
   assert.ok(o.novaSpeed(60, 20000) > o.novaSpeed(60, 9000) + 150);
 });
@@ -368,7 +368,7 @@ test('the supernova top speed scales with the zone speed cap and is capped', () 
   for (let m = 0; m <= 60000; m += 500) {
     const v = o.novaMaxForAltitude(m);
     assert.ok(v >= prev, 'never drops (at ' + m + ' m)');
-    assert.ok(v <= (m <= 8000 ? o.TUNING.novaMaxAbsolute : o.TUNING.novaMaxLate));
+    assert.ok(v <= (m <= 8000 ? o.TUNING.novaMaxAbsolute : o.TUNING.novaMaxLate + o.novaBeyondExtra(m)));
     prev = v;
   }
   assert.ok(o.novaMaxForAltitude(8000) > o.novaMaxForAltitude(1500));
@@ -376,8 +376,10 @@ test('the supernova top speed scales with the zone speed cap and is capped', () 
   // Every page past ESCAPE VELOCITY turns the screw by novaPerPage...
   assert.strictEqual(o.novaMaxForAltitude(12000), o.TUNING.novaMaxAbsolute + o.TUNING.novaPerPage);
   assert.strictEqual(o.novaMaxForAltitude(17000), o.TUNING.novaMaxAbsolute + 2 * o.TUNING.novaPerPage);
-  // ...up to novaMaxLate.
-  assert.strictEqual(o.novaMaxForAltitude(1e6), o.TUNING.novaMaxLate);
+  // ...up to novaMaxLate, and past BEYOND by novaBeyondPerPage a page, up to novaBeyondMax more.
+  assert.strictEqual(o.novaMaxForAltitude(39000), o.TUNING.novaMaxLate);
+  assert.strictEqual(o.novaMaxForAltitude(50000), o.TUNING.novaMaxLate + o.TUNING.novaBeyondPerPage);
+  assert.strictEqual(o.novaMaxForAltitude(1e6), o.TUNING.novaMaxLate + o.TUNING.novaBeyondMax);
 });
 
 test('new sketchbook pages follow the contract (from, name, paper, ink, fx)', () => {
@@ -573,14 +575,20 @@ test('calm start: the wave starts slow and is at full speed by novaCalmSeconds; 
 test('novaSpeedFor applies cards and calm, never above the hard cap', () => {
   assert.strictEqual(o.novaSpeedFor(10, 0, 1, 1), o.novaSpeed(10, 0));
   assert.ok(Math.abs(o.novaSpeedFor(10, 0, 1.2, 0.5) - o.novaSpeed(10, 0) * 0.6) < 1e-9);
-  assert.strictEqual(o.novaSpeedFor(1e4, 1e6, 1.6, 1), o.TUNING.novaHardCap);
+  assert.strictEqual(o.novaSpeedFor(1e4, 30000, 1.6, 1), o.TUNING.novaHardCap);
+  assert.strictEqual(o.novaSpeedFor(1e4, 1e6, 1.6, 1), o.TUNING.novaHardCap + o.TUNING.novaBeyondMax);
   assert.ok(o.TUNING.novaHardCap <= 3000 && o.TUNING.novaMaxLate <= o.TUNING.novaHardCap);
 });
 
-test('novaEtaSeconds: gap over the wave speed, a falling comet closes faster, a climbing one is ignored', () => {
+test('novaEtaSeconds: gap over the wave speed, a falling comet closes faster, a climbing one only a little', () => {
   assert.strictEqual(o.novaEtaSeconds(1000, 1000, 0), 1);
   assert.strictEqual(o.novaEtaSeconds(1000, 1000, 1000), 0.5);
-  assert.strictEqual(o.novaEtaSeconds(1000, 1000, -5000), 1);
+  // A fast climb counts down to etaClimbFloor of the wave speed, never more.
+  assert.strictEqual(o.novaEtaSeconds(1000, 1000, -5000), 1000 / (1000 * o.TUNING.etaClimbFloor));
+  assert.strictEqual(o.novaEtaSeconds(1000, 1000, -200), 1000 / 800);
+  // orbitSwing: a down swing is ignored while the wave is etaSwingUnder s away or more.
+  assert.strictEqual(o.novaEtaSeconds(3000, 1000, 2000, true), 3);
+  assert.strictEqual(o.novaEtaSeconds(1000, 1000, 1000, true), 0.5);
   assert.strictEqual(o.novaEtaSeconds(-5, 1000, 0), 0);
   assert.ok(isFinite(o.novaEtaSeconds(1000, 0, 0)));
 });
@@ -608,4 +616,118 @@ test('pickTutorialTarget: always the next planet above, beside it, with the real
   const passDist = next.radius + o.TUNING.assistPassGap;
   assert.ok(Math.abs(Math.hypot(t.aimX - next.x, t.aimY - next.y) - passDist) < 1e-6);
   assert.strictEqual(o.pickTutorialTarget(200, -100, 0, 1, [low, below], low, low.y), null);
+});
+
+test('learning window: closes on 3 good cycles, 30 s or 1500 m, and at 25 s with no catch', () => {
+  const base = { tutorial: true, seconds: 5, meters: 300, goodCycles: 0, ownCatches: 1 };
+  assert.ok(o.learningWindowOpen(base));
+  assert.ok(!o.learningWindowOpen(Object.assign({}, base, { tutorial: false })));
+  assert.ok(!o.learningWindowOpen(Object.assign({}, base, { goodCycles: o.TUNING.learnWindowCycles })));
+  assert.ok(o.learningWindowOpen(Object.assign({}, base, { goodCycles: o.TUNING.learnWindowCycles - 1 })));
+  assert.ok(!o.learningWindowOpen(Object.assign({}, base, { seconds: o.TUNING.learnWindowSeconds })));
+  assert.ok(!o.learningWindowOpen(Object.assign({}, base, { meters: o.TUNING.learnWindowMeters })));
+  // A lost player who never caught a planet: the window ends at learnIdleSeconds anyway.
+  assert.ok(o.learningWindowOpen(Object.assign({}, base, { ownCatches: 0, seconds: o.TUNING.learnIdleSeconds - 1 })));
+  assert.ok(!o.learningWindowOpen(Object.assign({}, base, { ownCatches: 0, seconds: o.TUNING.learnIdleSeconds })));
+  assert.ok(o.TUNING.learnIdleSeconds < o.TUNING.learnWindowSeconds);
+});
+
+test('learnExitFactor: the wave eases from the crawl up to the calm factor', () => {
+  assert.strictEqual(o.learnExitFactor(0.8, 0), o.TUNING.novaLearnMul);
+  assert.ok(Math.abs(o.learnExitFactor(0.8, o.TUNING.learnExitSeconds) - 0.8) < 1e-9);
+  const mid = o.learnExitFactor(0.8, o.TUNING.learnExitSeconds / 2);
+  assert.ok(mid > o.TUNING.novaLearnMul && mid < 0.8);
+});
+
+test('holdPromptStep: a flickering candidate keeps the prompt up, it clears after min time + grace', () => {
+  const p = { id: 1 };
+  const dt = 1 / 60;
+  let st = { planet: null, shownT: 0, graceT: 0 };
+  let shownFrames = 0;
+  // Candidate toggles every 6 frames (100 ms) for 1.2 s: the prompt must stay up every frame.
+  for (let f = 0; f < 72; f++) {
+    st = o.holdPromptStep(st, Math.floor(f / 6) % 2 ? null : p, dt, false, false);
+    if (st.planet === p) shownFrames++;
+  }
+  assert.strictEqual(shownFrames, 72);
+  // Seen for one frame only: still up until holdPromptMin.
+  st = o.holdPromptStep({ planet: null, shownT: 0, graceT: 0 }, p, dt, false, false);
+  let t = dt;
+  while (t < o.TUNING.holdPromptMin - dt) {
+    st = o.holdPromptStep(st, null, dt, false, false);
+    t += dt;
+    assert.strictEqual(st.planet, p);
+  }
+  // ...and gone once min time + grace have passed.
+  for (let k = 0; k < Math.ceil((o.TUNING.holdPromptGrace + 0.1) / dt); k++) st = o.holdPromptStep(st, null, dt, false, false);
+  assert.strictEqual(st.planet, null);
+  // A catch (blocked) or the planet passing below the comet clears it at once.
+  st = o.holdPromptStep({ planet: null, shownT: 0, graceT: 0 }, p, dt, false, false);
+  assert.strictEqual(o.holdPromptStep(st, p, dt, true, false).planet, null);
+  assert.strictEqual(o.holdPromptStep(st, null, dt, false, true).planet, null);
+  // A new planet coming into reach replaces a passed one.
+  const q = { id: 2 };
+  assert.strictEqual(o.holdPromptStep(st, q, dt, false, true).planet, q);
+});
+
+test('tutorialLetGo: green at once; the wide assist after a while or when the wave is close', () => {
+  assert.ok(!o.tutorialLetGo(null, 5, 0.1, 10));
+  assert.ok(o.tutorialLetGo({ wide: false }, 0, 9, 5000));
+  assert.ok(!o.tutorialLetGo({ wide: true }, 0.2, 9, 5000));
+  assert.ok(o.tutorialLetGo({ wide: true }, o.TUNING.tutorialLetGoAfter + 0.01, 9, 5000));
+  assert.ok(o.tutorialLetGo({ wide: true }, 0.2, o.TUNING.letGoEta - 0.1, 5000));
+  assert.ok(o.tutorialLetGo({ wide: true }, 0.2, 9, o.TUNING.letGoGap - 1));
+});
+
+test('late orbit fairness: slower wave only right after a PERFECT, late only, fading past BEYOND', () => {
+  assert.strictEqual(o.orbitNovaMul(30000, 0.1, false, true), 1);   // in flight
+  assert.strictEqual(o.orbitNovaMul(3000, 0.1, true, true), 1);     // early
+  assert.strictEqual(o.orbitNovaMul(30000, 0.1, true, true), o.TUNING.orbitNovaMul);
+  assert.strictEqual(o.orbitNovaMul(30000, o.TUNING.orbitNovaGracePerfect + 0.01, true, true), 1);
+  assert.ok(o.orbitNovaMul(30000, 0.1, true, false) >= o.orbitNovaMul(30000, 0.1, true, true));
+  assert.strictEqual(o.orbitNovaMul(o.TUNING.orbitFairFadeFrom + o.TUNING.orbitFairFadeSpan, 0.1, true, true), 1);
+  assert.strictEqual(o.lateShare(5000), 0);
+  assert.strictEqual(o.lateShare(10000), 1);
+});
+
+test('late green coyote time: none early, assistCoyote late', () => {
+  assert.strictEqual(o.assistCoyoteTime(3000), 0);
+  assert.strictEqual(o.assistCoyoteTime(20000), o.TUNING.assistCoyote);
+  assert.ok(o.TUNING.assistCoyote > 0 && o.TUNING.assistCoyote <= 0.2);
+});
+
+test('perfectAngleAt: base early, wider with the late spin boost, inside the green cone', () => {
+  const b = o.TUNING.perfectAngle;
+  assert.strictEqual(o.perfectAngleAt(b, 2000), b);
+  assert.ok(o.perfectAngleAt(b, 7000) > b);
+  assert.ok(o.perfectAngleAt(b, o.TUNING.maxSpeed) < o.TUNING.assistMaxAngle);
+  // A wider card window is never narrowed.
+  assert.strictEqual(o.perfectAngleAt(0.22, 2000), 0.22);
+});
+
+test('novaOrbitEta: phase aware; far wave = plain gap / speed; wave above the low point = soon', () => {
+  const base = { novaY: 5000, cometY: 0, planetY: 0, angle: -Math.PI / 2, radius: 200, dir: 1, spin: 6, wave: 1000 };
+  assert.strictEqual(o.novaOrbitEta(base), 5);
+  assert.strictEqual(o.novaOrbitEta(Object.assign({}, base, { novaY: -1 })), 0);
+  // Close wave: the comet at the top swings down into it, well before the wave climbs the 1000 px to it.
+  const top = o.novaOrbitEta(Object.assign({}, base, { novaY: 800, cometY: -200 }));
+  assert.ok(top > 0.4 && top <= (800 - 200) / 1000 + 0.04, String(top));
+  // The wave already above the orbit's low point: the down swing ends it at once.
+  assert.ok(o.novaOrbitEta(Object.assign({}, base, { novaY: 150, cometY: 100, angle: 0.5 })) < 0.1);
+  // A slower wave for a moment (late orbit grace) pushes it later.
+  assert.ok(o.novaOrbitEta(Object.assign({}, base, { novaY: 800, cometY: -200, slowWave: 500, slowFor: 1 })) > top);
+});
+
+test('warpVelocity keepClimbing: a climbing comet is never warped into a dive', () => {
+  for (let k = 0; k < 40; k++) {
+    const a = -Math.PI + (k / 40) * Math.PI;   // every upward heading
+    const vx = Math.cos(a) * 1000;
+    const vy = Math.sin(a) * 1000;
+    if (vy >= 0) continue;
+    for (const hx of [-30, 0, 30]) {
+      const w = o.warpVelocity(hx, -10, 0, 0, vx, vy, true);
+      assert.ok(w.vy <= 1e-9, 'heading ' + a.toFixed(2) + ' hole ' + hx);
+      assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - 1000) < 1e-6);
+    }
+  }
 });

@@ -57,7 +57,23 @@ const CARD_TUNING = {
   catchBurst: 110,            // Orbit Master: px/s burst on every catch
   rescues: 1,                 // Unbreakable: per run
   novaPerCard: 0.05,          // every card picked makes the supernova 5% faster
+  // When a pick may open (see cardPickReady) and what it costs the player.
+  pickNovaHold: 1.5,          // real s the supernova holds still after a pick (on top of the slow-motion ease)
+  firstRunPickMeters: 1500,   // tutorial run 1: the first pick waits for HYPERSONIC...
+  firstRunPickSeconds: 25,    // ...and 25 s into the run, whichever is later
+  pickGap: 4,                 // real s between two queued picks
 };
+
+// Whether a queued card pick may open now. A pick opened mid-orbit leaves the comet spinning with no
+// finger and no prompt, and the down swing feeds it to the wave, so picks only open in free flight while
+// climbing. firstRun (tutorial run 1): not before firstRunPickMeters AND firstRunPickSeconds.
+// st = { orbiting, scraping, vy (px/s, - = up), firstRun, meters, seconds }.
+function cardPickReady(st) {
+  const s = st || {};
+  if (s.orbiting || s.scraping || !(s.vy < 0)) return false;
+  if (s.firstRun && ((s.meters || 0) < CARD_TUNING.firstRunPickMeters || (s.seconds || 0) < CARD_TUNING.firstRunPickSeconds)) return false;
+  return true;
+}
 
 function cardById(id) {
   for (const c of CARDS) if (c.id === id) return c;
@@ -133,5 +149,5 @@ function cardMods(ownedIds) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
+  module.exports = { CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardPickReady, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
 }

@@ -13,7 +13,13 @@ function loadBestAltitude() {
 // auto catch and the catch hint never come back, so only the very first run is assisted.
 const LEARNED_CATCH_KEY = 'escape_velocity_learned_catch';
 
+// Storage can be blocked (private tab, iframe settings): this session's tutorial progress is also kept in
+// memory, so the tutorial still retires after its runs and the auto catch after the first real catch,
+// instead of the learner help coming back on every run.
+const SESSION_TUTORIAL = { runs: 0, goodCycles: 0, learnedCatch: false };
+
 function hasLearnedCatch() {
+  if (SESSION_TUTORIAL.learnedCatch) return true;
   try {
     return localStorage.getItem(LEARNED_CATCH_KEY) === '1';
   } catch (e) {
@@ -22,6 +28,7 @@ function hasLearnedCatch() {
 }
 
 function saveLearnedCatch() {
+  SESSION_TUTORIAL.learnedCatch = true;
   try {
     localStorage.setItem(LEARNED_CATCH_KEY, '1');
   } catch (e) { /* storage blocked: the player just gets the tutorial again */ }
@@ -31,14 +38,19 @@ function saveLearnedCatch() {
 const TUTORIAL_KEY = 'escape_velocity_tutorial_v1';
 
 function loadTutorialState() {
+  let stored = { runs: 0, goodCycles: 0 };
   try {
-    return parseTutorialState(localStorage.getItem(TUTORIAL_KEY));
-  } catch (e) {
-    return { runs: 0, goodCycles: 0 };
-  }
+    stored = parseTutorialState(localStorage.getItem(TUTORIAL_KEY));
+  } catch (e) { /* storage blocked: the session counter below still counts */ }
+  return {
+    runs: Math.max(stored.runs, SESSION_TUTORIAL.runs),
+    goodCycles: Math.max(stored.goodCycles, SESSION_TUTORIAL.goodCycles),
+  };
 }
 
 function saveTutorialState(state) {
+  SESSION_TUTORIAL.runs = Math.max(SESSION_TUTORIAL.runs, state.runs);
+  SESSION_TUTORIAL.goodCycles = Math.max(SESSION_TUTORIAL.goodCycles, state.goodCycles);
   try {
     localStorage.setItem(TUTORIAL_KEY, JSON.stringify({ runs: state.runs, goodCycles: state.goodCycles }));
   } catch (e) { /* storage blocked: the tutorial just shows again next time */ }
@@ -185,6 +197,9 @@ class GameScene extends Phaser.Scene {
     if (this.introActive) return this.skipIntro();
     if (this.cardPick) return;   // the tap belongs to the cards on top
     this.inputGuard = false;
+    // A hold started with a planet coming into reach is a deliberate one (what the HOLD cue teaches);
+    // one started in empty space that later drifts into a planet is a lucky tap.
+    if (!this.isHolding) this.holdAimed = !this.orbit && !!this.planetComingIntoReach();
     this.isHolding = true;
   }
 
@@ -210,10 +225,27 @@ class GameScene extends Phaser.Scene {
     this.tutorialOn = !!this.tutorial && tutorialActive(this.tutorial);
     // Runs finished before this one: run 1 and run 2 keep the tutorial to the end, whatever the cycle count.
     this.tutorialRunsBefore = this.tutorial ? this.tutorial.runs : 0;
-    this.ownCatches = 0;         // catches with a real hold this run (the learning wave ends at TUNING.learnCatches)
+    this.ownCatches = 0;         // catches with a real hold this run (the learning window needs one by TUNING.learnIdleSeconds)
     this.orbitHeldT = 0;         // s in the current orbit (tutorial LET GO fallback)
     this.tutorialShown = '';     // 'hold' | 'release' | '' : what the HUD was last asked to show
     this.tutorialCatch = false;  // the current orbit came from a real (not auto) catch
+    // Learning window (wide assist, soft bumps, crawling wave): see learningWindowOpen in src/orbit.js.
+    this.learning = this.tutorialOn;
+    this.learnGoodCycles = 0;
+    this.holdAimed = null;       // the current hold started near a planet (null = set without pressHold)
+    this.letGoSeen = null;       // { t, assist } of the last frame the LET GO was wanted (gap grace)
+    this.learnEndT = null;       // run s the learning window closed (the wave eases up from its crawl)    // good catch-and-release cycles this run (one of the window's limits)
+    this.holdPrompt = { planet: null, shownT: 0, graceT: 0 };   // HOLD prompt hysteresis (holdPromptStep)
+  }
+
+  // Closes the learning window for the rest of the run once any of its limits is hit.
+  updateLearning() {
+    if (!this.learning) return;
+    this.learning = learningWindowOpen({
+      tutorial: this.tutorialOn, seconds: this.elapsed, meters: this.bestAltitude,
+      goodCycles: this.learnGoodCycles, ownCatches: this.ownCatches,
+    });
+    if (!this.learning) this.learnEndT = this.elapsed;
   }
 
   // One run event for missions / coins / journal. The headless sim never reports (no saves at all).
@@ -258,38 +290,70 @@ class GameScene extends Phaser.Scene {
   // Finger tutorial (first runs, see tutorialActive): a pressing finger beside the planet coming into
   // reach ('HOLD'), then a lifting finger with the fling arrow once the aim is green/gold ('LET GO').
   // GameScene decides when and passes SCREEN coordinates; the HUD owns the drawing.
-  updateTutorial() {
+  updateTutorial(dt) {
     const hud = this.hud;
     if (!this.tutorialOn || !hud) return;
     let want = '';
-    let planet = null;
     let assist = null;
-    if (!this.isOver && !this.cardPick && !this.introActive && this.launched) {
-      if (this.orbit) {
-        assist = this.isHolding ? this.currentAssist() : null;
-        // LET GO when the aim is in the normal green cone (the timing worth learning), or after a
-        // while anyway: the wide tutorial assist steers any release onto the next planet.
-        if (assist && (!assist.wide || this.orbitHeldT > GameScene.TUTORIAL_LETGO_AFTER)) want = 'release';
-      } else if (!this.scrape && !this.isHolding) {
-        planet = this.planetComingIntoReach();
-        if (planet) want = 'hold';
+    const live = !this.isOver && !this.cardPick && !this.introActive && this.launched;
+    if (live && this.orbit) {
+      assist = this.isHolding ? this.currentAssist() : null;
+      // The prompt leads the green aim by a human reaction time: shown on the real green it comes too late
+      // for a learner to land the release inside the (fast-spinning) window.
+      if (this.isHolding && (!assist || assist.wide)) assist = this.assistAhead(GameScene.LETGO_LEAD) || assist;
+      // LET GO on a green/gold aim (the timing worth learning); with only the wide learning assist after a
+      // while, or at once when the wave is close (see tutorialLetGo).
+      if (tutorialLetGo(assist, this.orbitHeldT, this.novaEta(), this.novaY - this.comet.y)) want = 'release';
+      // Two aim windows a frame or two apart (two planets, two pass sides) read as one LET GO, not a flicker.
+      if (want) this.letGoSeen = { t: this.elapsed, assist };
+      else if (this.isHolding && this.letGoSeen && this.elapsed - this.letGoSeen.t < GameScene.LETGO_GRACE) {
+        want = 'release';
+        assist = this.letGoSeen.assist;
       }
+    } else {
+      this.letGoSeen = null;
     }
+    // HOLD with hysteresis (holdPromptStep): the planet in reach flickers in and out of range at 10 Hz,
+    // the prompt must not.
+    const blocked = !live || !!this.orbit || !!this.scrape || this.isHolding;
+    const shown = this.holdPrompt.planet;
+    const c = this.comet;
+    const passed = !!shown && (this.planets.indexOf(shown) < 0 || !canGrabPlanet(c.x, c.y, c.vx, c.vy, shown));
+    let candidate = null;
+    if (!blocked) candidate = shown && !passed && this.inPromptReach(shown) ? shown : this.planetComingIntoReach();
+    this.holdPrompt = holdPromptStep(this.holdPrompt, candidate, dt || 0, blocked, passed);
+    const planet = this.holdPrompt.planet;
+    if (!want && planet) want = 'hold';
     if (this.headless) { this.tutorialShown = want; return; }   // the bot reads tutorialShown
     const zoom = this.cameras.main.zoom;
     if (want === 'hold' && typeof hud.tutorialHold === 'function') {
       const p = this.worldToScreen(planet.x, planet.y);
-      hud.tutorialHold(p.x, p.y, planet.radius * zoom);
+      hud.tutorialHold(p.x, p.y, planet.radius * zoom, this.tutorialObstacles());
     } else if (want === 'release' && typeof hud.tutorialRelease === 'function') {
-      const c = this.worldToScreen(this.comet.x, this.comet.y);
-      const dx = assist.aimX - this.comet.x;
-      const dy = assist.aimY - this.comet.y;
+      const cs = this.worldToScreen(c.x, c.y);
+      const dx = assist.aimX - c.x;
+      const dy = assist.aimY - c.y;
       const len = Math.hypot(dx, dy) || 1;
-      hud.tutorialRelease(c.x, c.y, dx / len, dy / len);
+      hud.tutorialRelease(cs.x, cs.y, dx / len, dy / len, this.tutorialObstacles());
     } else if (this.tutorialShown && typeof hud.clearTutorial === 'function') {
       hud.clearTutorial();
     }
     this.tutorialShown = want;
+  }
+
+  // On-screen things the tutorial hand must not cover, as SCREEN circles [{x, y, r}]: every planet
+  // (its ring included) and every black hole (core plus a little of its swirl).
+  tutorialObstacles() {
+    const zoom = this.cameras.main.zoom;
+    const out = [];
+    const add = (x, y, r) => {
+      const p = this.worldToScreen(x, y);
+      const sr = r * zoom;
+      if (p.y + sr > 0 && p.y - sr < GAME_HEIGHT && p.x + sr > 0 && p.x - sr < GAME_WIDTH) out.push({ x: p.x, y: p.y, r: sr });
+    };
+    for (const p of this.planets) add(p.x, p.y, p.radius * (p.hasRing ? GameScene.RING_REACH : 1.05));
+    for (const h of this.blackHoles) add(h.x, h.y, TUNING.blackHoleRadius * GameScene.BLACK_HOLE_REACH);
+    return out;
   }
 
   // Release after a real catch with a green/gold aim = one good cycle; 3 of them (and 2 runs) retire it.
@@ -298,6 +362,7 @@ class GameScene extends Phaser.Scene {
     const good = this.tutorialCatch && assisted;
     this.tutorialCatch = false;
     if (!good) return;
+    this.learnGoodCycles++;
     this.tutorial.goodCycles++;
     if (!this.headless) saveTutorialState(this.tutorial);
     // Retire mid-run only from run 3 on (runs counted before this run), so runs 1 and 2 keep it.
@@ -318,16 +383,20 @@ class GameScene extends Phaser.Scene {
   // A grabbable planet the comet is about to reach (a little before the grab zone, so the
   // prompt can be read before the hold has to happen).
   planetComingIntoReach() {
-    const c = this.comet;
-    const range = this.grabRange() + GameScene.HOLD_PROMPT_LEAD;
     let best = null;
     let bestDist = Infinity;
     for (const p of this.planets) {
-      if (p === this.noGrabPlanet || !canGrabPlanet(c.x, c.y, c.vx, c.vy, p)) continue;
-      const d = Phaser.Math.Distance.Between(c.x, c.y, p.x, p.y);
-      if (d < p.radius + range && d < bestDist) { best = p; bestDist = d; }
+      if (!this.inPromptReach(p)) continue;
+      const d = this.distanceTo(p);
+      if (d < bestDist) { best = p; bestDist = d; }
     }
     return best;
+  }
+
+  inPromptReach(p) {
+    const c = this.comet;
+    if (p === this.noGrabPlanet || !canGrabPlanet(c.x, c.y, c.vx, c.vy, p)) return false;
+    return this.distanceTo(p) < p.radius + this.grabRange() + GameScene.HOLD_PROMPT_LEAD;
   }
 
   // World-space pencil labels for the ghost ('BEST' tag) and where the best run ended.
@@ -479,7 +548,7 @@ class GameScene extends Phaser.Scene {
     if (!cardById(id) || this.ownedCards.indexOf(id) >= 0) return;
     const pick = this.cardPick;
     this.cardPick = { choices: [id], realT: 0 };
-    this.pickCard(id);
+    this.pickCard(id, true);
     this.cardPick = pick;
   }
 
@@ -489,7 +558,9 @@ class GameScene extends Phaser.Scene {
     this.ownedCards = [];
     this.mods = cardMods(this.ownedCards);
     this.cardPick = null;       // { choices, realT } while the pick is on screen
-    this.pickDelay = -1;        // real seconds until the zone's card pick opens, -1 = none pending
+    this.pickDelay = -1;        // real seconds until a queued card pick may open, -1 = none queued
+    this.picksOwed = 0;         // zone card picks earned but not opened yet (they wait for cardPickReady)
+    this.novaHoldT = 0;         // real s the supernova holds still after a card pick
     this.queuedMilestone = null; // { level, chain } stamp held back while a card pick is pending
     this.milestoneWait = 0;      // real seconds after the pick closes before it plays
     this.inputGuard = false;    // swallows the release of the finger that tapped a card
@@ -509,7 +580,7 @@ class GameScene extends Phaser.Scene {
   }
 
   perfectAngle() {
-    return this.mods.perfectAngle || TUNING.perfectAngle;
+    return perfectAngleAt(this.mods.perfectAngle || TUNING.perfectAngle, this.speed);
   }
 
   openCardPick() {
@@ -542,18 +613,24 @@ class GameScene extends Phaser.Scene {
     if (this.game.scene.keys.Cards && this.scene.isActive('Cards')) this.scene.stop('Cards');
   }
 
-  pickCard(id) {
+  // granted: given outside a pick (debugTeleport), with none of a pick's side effects.
+  pickCard(id, granted) {
     if (this.isOver || this.ownedCards.indexOf(id) >= 0) return;
     const card = cardById(id);
     if (!card) return;
-    if (!this.headless) {
+    if (!this.headless && !granted) {
       if (!this.cardPick || this.cardPick.choices.indexOf(id) < 0) return;
       this.cardPick = null;
       this.closeCardScene();
-      // Ease out of the slow motion and swallow the release of the tapping finger.
+      // Ease out of the slow motion.
       this.slowMoT = FEEL.slowMoHold;
+    }
+    if (!granted) {
+      // The finger was on the card: swallow its release, and give it time to find the next planet
+      // (the simulator gets the same, so its numbers match real play).
       this.inputGuard = true;
       this.isHolding = false;
+      this.novaHoldT = FEEL.slowMoEase + CARD_TUNING.pickNovaHold;
     }
     const setsBefore = activeSetBonuses(this.ownedCards);
     this.ownedCards.push(id);
@@ -848,7 +925,8 @@ class GameScene extends Phaser.Scene {
       this.noGrabPlanet = this.orbitPlanet;
       this.popText('OVERSPEED!', '#8fe3ff', { size: 36 });
     }
-    if (!overspeed) this.countTutorialCycle(!!assist);
+    // Only a green/gold release counts (the wide learning assist rescues any release, so it teaches nothing).
+    if (!overspeed) this.countTutorialCycle(!!assist && !assist.wide);
     // Wall Kick recharges on an AIMED fling (green/gold line) only: a random release gets plain,
     // costly wall bounces, so tapping at random can never ride the walls up.
     this.wallKicksUsed = assist ? 0 : TUNING.wallKicksPerFling;
@@ -857,14 +935,24 @@ class GameScene extends Phaser.Scene {
     if (assist) {
       this.assistedFlings++;
       // Onboarding: the first few assisted flings catch their target even without a hold.
-      if (!this.learnedCatch && autoCatchAllowed(this.assistedFlings, this.elapsed)) this.autoCatchTarget = assist.planet;
+      // Not on the finger-tutorial runs: an auto-caught orbit has no finger on it, so no LET GO to follow.
+      if (!this.learnedCatch && !this.tutorialOn && autoCatchAllowed(this.assistedFlings, this.elapsed)) this.autoCatchTarget = assist.planet;
     }
     // Leave along the tangent; an assisted release then curves onto its target over a
     // fraction of a second instead of snapping direction on the release frame.
     this.comet.vx = v.vx;
     this.comet.vy = v.vy;
-    // A wide tutorial assist may need a sharp turn: it turns within tutorialHomingTime, whatever the angle.
-    const turn = assist && assist.wide ? Math.max(TUNING.homingTurn, (assist.angle + 0.2) / TUNING.tutorialHomingTime) : TUNING.homingTurn;
+    // A wide tutorial assist or a late green that just swept past may need a sharp turn: it turns within
+    // tutorialHomingTime, whatever the angle (for the coyote one, the real angle from the tangent now).
+    let turn = TUNING.homingTurn;
+    if (assist && assist.wide) turn = Math.max(turn, (assist.angle + 0.2) / TUNING.tutorialHomingTime);
+    if (assist && assist.coyote) {
+      const ax = assist.aimX - this.comet.x;
+      const ay = assist.aimY - this.comet.y;
+      const real = Math.acos(Math.max(-1, Math.min(1, (ax * v.vx + ay * v.vy) / ((Math.hypot(ax, ay) * Math.hypot(v.vx, v.vy)) || 1))));
+      turn = Math.max(turn, (real + 0.2) / TUNING.tutorialHomingTime);
+    }
+    this.assistCoyote = null;
     this.homing = assist ? { x: assist.aimX, y: assist.aimY, time: TUNING.homingTime, turn } : null;
     const kick = speedFraction(this.speed);
     this.sfx('release', { speedFraction: kick });
@@ -929,7 +1017,7 @@ class GameScene extends Phaser.Scene {
 
   // A zone's card pick is counting down (its banner is up) or open.
   cardPickPending() {
-    return !!this.cardPick || this.pickDelay >= 0;
+    return !!this.cardPick || (this.picksOwed > 0 && this.pickDelay > 0);
   }
 
   // Plays a queued milestone stamp a beat after the card pick closes (the card name pops first).
@@ -963,13 +1051,48 @@ class GameScene extends Phaser.Scene {
     if (!this.headless) this.hitstop = Math.max(this.hitstop, seconds);
   }
 
+  // The normal assist the orbit will have `lead` s from now (null = none): the tutorial LET GO leads with it.
+  assistAhead(lead) {
+    const o = this.orbit;
+    if (!o) return null;
+    const spin = Math.min(this.speed / o.radius, orbitSpinCap(this.speed));
+    const ahead = { angle: o.angle + o.dir * spin * lead, radius: o.radius, dir: o.dir };
+    const x = this.orbitPlanet.x + Math.cos(ahead.angle) * o.radius;
+    const y = this.orbitPlanet.y + Math.sin(ahead.angle) * o.radius;
+    const v = tangentVelocity(ahead, 1);
+    return pickAssistTarget(x, y, v.vx, v.vy, this.planets, this.orbitPlanet);
+  }
+
+  // Remembers the orbit's last green window (best angle seen) for assistCoyoteTime after it sweeps past:
+  // late, the first green often comes at the very moment of the catch, faster than a human can let go,
+  // and the next one is a full turn away, after the wave has arrived.
+  trackAssistCoyote(dt) {
+    const v = tangentVelocity(this.orbit, 1);
+    const live = pickAssistTarget(this.comet.x, this.comet.y, v.vx, v.vy, this.planets, this.orbitPlanet);
+    const k = this.assistCoyote;
+    if (live) {
+      if (!k || k.planet !== live.planet || k.t > 0 || live.angle < k.angle) {
+        this.assistCoyote = { planet: live.planet, aimX: live.aimX, aimY: live.aimY, angle: live.angle, t: 0 };
+      }
+    } else if (k) {
+      k.t += dt;
+      if (k.t > assistCoyoteTime(this.bestAltitude)) this.assistCoyote = null;
+    }
+  }
+
   // Where a release right now would be steered to (null = straight along the tangent).
   currentAssist() {
     if (!this.orbit) return null;
     const v = tangentVelocity(this.orbit, 1);
     const normal = pickAssistTarget(this.comet.x, this.comet.y, v.vx, v.vy, this.planets, this.orbitPlanet);
-    if (normal || !this.tutorialOn) return normal;
-    // Tutorial: every release goes to the next planet up (see pickTutorialTarget).
+    if (normal) return normal;
+    // Late: a green that just swept past still counts for a moment (its best angle, gold included).
+    const k = this.assistCoyote;
+    if (k && k.t <= assistCoyoteTime(this.bestAltitude) && this.planets.indexOf(k.planet) >= 0) {
+      return { planet: k.planet, aimX: k.aimX, aimY: k.aimY, angle: k.angle, coyote: true };
+    }
+    if (!this.learning) return null;
+    // Learning window: every release goes to the next planet up (see pickTutorialTarget).
     return pickTutorialTarget(this.comet.x, this.comet.y, v.vx, v.vy, this.planets, this.orbitPlanet, this.orbitPlanet.y);
   }
 
@@ -1007,6 +1130,7 @@ class GameScene extends Phaser.Scene {
     this.updateFeelTimers(realDt);
     this.updatePickDelay(realDt);
     this.updateQueuedMilestone(realDt);
+    this.novaHoldT = Math.max(0, this.novaHoldT - realDt);
     if (this.hitstop > 0) {
       this.hitstop -= realDt;
       this.draw();
@@ -1052,6 +1176,7 @@ class GameScene extends Phaser.Scene {
       this.orbit = step.orbit;
       this.speed = step.speed;
       this.orbitHeldT += dt;
+      this.trackAssistCoyote(dt);
       if (this.mods.orbitGainMul > 1 && this.speed < this.speedCap() - 1) {
         // Overdrive: teal sparks spray off the comet while it spins up.
         this.overdriveFxT -= dt;
@@ -1098,6 +1223,7 @@ class GameScene extends Phaser.Scene {
     this.reportCometScreen();
     this.speed = Math.max(this.speed, TUNING.minSpeed);
     if (this.speed > this.topSpeed) this.topSpeed = this.speed;
+    this.updateLearning();
     this.updateNova(dt);
     // The supernova is the only way to lose: speed is what keeps you ahead of it.
     if (this.comet.y + TUNING.cometRadius * 0.5 > this.novaY) {
@@ -1121,7 +1247,7 @@ class GameScene extends Phaser.Scene {
     this.recordTrail();
     this.recordGhost();
     this.reportRunStats();
-    this.updateTutorial();
+    this.updateTutorial(realDt);
     this.draw();
   }
 
@@ -1129,9 +1255,14 @@ class GameScene extends Phaser.Scene {
     this.elapsed += dt;
     // Every card makes the wave faster, so upgrades never make the run easy (up to TUNING.novaHardCap).
     this.novaSpeedNow = this.currentNovaSpeed();
-    this.novaY -= this.novaSpeedNow * dt;
-    // Never let it fall far behind, so the threat is always close (late: ~0.7 s of travel below the screen).
-    this.novaY = Math.min(this.novaY, this.leashBottom() + novaLeashFor(this.bestAltitude, this.novaSpeedNow));
+    // Right after a card pick the wave holds still (leash included) while the player finds a planet.
+    if (this.novaHoldT <= 0) {
+      // Late orbit fairness: an orbit right after a PERFECT gets a slower wave for a moment (orbitNovaMul).
+      const climb = this.novaSpeedNow * orbitNovaMul(this.bestAltitude, this.orbitHeldT, !!this.orbit, this.perfectChain > 0);
+      this.novaY -= climb * dt;
+      // Never let it fall far behind, so the threat is always close (late: ~0.8 s of travel below the screen).
+      this.novaY = Math.min(this.novaY, this.leashBottom() + novaLeashFor(this.bestAltitude, this.novaSpeedNow));
+    }
     const gap = this.novaY - this.comet.y;
     if (this.hud.setDanger) this.hud.setDanger(1 - (gap - 150) / 450);
     if (typeof this.hud.setNovaEta === 'function') this.hud.setNovaEta(this.novaEta());
@@ -1139,20 +1270,26 @@ class GameScene extends Phaser.Scene {
 
   // Wave speed right now (px/s): calm start, the learning crawl on tutorial runs, cards, hard cap.
   currentNovaSpeed() {
-    const learning = this.tutorialOn && this.ownCatches < TUNING.learnCatches;
-    return novaSpeedFor(this.elapsed, this.bestAltitude, this.mods.novaSpeedMul, novaCalmFactor(this.elapsed, learning, this.tutorialOn));
+    let calm = novaCalmFactor(this.elapsed, this.learning, this.tutorialOn);
+    if (this.learnEndT !== null && !this.learning) calm = learnExitFactor(calm, this.elapsed - this.learnEndT);
+    return novaSpeedFor(this.elapsed, this.bestAltitude, this.mods.novaSpeedMul, calm);
   }
 
   // Seconds until the wave reaches the comet: the HUD's off-screen warning (see novaEtaSeconds).
   novaEta() {
-    let vy = this.comet.vy;
-    if (this.scrape) vy = 0;
-    else if (this.orbit) {
-      // The real down swing of the orbit (spin is capped, so not the full tangent speed).
-      const spin = Math.min(this.speed / this.orbit.radius, orbitSpinCap(this.speed));
-      vy = Math.cos(this.orbit.angle) * this.orbit.dir * spin * this.orbit.radius;
+    // Full wave speed (not the short late orbit grace), so the warning never drops in when the grace ends;
+    // 0 while it holds still after a card pick.
+    const wave = this.novaHoldT > 0 ? 0 : this.novaSpeedNow || this.currentNovaSpeed();
+    if (this.orbit) {
+      const o = this.orbit;
+      return novaOrbitEta({
+        novaY: this.novaY, cometY: this.comet.y, planetY: this.orbitPlanet.y, angle: o.angle, radius: o.radius,
+        dir: o.dir, spin: Math.min(this.speed / o.radius, orbitSpinCap(this.speed)), wave,
+        slowWave: wave * orbitNovaMul(this.bestAltitude, this.orbitHeldT, true, this.perfectChain > 0),
+        slowFor: Math.max(0, (this.perfectChain > 0 ? TUNING.orbitNovaGracePerfect : TUNING.orbitNovaGrace) - this.orbitHeldT),
+      });
     }
-    return novaEtaSeconds(this.novaY - this.comet.y, this.novaSpeedNow || this.currentNovaSpeed(), vy);
+    return novaEtaSeconds(this.novaY - this.comet.y, wave, this.scrape ? 0 : this.comet.vy);
   }
 
   checkZone() {
@@ -1165,18 +1302,27 @@ class GameScene extends Phaser.Scene {
     this.sfx('zone', { index });
     this.turnPage(index);
     this.shieldCharges = this.mods.heatShieldCharges;   // Heat Shield recharges every zone
-    // Banner and page turn get the stage first; the cards come in once they have been read.
-    // The simulator has no UI to wait for, so it picks at once.
-    if (this.headless) this.openCardPick();
-    else this.pickDelay = GameScene.PICK_DELAY;
+    // Banner and page turn get the stage first; the cards come in once they have been read, and only
+    // in free flight while climbing (cardPickReady). The simulator has no banner to wait for.
+    this.picksOwed++;
+    if (this.pickDelay < 0) this.pickDelay = this.headless ? 0 : GameScene.PICK_DELAY;
   }
 
   // Real-time countdown (runs through hitstop and slow motion) to the zone's card pick.
   updatePickDelay(realDt) {
-    if (this.pickDelay < 0) return;
-    this.pickDelay -= realDt;
-    if (this.pickDelay > 0) return;
-    this.pickDelay = -1;
+    if (this.picksOwed <= 0 || this.cardPick || this.isOver || this.introActive) return;
+    if (this.pickDelay > 0) {
+      this.pickDelay -= realDt;
+      if (this.pickDelay > 0) return;
+    }
+    this.pickDelay = 0;
+    const ready = cardPickReady({
+      orbiting: !!this.orbit, scraping: !!this.scrape, vy: this.comet.vy,
+      firstRun: this.tutorialOn && this.tutorialRunsBefore === 0, meters: this.bestAltitude, seconds: this.elapsed,
+    });
+    if (!ready) return;
+    this.picksOwed--;
+    this.pickDelay = this.picksOwed > 0 ? CARD_TUNING.pickGap : -1;
     if (this.hud.hideBanner) this.hud.hideBanner();   // the card header takes the banner's place
     this.openCardPick();
   }
@@ -1388,6 +1534,7 @@ class GameScene extends Phaser.Scene {
         a.dead = true;
         this.burst(a.x, a.y, 0xb8a28c, 14);
         if (this.mods.tailArmor) this.shatterAsteroid(a);
+        else if (this.learning) this.softBump();
         else this.loseSpeed(TUNING.asteroidKeep);
       }
     }
@@ -1418,7 +1565,9 @@ class GameScene extends Phaser.Scene {
       // Not solid: flying through the core turns your path instead of hurting you.
       const inside = dist < TUNING.blackHoleRadius + TUNING.cometRadius;
       if (inside && !h.cometInside && !h.warped) {
-        const w = warpVelocity(h.x, h.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy);
+        // Late (from ESCAPE VELOCITY) a warp never turns a climb into a dive: at those speeds the dive is
+        // over before any warning can be read. Early it still can, and there is time to grab a planet.
+        const w = warpVelocity(h.x, h.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, lateShare(this.bestAltitude) > 0);
         this.comet.vx = w.vx;
         this.comet.vy = w.vy;
         h.warped = true;
@@ -1498,10 +1647,10 @@ class GameScene extends Phaser.Scene {
     this.planetBump(nx, ny, s.planet);
   }
 
-  // A planet bump costs speed, except on the tutorial runs, where it is a soft bounce (no penalty).
+  // A planet bump costs speed, except in the learning window, where it is a soft bounce (no penalty).
   // (nx, ny): unit normal from the planet center to the comet.
   planetBump(nx, ny, planet) {
-    if (this.tutorialOn) {
+    if (this.learning) {
       // Soft bounce: no speed lost, and never knocked back down toward the wave: a bounce that
       // would head down slides off along the surface on its upward side instead, then curves up
       // past the planet's rim.
@@ -1518,12 +1667,17 @@ class GameScene extends Phaser.Scene {
         const pass = planet.radius + TUNING.assistPassGap;
         this.homing = { x: planet.x + side * pass, y: planet.y - pass, time: 0.6, turn: GameScene.SOFT_BUMP_TURN };
       }
-      this.jellyT = 0;
-      this.sfx('wall');
-      this.burst(this.comet.x, this.comet.y, 0xf4ead0, 5, 80);
+      this.softBump();
       return;
     }
     this.loseSpeed(planetHitKeep(this.zoneIndex, this.speed));
+  }
+
+  // Learning-window bump (planet or asteroid): a wobble and a tap, no speed lost, no red flash, no pop.
+  softBump() {
+    this.jellyT = 0;
+    this.sfx('wall');
+    this.burst(this.comet.x, this.comet.y, 0xf4ead0, 5, 80);
   }
 
   // Starts orbiting planet. auto: onboarding catch without a hold (quiet pop, still counts).
@@ -1536,7 +1690,9 @@ class GameScene extends Phaser.Scene {
     this.flightTarget = null;
     this.capTime = 0;
     this.orbitHeldT = 0;
-    this.tutorialCatch = !auto;
+    this.assistCoyote = null;
+    // Counts toward the tutorial / learning window only when the hold was deliberate (see pressHold).
+    this.tutorialCatch = !auto && this.holdAimed !== false;
     this.catches++;
     if (!auto) this.ownCatches++;
     // The first catches of a run must feel like acceleration: ink burst, camera punch, speed-line rush.
@@ -1624,8 +1780,9 @@ class GameScene extends Phaser.Scene {
     // The card pick owns the screen; the card name pops after it closes (cardPick is cleared first).
     if (this.cardPick || this.isOver) return;
     opts = opts || {};
-    // Tutorial: no '-X% SPEED' pops at all, and no speed pops over a HOLD / LET GO prompt.
-    if (this.tutorialOn && (label.charAt(0) === '-' || (this.tutorialShown && /SPEED/.test(label)))) return;
+    // Learning window: no '-X% SPEED' pops; tutorial runs: no speed / PERFECT pops over a HOLD / LET GO prompt.
+    if (this.learning && label.charAt(0) === '-') return;
+    if (this.tutorialOn && this.tutorialShown && /SPEED|PERFECT/.test(label)) return;
     const now = this.time.now;
     if (opts.low && now - this.lastPopAt < GameScene.LOW_POP_QUIET) return;
     this.lastPopAt = now;
@@ -2308,6 +2465,7 @@ class GameScene extends Phaser.Scene {
     const newBestAltitude = this.bestAltitude > this.prevBestAlt;
     if (!this.headless && newBestAltitude) saveBestAltitude(this.bestAltitude);
     this.pickDelay = -1;
+    this.picksOwed = 0;
     this.updateTutorial();
     if (this.hud && this.hud.clearPops) this.hud.clearPops();
     this.sfx('gameover', { reason });
@@ -2358,8 +2516,11 @@ GameScene.GHOST_ARROW_BOTTOM = 330;
 GameScene.GHOST_MIN_X = 40;   // the moving ghost stays within x 40..680 (on the page)
 // Finger tutorial HOLD: shown this many px before the planet's grab zone.
 GameScene.HOLD_PROMPT_LEAD = 170;
-// Tutorial LET GO: shown anyway after this many s in an orbit (the wide assist steers any release).
-GameScene.TUTORIAL_LETGO_AFTER = 1.2;
+// Tutorial hand obstacles: a ringed planet reaches this many radii, a black hole this many core radii.
+GameScene.RING_REACH = 1.5;
+GameScene.LETGO_LEAD = 0.3;
+GameScene.LETGO_GRACE = 0.12;  // s a LET GO survives a gap between two aim windows   // s the tutorial LET GO shows before the aim turns green (reaction time)
+GameScene.BLACK_HOLE_REACH = 1.8;
 GameScene.SOFT_BUMP_TURN = 6;   // rad/s: a tutorial soft bump curves back up past the planet
 // The first catches of every run get the acceleration juice (and a +SPEED pop each); speed-line rush length (s).
 GameScene.EARLY_CATCHES = 4;

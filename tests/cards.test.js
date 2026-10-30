@@ -182,3 +182,18 @@ test('card picks never crash or come up empty when few or no cards are left', ()
   const one = c.drawCardChoices(all.slice(1), () => 0.999);
   assert.deepStrictEqual(one, [all[0]]);
 });
+
+test('cardPickReady: only in free flight while climbing; tutorial run 1 waits for 1500 m and 25 s', () => {
+  const ok = { orbiting: false, scraping: false, vy: -500, firstRun: false, meters: 600, seconds: 9 };
+  assert.ok(c.cardPickReady(ok));
+  assert.ok(!c.cardPickReady(Object.assign({}, ok, { orbiting: true })));
+  assert.ok(!c.cardPickReady(Object.assign({}, ok, { scraping: true })));
+  assert.ok(!c.cardPickReady(Object.assign({}, ok, { vy: 200 })));
+  assert.ok(!c.cardPickReady(Object.assign({}, ok, { vy: 0 })));
+  const first = Object.assign({}, ok, { firstRun: true });
+  assert.ok(!c.cardPickReady(first));
+  assert.ok(!c.cardPickReady(Object.assign({}, first, { meters: 1500, seconds: 20 })));
+  assert.ok(!c.cardPickReady(Object.assign({}, first, { meters: 1200, seconds: 30 })));
+  assert.ok(c.cardPickReady(Object.assign({}, first, { meters: 1500, seconds: 25 })));
+  assert.ok(c.CARD_TUNING.pickNovaHold >= 1.5);
+});

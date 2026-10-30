@@ -16,7 +16,11 @@
 //   a LET GO prompt appears (reads scene.tutorialShown), gives up a hold after 1.5 s without an orbit and
 //   lets go after 3 s in an orbit without a prompt; otherwise does nothing.
 // confused = first run, taps the screen at random like the masher.
-// window.simTutorial = true turns the tutorial on for every style.
+// instant = grabs the nearest grabbable planet and lets go the very next frame (autopilot exploit check).
+// rhythmFast = blind rhythm tapping: holds 180 ms, lets go for 180 ms, forever, ignoring the screen.
+// window.simTutorial = true turns the tutorial on for every style (newbie / confused always have it).
+// Card picks: every run reports pickDeath (s between the last card pick and a supernova death within 1.5 s,
+// else null) and lateEta08 (share of frames at >= 15,000 m with eta < 0.8 s, the late warning band).
 // Supernova visibility: every run reports warnBeforeDeath (s the eta < 1.2 s warning was up right before a
 // supernova death, -1 = none) and lateVisible (share of frames at >= 15,000 m with the nova on screen or warned).
 // Upgrade cards: on every zone entry the headless scene picks a random card at once (reported as cards / avgCards).
@@ -60,9 +64,13 @@
     // Headless GameScene picks a random card itself on zone entry (no CardScene); log when.
     let firstPickAt = null;
     let rescues = 0;
-    s.pickCard = function (id) {
-      if (firstPickAt === null) firstPickAt = Math.round(this.elapsed * 10) / 10;
-      return proto.pickCard.call(this, id);
+    let lastPickAt = -1e9;
+    s.pickCard = function (id, granted) {
+      if (!granted) {
+        if (firstPickAt === null) firstPickAt = Math.round(this.elapsed * 10) / 10;
+        lastPickAt = this.elapsed;
+      }
+      return proto.pickCard.call(this, id, granted);
     };
     s.rescueFromNova = function () { rescues++; return proto.rescueFromNova.call(this); };
     s.secondWind = function () { secondWinds++; return proto.secondWind.call(this); };
@@ -102,6 +110,8 @@
     let warnSince = -1;       // run seconds the eta < 1.2 s warning has been up since (-1 = off)
     let lateFrames = 0;
     let lateSeen = 0;
+    let lateEta08 = 0;
+    let deathOrbiting = false;
     const etaOf = () => (typeof s.novaEta === 'function' ? s.novaEta() : (s.novaY - s.comet.y) / Math.max(1, novaSpeed(s.elapsed, s.bestAltitude)));
     while (!s.isOver && frames < maxSeconds * 60) {
       frames++;
@@ -122,6 +132,18 @@
         holdNoOrbit = s.isHolding && !s.orbit ? holdNoOrbit + 16.67 : 0;
         orbitNoPrompt = s.orbit && seenPrompt !== 'release' ? orbitNoPrompt + 16.67 : 0;
         if (holdNoOrbit > 1500 || orbitNoPrompt > 3000) { s.releaseHold(); holdNoOrbit = 0; orbitNoPrompt = 0; }
+      } else if (style === 'rhythmFast') {
+        mashHold -= 16.67;
+        if (mashHold <= 0) {
+          if (s.isHolding) s.releaseHold(); else s.pressHold();
+          mashHold = 180;
+        }
+      } else if (style === 'instant') {
+        if (s.orbit) { left = s.orbitPlanet; if (s.isHolding) s.releaseHold(); } else {
+          const p = s.nearestGrabbablePlanet();
+          if (p && p !== left && !s.isHolding) s.pressHold();
+          else if ((!p || p === left) && s.isHolding) s.releaseHold();
+        }
       } else if (style === 'masher' || style === 'confused') {
         if (s.isHolding) {
           mashHold -= 16.67;
@@ -178,7 +200,9 @@
         lateFrames++;
         const bottom = typeof s.visibleBounds === 'function' ? s.visibleBounds().bottom : Infinity;
         if (s.novaY < bottom || eta < 1.2) lateSeen++;
+        if (eta < 0.8) lateEta08++;
       }
+      if (!s.isOver) deathOrbiting = !!s.orbit;
       maxSpeed = Math.max(maxSpeed, s.speed);
       if (frames > 60) speeds.push(s.speed);
     }
@@ -196,7 +220,8 @@
     const kms = (q) => (speeds.length ? Math.round(speeds[Math.floor(q * (speeds.length - 1))] / 10) : 0);
     const warnBeforeDeath = reason === 'SUPERNOVA!' ? (warnSince >= 0 ? Math.round((s.elapsed - warnSince) * 100) / 100 : -1) : null;
     const lateVisible = lateFrames ? Math.round((lateSeen / lateFrames) * 100) / 100 : null;
-    return { warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
+    const pickDeath = reason === 'SUPERNOVA!' && s.elapsed - lastPickAt <= 1.5 ? Math.round((s.elapsed - lastPickAt) * 100) / 100 : null;
+    return { pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
   };
 
   window.playtestSummary = (styles, runsEach, maxSeconds) => {
@@ -234,6 +259,11 @@
         // Supernova deaths: the shortest time the eta warning was up before one (-1 = a death with no warning).
         minWarnBeforeDeath: runs.some((r) => r.warnBeforeDeath !== null) ? Math.min(...runs.filter((r) => r.warnBeforeDeath !== null).map((r) => (r.warnBeforeDeath < 0 ? -1 : r.warnBeforeDeath))) : null,
         lateVisible: median(runs.filter((r) => r.lateVisible !== null).map((r) => r.lateVisible)),
+        lateEta08: median(runs.filter((r) => r.lateEta08 !== null).map((r) => r.lateEta08)),
+        warnList: runs.filter((r) => r.warnBeforeDeath !== null).map((r) => r.warnBeforeDeath).sort((a, b) => a - b).join(','),
+        pickDeaths: runs.filter((r) => r.pickDeath !== null).length,
+        orbitDeaths: runs.filter((r) => r.reason && r.deathOrbiting).length + '/' + runs.filter((r) => r.reason).length,
+        alts: runs.map((r) => r.alt).sort((a, b) => a - b).join(','),
       };
     }
     // Leave the game as a player would find it: no headless Game scene left running in the background.

@@ -66,7 +66,9 @@ const TUNING = {
   novaMaxAbsolute: 1900,  // ...up to this by ESCAPE VELOCITY (page 5)...
   novaPerPage: 150,       // ...then every new page past ESCAPE VELOCITY raises the top speed by this...
   novaMaxLate: 2250,      // ...up to this (a clean 'release on green' climb stays a little faster, so BEYOND is reachable)
-  novaHardCap: 2250,      // px/s: the wave never goes faster than this, upgrade cards (+5% each) included
+  novaHardCap: 2250,      // px/s: the wave never goes faster than this, upgrade cards (+5% each) included...
+  novaBeyondPerPage: 800, // ...until BEYOND: from there top speed and cap rise by this per endless page (10,000 m)...
+  novaBeyondMax: 2000,    // ...by at most this, so a strong run has an end instead of a stable loop
   novaLateRamp: 0.01,     // extra px/s per meter past ESCAPE VELOCITY (small: the time ramp already reaches the top speed)
   lateHazardPerPage: 0.06, // asteroid / black hole chance added per page past ESCAPE VELOCITY
   maxAsteroidChance: 0.8,
@@ -79,12 +81,41 @@ const TUNING = {
   novaCalmSeconds: 15,    // s the calm start lasts
   novaCalmFrom: 0.7,      // wave speed share at second 0, easing up to 1 by novaCalmSeconds
   novaCalmStartBelow: 120, // extra px below the comet the wave starts (on top of novaStartBelow)
-  // First runs (finger tutorial on): until the player made learnCatches catches of their own the wave crawls.
+  // First runs (finger tutorial on): a short LEARNING WINDOW (see learningWindowOpen) with a crawling wave,
+  // the wide assist, soft bumps and no penalty pops. It is a window, not the whole run: an autopilot that
+  // lives inside it forever would poison the best altitude, ghost and missions.
   novaLearnMul: 0.35,
-  tutorialCalmSeconds: 30, // the calm start on the tutorial runs (after the learning crawl) lasts this long
+  tutorialCalmSeconds: 30, // the calm start on the tutorial runs (after the learning window) lasts this long
   novaLearnStartBelow: 330,
-  learnCatches: 2,
+  learnWindowCycles: 3,    // the window closes after this many good catch-and-release cycles of the run...
+  learnWindowSeconds: 30,  // ...or this many seconds...
+  learnWindowMeters: 1500, // ...or this altitude (HYPERSONIC), whichever comes first...
+  learnIdleSeconds: 25,    // ...and at this time anyway if the player never caught a planet (idle / lost player)
+  learnExitSeconds: 4,     // s the wave takes to ease from the crawl back to the calm start after the window
   tutorialHomingTime: 0.3, // s an assisted fling in the tutorial takes to turn onto its target, however wide the angle
+  // Tutorial prompts. HOLD stays up at least holdPromptMin s once shown and clears holdPromptGrace s after
+  // the planet left reach (no 10 Hz flicker); LET GO shows at once when the wave is this close.
+  holdPromptMin: 0.6,
+  holdPromptGrace: 0.3,
+  tutorialLetGoAfter: 1.2, // s in an orbit with only the wide assist before LET GO shows anyway...
+  letGoEta: 2,             // ...or at once when the wave is less than this many s away...
+  letGoGap: 1000,          // ...or less than this many px below the comet
+  // HUD warning: the orbit's down swing only counts toward the eta once the wave is this close (s),
+  // so a calm orbit with the wave far away does not raise false alarms.
+  etaSwingUnder: 2,
+  etaClimbFloor: 0.6,      // a climbing comet's closing speed is never counted below this share of the wave
+  // LATE ORBIT FAIRNESS (past ESCAPE VELOCITY, eased in like the late leash): during the first
+  // orbitNovaGrace s of an orbit the wave climbs at orbitNovaMul of its speed, so a late orbit low on the
+  // screen comes round to a green aim before the wave closes ~1800 px. An orbit caught right after a
+  // PERFECT release gets orbitNovaGracePerfect s instead: waiting for gold is paid back on the next orbit.
+  // (The wave sits at its leash late, so pushing it back would be undone next frame: time is the reward.)
+  // Past BEYOND the help fades out again over orbitFairFadeSpan m, so the endless pages keep an end.
+  assistCoyote: 0.12,      // s a late green (and its gold) stays valid after the window swept past
+  orbitNovaGrace: 0,
+  orbitNovaGracePerfect: 1.2,
+  orbitNovaMul: 0.9,
+  orbitFairFadeFrom: 40000,
+  orbitFairFadeSpan: 15000,
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,
   planetGapPerPx: 0.012,
@@ -106,6 +137,15 @@ const TUNING = {
   secondWindSpeed: 820,   // min speed after it (Unbreakable uses 1000)
   secondWindPush: 400,    // px below the comet the supernova is pushed (Unbreakable: 520)
 };
+
+// PERFECT window (rad, half-angle) at a speed: base (TUNING.perfectAngle or a card's) scaled up with the
+// late orbit spin boost, so gold stays on screen as long at 600 km/s as it does early (a fixed angle
+// shrinks to about one frame at full spin and going for gold becomes a coin toss). Never wider than
+// the green assist cone.
+function perfectAngleAt(base, speed) {
+  const scaled = base * (orbitSpinCap(speed || 0) / TUNING.maxOrbitSpin);
+  return Math.min(TUNING.assistMaxAngle * 0.8, Math.max(base, scaled));
+}
 
 // Rotation direction from the comet's position relative to the planet and its velocity,
 // so latching onto an orbit never reverses the comet's motion.
@@ -457,12 +497,19 @@ function blackHolePull(hx, hy, x, y, vx, vy, dt) {
 
 // Flying through a black hole's core turns your direction by blackHoleWarp, toward the
 // side the hole was on (a dead-center pass turns right). Speed is kept.
-function warpVelocity(hx, hy, x, y, vx, vy) {
+// keepClimbing: a climbing comet is never warped into a dive (the turn goes the other way instead): a
+// dive at 500 km/s turns into a wall-to-wall ping-pong down into the supernova, which no aim can save.
+function warpVelocity(hx, hy, x, y, vx, vy, keepClimbing) {
   const cross = vx * (hy - y) - vy * (hx - x);
+  const rotate = (turn) => {
+    const cos = Math.cos(turn);
+    const sin = Math.sin(turn);
+    return { vx: vx * cos - vy * sin, vy: vx * sin + vy * cos };
+  };
   const turn = (cross < 0 ? -1 : 1) * TUNING.blackHoleWarp;
-  const cos = Math.cos(turn);
-  const sin = Math.sin(turn);
-  return { vx: vx * cos - vy * sin, vy: vx * sin + vy * cos };
+  const w = rotate(turn);
+  if (keepClimbing && vy < 0 && w.vy > 0) return rotate(-turn);
+  return w;
 }
 
 // Supernova top speed at an altitude: grows in step with the zone speed cap (the first zone
@@ -470,9 +517,17 @@ function warpVelocity(hx, hy, x, y, vx, vy) {
 // Past ESCAPE VELOCITY every page turns the screw: +novaPerPage of top speed per page, up to novaMaxLate.
 function novaMaxForAltitude(meters) {
   const pages = pagesPastEscape(meters);
-  if (pages > 0) return Math.min(TUNING.novaMaxLate, TUNING.novaMaxAbsolute + TUNING.novaPerPage * pages);
+  if (pages > 0) return Math.min(TUNING.novaMaxLate, TUNING.novaMaxAbsolute + TUNING.novaPerPage * pages) + novaBeyondExtra(meters);
   const scale = maxSpeedForAltitude(meters) / ZONES[0].maxSpeed;
   return Math.min(TUNING.novaMaxAbsolute, TUNING.novaMaxSpeed * scale);
+}
+
+// Past BEYOND (the last fixed page) the wave's top speed and hard cap keep rising, novaBeyondPerPage per
+// endless page up to novaBeyondMax: with the late green coyote a clean cycle is stable, so this is the end.
+function novaBeyondExtra(meters) {
+  const from = ZONES[ZONES.length - 1].from;
+  const pages = Math.max(0, (meters || 0) - from) / ENDLESS_PAGE_METERS;
+  return Math.min(TUNING.novaBeyondMax, TUNING.novaBeyondPerPage * pages);
 }
 
 // How fast the supernova climbs after `seconds` of play; meters (best altitude, optional) adds a
@@ -493,8 +548,77 @@ function novaLeashFor(meters, waveSpeed) {
   return TUNING.novaLeash + (late - TUNING.novaLeash) * k;
 }
 
-// Calm start: share of the wave speed `seconds` into a run. learning (first runs, fewer than
-// learnCatches own catches) keeps it at novaLearnMul; otherwise it eases from novaCalmFrom up to 1,
+// Learning window on a tutorial run (see TUNING.learnWindow*): open while the run is a tutorial run and
+// the player has made fewer than learnWindowCycles good cycles, before learnWindowSeconds and below
+// learnWindowMeters, and not past learnIdleSeconds without a single own catch. Whichever ends it first.
+// st = { tutorial, seconds, meters, goodCycles, ownCatches }.
+function learningWindowOpen(st) {
+  const s = st || {};
+  if (!s.tutorial) return false;
+  const seconds = s.seconds || 0;
+  if ((s.goodCycles || 0) >= TUNING.learnWindowCycles) return false;
+  if (seconds >= TUNING.learnWindowSeconds || (s.meters || 0) >= TUNING.learnWindowMeters) return false;
+  return !((s.ownCatches || 0) === 0 && seconds >= TUNING.learnIdleSeconds);
+}
+
+// HOLD prompt with hysteresis. st = { planet, shownT, graceT } (planet null = hidden); candidate = the
+// planet coming into reach now (or null); blocked = no HOLD wanted at all (orbiting, holding, card pick);
+// passed = the shown planet is now below the comet. Once shown it stays holdPromptMin s, and clears
+// holdPromptGrace s after its planet left reach. Returns the new state (st is not changed).
+function holdPromptStep(st, candidate, dt, blocked, passed) {
+  const hidden = { planet: null, shownT: 0, graceT: 0 };
+  if (blocked) return hidden;
+  const s = { planet: st && !passed ? st.planet : null, shownT: st ? st.shownT : 0, graceT: st ? st.graceT : 0 };
+  if (candidate) {
+    if (candidate !== s.planet) { s.planet = candidate; s.shownT = 0; }
+    s.graceT = 0;
+    s.shownT += dt;
+    return s;
+  }
+  if (!s.planet) return hidden;
+  s.shownT += dt;
+  if (s.shownT < TUNING.holdPromptMin) return s;
+  s.graceT += dt;
+  return s.graceT >= TUNING.holdPromptGrace ? hidden : s;
+}
+
+// Tutorial LET GO: with a normal (green/gold) assist at once; with only the wide tutorial assist after
+// tutorialLetGoAfter s in the orbit, or at once when the wave is close (eta s / gap px).
+function tutorialLetGo(assist, orbitSeconds, eta, gap) {
+  if (!assist) return false;
+  if (!assist.wide) return true;
+  return orbitSeconds > TUNING.tutorialLetGoAfter || eta < TUNING.letGoEta || gap < TUNING.letGoGap;
+}
+
+// s a late green window still counts after it swept past (0 early, assistCoyote late; see GameScene).
+function assistCoyoteTime(meters) {
+  return TUNING.assistCoyote * lateShare(meters);
+}
+
+// Late-game share (0 up to ESCAPE VELOCITY, 1 from half a page past it): the late fairness rules ease in with it.
+function lateShare(meters) {
+  return Math.min(1, pagesPastEscape(meters) * 2);
+}
+
+// Wave speed multiplier on an orbiting comet (late orbit fairness): orbitNovaMul during the first
+// orbitNovaGrace s of an orbit (orbitNovaGracePerfect after a PERFECT release), eased in with
+// lateShare; 1 in flight and early.
+function orbitNovaMul(meters, orbitSeconds, orbiting, afterPerfect) {
+  const grace = afterPerfect ? TUNING.orbitNovaGracePerfect : TUNING.orbitNovaGrace;
+  if (!orbiting || orbitSeconds >= grace) return 1;
+  const fade = 1 - Math.max(0, Math.min(1, ((meters || 0) - TUNING.orbitFairFadeFrom) / TUNING.orbitFairFadeSpan));
+  return 1 - (1 - TUNING.orbitNovaMul) * lateShare(meters) * fade;
+}
+
+// After the learning window closes the wave eases from its crawl (novaLearnMul) up to the calm factor
+// `calm` over learnExitSeconds, instead of jumping 2-3x faster in one frame.
+function learnExitFactor(calm, secondsSinceEnd) {
+  const t = Math.max(0, Math.min(1, (secondsSinceEnd || 0) / TUNING.learnExitSeconds));
+  return TUNING.novaLearnMul + (calm - TUNING.novaLearnMul) * t * t * (3 - 2 * t);
+}
+
+// Calm start: share of the wave speed `seconds` into a run. learning (the learning window of a
+// tutorial run) keeps it at novaLearnMul; otherwise it eases from novaCalmFrom up to 1,
 // over novaCalmSeconds (tutorialCalmSeconds on the tutorial runs: tutorial = true).
 function novaCalmFactor(seconds, learning, tutorial) {
   if (learning) return TUNING.novaLearnMul;
@@ -506,15 +630,44 @@ function novaCalmFactor(seconds, learning, tutorial) {
 // The wave speed actually used: novaSpeed x card multiplier x calm factor, never above novaHardCap.
 function novaSpeedFor(seconds, meters, cardMul, calm) {
   const v = novaSpeed(seconds, meters) * (cardMul || 1) * (calm === undefined ? 1 : calm);
-  return Math.min(TUNING.novaHardCap, v);
+  return Math.min(TUNING.novaHardCap + novaBeyondExtra(meters), v);
 }
 
 // Seconds until the wave reaches the comet (HUD off-screen warning): gap = novaY - cometY (px) over the
 // wave speed (px/s). cometVy (px/s, + = moving down, e.g. the down swing of an orbit) closes it faster; a
 // climbing comet is NOT counted, so the warning is already up when the climb stops (an orbit late).
-function novaEtaSeconds(gap, waveSpeed, cometVy) {
+// orbitSwing: cometVy is an orbit's down swing, which only counts once the wave is etaSwingUnder s away.
+// A climbing comet (cometVy < 0) slows the closing, but by at most etaClimbFloor of the wave speed: the
+// climb ends at the next planet, so the warning still comes up before then. (Counting it in full would
+// hide the warning until the orbit starts; ignoring it keeps a late warning up through every fast climb.)
+function novaEtaSeconds(gap, waveSpeed, cometVy, orbitSwing) {
   if (gap <= 0) return 0;
-  return gap / (Math.max(1, waveSpeed || 0) + Math.max(0, cometVy || 0));
+  const wave = Math.max(1, waveSpeed || 0);
+  if (orbitSwing && gap / wave >= TUNING.etaSwingUnder) return gap / wave;
+  const vy = cometVy || 0;
+  return gap / Math.max(wave * TUNING.etaClimbFloor, wave + vy);
+}
+
+// Eta for an ORBITING comet that keeps holding: once the wave is within etaSwingUnder s, the first
+// moment the orbit (angle, radius, dir, spin rad/s around planetY) carries the comet into the climbing
+// wave. Honest about the phase: on the up swing the next low point is half a turn away, so the warning
+// is not raised on every down swing, but it is up well before the swing that kills.
+// o = { novaY, cometY, planetY, angle, radius, dir, spin, wave, slowWave, slowFor }: the wave climbs at
+// slowWave (px/s) for slowFor more s (the late orbit grace), then at wave.
+function novaOrbitEta(o) {
+  const gap = o.novaY - o.cometY;
+  if (gap <= 0) return 0;
+  const wave = Math.max(1, o.wave || 0);
+  if (gap / wave >= TUNING.etaSwingUnder) return gap / wave;
+  const slowFor = Math.max(0, o.slowFor || 0);
+  const slow = o.slowWave === undefined ? wave : o.slowWave;
+  const reach = TUNING.cometRadius * 0.5;   // the comet dies when its center is this far past the front
+  for (let t = 0; t <= TUNING.etaSwingUnder; t += 0.02) {
+    const y = o.planetY + Math.sin(o.angle + o.dir * o.spin * t) * o.radius;
+    const front = o.novaY - slow * Math.min(t, slowFor) - wave * Math.max(0, t - slowFor);
+    if (y + reach >= front) return t;
+  }
+  return TUNING.etaSwingUnder;
 }
 
 // Tutorial aim assist (first runs): when no planet is in the normal assist cone, the next planet above
@@ -710,5 +863,5 @@ function ghostPositionAt(points, t) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, holdPromptStep, tutorialLetGo, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
