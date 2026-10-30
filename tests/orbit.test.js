@@ -1136,3 +1136,9 @@ test('a late-release grace before ESCAPE VELOCITY never scores PERFECT', () => {
   assert.strictEqual(releaseCanPerfect(true, 0), false);
   assert.strictEqual(releaseCanPerfect(true, 0.4), true);
 });
+
+test('learning window: closes when the player stops pressing after the tutorial', () => {
+  const base = { tutorial: true, seconds: 8, meters: 300, goodCycles: 0, ownCatches: 2 };
+  assert.ok(o.learningWindowOpen(Object.assign({}, base, { noInputSeconds: o.TUNING.learnNoInputSeconds - 0.5 })));
+  assert.ok(!o.learningWindowOpen(Object.assign({}, base, { noInputSeconds: o.TUNING.learnNoInputSeconds })));
+});

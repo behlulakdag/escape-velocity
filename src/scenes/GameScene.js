@@ -271,6 +271,7 @@ class GameScene extends Phaser.Scene {
     if (this.introActive) return this.skipIntro();
     if (this.cardPick) return;   // the tap belongs to the cards on top
     this.inputGuard = false;
+    this.lastPressT = this.elapsed;
     // A hold started with a planet coming into reach is a deliberate one (what the HOLD cue teaches);
     // one started in empty space that later drifts into a planet is a lucky tap.
     const wasHolding = this.isHolding;
@@ -330,6 +331,8 @@ class GameScene extends Phaser.Scene {
     // Learning window (wide assist, soft bumps, crawling wave): see learningWindowOpen in src/orbit.js.
     this.learning = this.tutorialOn;
     this.learnGoodCycles = 0;
+    this.learnEndedIdle = false;
+    this.lastPressT = 0;         // run s of the last press (learning window: no input after the tutorial ends it)
     this.holdAimed = null;       // the current hold started near a planet (null = set without pressHold)
     this.learnEndT = null;       // run s the learning window closed (the wave eases up from its crawl)
     // Guided tutorial: { phase, waiting } until it is finished (see guidedTutorialStep). The simulator only
@@ -354,8 +357,14 @@ class GameScene extends Phaser.Scene {
     this.learning = learningWindowOpen({
       tutorial: this.tutorialOn, seconds: this.elapsed, meters: this.bestAltitude,
       goodCycles: this.learnGoodCycles, ownCatches: this.ownCatches,
+      // Counts only after the guided tutorial: its steps wait for the press themselves.
+      noInputSeconds: this.guided || this.isHolding ? 0 : this.elapsed - this.lastPressT,
     });
-    if (!this.learning) this.learnEndT = this.elapsed;
+    if (!this.learning) {
+      this.learnEndT = this.elapsed;
+      // Ended by not pressing: the wave skips the rest of the tutorial run's long calm start too.
+      this.learnEndedIdle = !this.guided && !this.isHolding && this.elapsed - this.lastPressT >= TUNING.learnNoInputSeconds;
+    }
   }
 
   // One run event for missions / coins / journal. The headless sim never reports (no saves at all).
@@ -1613,7 +1622,10 @@ class GameScene extends Phaser.Scene {
     } else {
       // Aerodynamic cuts the decay; Afterburner (after a PERFECT) and Slipstream (climbing) stop it.
       const noDecay = this.afterburnerT > 0 || (this.mods.climbNoDecay && this.comet.vy < 0);
-      if (!noDecay) this.speed -= flightDecay(altitude, this.speed) * this.mods.flightDecayMul * dt;
+      // A first-run player who stopped pressing after the tutorial: the tutorial's fast fling must not coast
+      // them up the page for 12 s; it dies down so the wave comes and asks for a press.
+      const idleCoast = this.learnEndedIdle && this.elapsed - this.lastPressT >= TUNING.learnNoInputSeconds ? TUNING.idleCoastDecayMul : 1;
+      if (!noDecay) this.speed -= flightDecay(altitude, this.speed) * this.mods.flightDecayMul * idleCoast * dt;
       // High-speed drag: an unearned 800 km/s bleeds away (Afterburner / Slipstream only shield it below 600).
       this.speed -= highSpeedDrag(this.speed, this.mods.flightDecayMul, noDecay) * dt;
       // Keep direction, apply the decayed speed.
@@ -1763,7 +1775,7 @@ class GameScene extends Phaser.Scene {
   // Wave speed right now (px/s): calm start, the learning crawl on tutorial runs, cards, hard cap.
   currentNovaSpeed() {
     let calm = novaCalmFactor(this.elapsed, this.learning, this.tutorialOn);
-    if (this.learnEndT !== null && !this.learning) calm = learnExitFactor(calm, this.elapsed - this.learnEndT);
+    if (this.learnEndT !== null && !this.learning) calm = learnExitFactor(this.learnEndedIdle ? 1 : calm, this.elapsed - this.learnEndT);
     const sincePick = this.lastCardPickAt === null ? null : this.elapsed - this.lastCardPickAt;
     return novaSpeedFor(this.elapsed, this.bestAltitude, cardNovaMul(this.ownedCards.length, sincePick), calm, !!this.tutorialOn);
   }

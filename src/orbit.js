@@ -114,6 +114,8 @@ const TUNING = {
   learnWindowSeconds: 30,  // ...or this many seconds...
   learnWindowMeters: 1500, // ...or this altitude (HYPERSONIC), whichever comes first...
   learnIdleSeconds: 25,    // ...and at this time anyway if the player never caught a planet (idle / lost player)
+  idleCoastDecayMul: 3,    // first run, no press for learnNoInputSeconds after the tutorial: the fast tutorial fling coasts out 3x sooner
+  learnNoInputSeconds: 4,  // ...or once the guided tutorial is over and the player has not pressed for this long (owner: nudge them to press)
   learnExitSeconds: 4,     // s the wave takes to ease from the crawl back to the calm start after the window
   tutorialHomingTime: 0.3, // s an assisted fling in the tutorial takes to turn onto its target, however wide the angle
   // Guided first-run tutorial (guidedTutorialStep): the world eases into near-pause slow motion over
@@ -689,6 +691,8 @@ function learningWindowOpen(st) {
   const seconds = s.seconds || 0;
   if ((s.goodCycles || 0) >= TUNING.learnWindowCycles) return false;
   if (seconds >= TUNING.learnWindowSeconds || (s.meters || 0) >= TUNING.learnWindowMeters) return false;
+  // A player who stopped pressing after the guided tutorial loses the slow wave, so it comes for them.
+  if ((s.noInputSeconds || 0) >= TUNING.learnNoInputSeconds) return false;
   return !((s.ownCatches || 0) === 0 && seconds >= TUNING.learnIdleSeconds);
 }
 
