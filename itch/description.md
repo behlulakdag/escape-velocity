@@ -2,6 +2,8 @@
 
 **You are a comet. A supernova is eating the sky behind you. Go faster.**
 
+The faster you go, the faster you gain - experts break 600-800 km/s.
+
 Made in 48 hours for Slapjam #2. Theme: **Speed**.
 
 ![Escape Velocity gameplay](gameplay.gif)
@@ -22,6 +24,7 @@ Speed is your life, your score and your way out. Swing around planets to pick it
 
 - Hand-drawn sketchbook look: gel-pen ink, crayon hatching, and a new paper page for every zone (Liftoff, Orbit, Hypersonic, Warp Speed, Hyperspace... and Escape Velocity)
 - 12 upgrade cards in 4 families (Orbit, Fling, Flight, Shield). Collect a full family for a set bonus such as Sharpshooter or Unbreakable
+- Momentum: every speed gain snowballs, and a flame crown grows on your speedometer
 - PERFECT chains, combo milestones and close calls that slow time down
 - Procedural music and sound effects that react to your speed and danger
 - Runs last from 30 seconds to a few minutes, and RETRY is instant
