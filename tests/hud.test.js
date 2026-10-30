@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE, HUD_PANEL_UNDER, hudCornerFade, HUD_CARD_FLASH, hudCardFlashAllowed, hudCanPause, HUD_PAUSE_BUTTON, PAUSE, pauseFullscreenSupported, pauseLayout, pauseCountdownDigit, pauseSoundLabel })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE, HUD_PANEL_UNDER, hudCornerFade, HUD_CARD_FLASH, hudCardFlashAllowed, hudCanPause, HUD_PAUSE_BUTTON, PAUSE, pauseFullscreenSupported, pauseLayout, pauseCountdownDigit, pauseSoundLabel, HUD_ORBIT_DANGER, hudOrbitDangerLevel, hudNovaWarnTarget, HUD_GRAVITY, hudGravityLines, hudDashSegments, HUD_FIRST_NOTE, hudNoteLines, hudFirstNotePlace, HUD_PROC, hudProcSpot, hudBoxDistance })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -863,3 +863,99 @@ test('paper scraps sit behind the km/s + MACH block and the x-loop, torn but bou
   assert.ok(Math.max(...bottom.map(p => p.y)) - Math.min(...bottom.map(p => p.y)) > 2);
 });
 
+
+test('orbit danger: warns from 1.5 s while orbiting, even with the front already on screen', () => {
+  const D = hud.HUD_ORBIT_DANGER;
+  assert.ok(D.eta >= 1.2 && D.eta <= 1.8);
+  for (const junk of [Infinity, D.eta, 2, NaN, undefined, null, 'x']) assert.strictEqual(hud.hudOrbitDangerLevel(junk), 0, String(junk));
+  assert.ok(hud.hudOrbitDangerLevel(1.4) >= D.minLevel);
+  assert.ok(hud.hudOrbitDangerLevel(0.6) > hud.hudOrbitDangerLevel(1.2));
+  assert.strictEqual(hud.hudOrbitDangerLevel(0.1), 1);
+  // In an orbit: up at 1.2 s (the flight rule alone would wait for 0.8 s).
+  assert.ok(hud.hudNovaWarnTarget(1.2, true, 0) > 0);
+  assert.strictEqual(hud.hudNovaWarnTarget(1.2, false, 0), 0);
+  // In flight with the front on screen (8300 m idle death: front visible from eta ~1 s): the
+  // last 0.8 s still warn; the old off-screen-only rule left the '!!' at alpha 0.
+  assert.ok(hud.hudNovaWarnTarget(0.5, false, 0) >= hud.HUD_NOVA_WARN.minLevel);
+  // An explicit setOrbitDanger level wins when stronger; junk is ignored.
+  assert.strictEqual(hud.hudNovaWarnTarget(Infinity, false, 0.7), 0.7);
+  assert.strictEqual(hud.hudNovaWarnTarget(Infinity, true, 5), 1);
+  assert.strictEqual(hud.hudNovaWarnTarget(Infinity, true, NaN), 0);
+  // A human releasing 150-450 ms after the warning appears gets >= 0.6 s of lead in an orbit.
+  assert.ok(D.eta - 0.45 >= 0.6);
+});
+
+test('HOLD gravity lines: three dashed lines from the planet surface to just short of the comet', () => {
+  const G = hud.HUD_GRAVITY;
+  const lines = hud.hudGravityLines(360, 400, 80, 360, 800);
+  assert.strictEqual(lines.length, G.lines);
+  for (const L of lines) {
+    const dPlanet = Math.hypot(L.x2 - 360, L.y2 - 400);
+    assert.ok(dPlanet > 80 && dPlanet < 80 * 1.08 + G.surfacePad + 1, 'starts on the surface ' + dPlanet);
+    const dComet = Math.hypot(L.x1 - 360, L.y1 - 800);
+    assert.ok(dComet >= G.cometPad - 1 && dComet < G.cometPad + G.endSpread + 2, 'stops short of the comet ' + dComet);
+  }
+  // Fanned apart (not on top of each other).
+  assert.ok(Math.abs(lines[0].x2 - lines[2].x2) > 20);
+  // Too close or junk: nothing.
+  assert.strictEqual(hud.hudGravityLines(360, 400, 80, 360, 520).length, 0);
+  assert.strictEqual(hud.hudGravityLines(NaN, 400, 80, 360, 800).length, 0);
+  assert.strictEqual(hud.hudGravityLines(360, 400, 80, undefined, 800).length, 0);
+});
+
+test('dash segments stay on the segment and march with the phase', () => {
+  const a = hud.hudDashSegments(0, 0, 100, 0, 20, 10, 0);
+  assert.ok(a.length >= 3);
+  for (const d of a) {
+    assert.ok(d.x1 >= 0 && d.x2 <= 100 + 1e-9 && d.x2 - d.x1 <= 20 + 1e-9 && d.x2 > d.x1);
+    assert.strictEqual(d.y1, 0);
+  }
+  const b = hud.hudDashSegments(0, 0, 100, 0, 20, 10, 7);
+  assert.ok(Math.abs(b.find(d => d.x1 > 1).x1 - 7) < 1e-9, 'shifted 7 px toward the end');
+  // A whole period later it looks the same.
+  assert.deepStrictEqual(hud.hudDashSegments(0, 0, 100, 0, 20, 10, 37), b);
+  assert.strictEqual(hud.hudDashSegments(5, 5, 5, 5, 20, 10, 0).length, 0);
+});
+
+test('first-run note: two lines split at the colon, placed clear of the comet, planets and the score', () => {
+  assert.deepStrictEqual(Array.from(hud.hudNoteLines('Planets are your friends: grab them, swing, let go!')),
+    ['Planets are your friends:', 'grab them, swing, let go!']);
+  assert.deepStrictEqual(Array.from(hud.hudNoteLines('short')), ['short']);
+  assert.strictEqual(hud.hudNoteLines('a long line of advice without any colon in it').length, 2);
+  const N = hud.HUD_FIRST_NOTE;
+  const half = { w: N.w / 2 + 22, h: N.h / 2 + 22 };
+  const cases = [
+    { comet: { x: 360, y: 900 }, bodies: [{ x: 360, y: 640, r: 90 }] },
+    { comet: { x: 360, y: 480 }, bodies: [{ x: 200, y: 760, r: 110 }, { x: 520, y: 300, r: 70 }] },
+    { comet: { x: 160, y: 700 }, bodies: [{ x: 500, y: 520, r: 120 }] },
+  ];
+  for (const c of cases) {
+    const p = hud.hudFirstNotePlace(c.comet, c.bodies, []);
+    assert.ok(p.clean, JSON.stringify(c));
+    const r = { left: p.x - half.w * p.scale, right: p.x + half.w * p.scale, top: p.y - half.h * p.scale, bottom: p.y + half.h * p.scale };
+    assert.ok(hud.hudBoxDistance(c.comet.x, c.comet.y, r.left, r.top, r.right, r.bottom) >= N.cometPad, 'clear of the comet');
+    for (const b of c.bodies) assert.ok(hud.hudBoxDistance(b.x, b.y, r.left, r.top, r.right, r.bottom) >= b.r + N.bodyPad - 1e-6, 'clear of the planet');
+    assert.ok(!hud.hudRectsOverlap(r, hud.HUD_NOTE.rect, 0), 'off the score note');
+    assert.ok(r.left >= 0 && r.right <= 720 && r.top >= 0 && r.bottom <= 1280);
+  }
+});
+
+test('card proc icon pops above the comet, below it near the top, inside the sides', () => {
+  const P = hud.HUD_PROC;
+  const up = hud.hudProcSpot(360, 800);
+  assert.strictEqual(up.y, 800 - P.rise);
+  const high = hud.hudProcSpot(360, 160);
+  assert.ok(high.y > 160, 'below the comet when it is near the top');
+  assert.ok(hud.hudProcSpot(-50, 800).x >= 60 && hud.hudProcSpot(900, 800).x <= 660);
+  // ~0.4 s in all, light.
+  const total = P.inMs + P.holdMs + P.outMs;
+  assert.ok(total >= 350 && total <= 480, String(total));
+  assert.ok(P.burst <= 6);
+});
+
+test('tutorial HOLD lettering: "grab the planet!" with a smaller "hold anywhere" line inside the word box', () => {
+  const S = hud.HUD_STEP;
+  assert.ok(S.word.sub2Size < S.word.subSize, 'hold anywhere is the smaller line');
+  assert.ok(S.word.sub2Y - S.word.sub2Size / 2 > S.word.subY + S.word.subSize / 2 - 6, 'under the sub line');
+  assert.ok(S.word.sub2Y + S.word.sub2Size * 0.7 <= S.wordHoldBox.b, 'inside the box');
+});

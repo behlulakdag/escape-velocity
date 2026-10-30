@@ -62,7 +62,7 @@ class MenuScene extends Phaser.Scene {
     if (best > 0 && !this.firstVisit) {
       uiInkText(this, cx, L.bestY, 'best: ' + best, { size: 34, color: UI_INK.pencilHex, stroke: null, rot: 0.03 });
     }
-    uiInkText(this, cx, L.howY, 'hold near a planet to orbit,\nlet go to fling. outrun the supernova!', {
+    uiInkText(this, cx, L.howY, 'hold to grab a planet,\nlet go to fling. outrun the supernova!', {
       size: 27, rot: -0.015, strokeW: 5, lineSpacing: 2,
     }).setDepth(5);
 

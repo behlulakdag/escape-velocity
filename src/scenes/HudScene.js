@@ -23,7 +23,15 @@
 //                             the score note (hudCardStripSlots), out of the play field
 //   flashCard(id)             a card's proc without a pop: its icon wiggles over a crayon flare
 //   setNovaEta(seconds)       every frame: time until the supernova reaches the comet; under ~1.2 s
-//                             with the front below the screen, a heat band + pulsing '!!' warn
+//                             a heat band + pulsing '!!' warn (last 0.8 s in flight; from 1.5 s
+//                             while orbiting, wherever the front is: hudNovaWarnTarget)
+//   setOrbitDanger(level)     optional, per frame while orbiting: 0..1 danger (max with the above)
+//   warnPulse()               { level, beat } of that warning, to pulse the aim line in step
+//   cardProc(id, x, y)        a card's effect fired: family-crayon burst on the comet (screen x, y)
+//                             + the card's mini index card popping above it for ~0.4 s
+//   showFirstRunNote(text)    taped note for ~2 s, clear of the comet / planets / score
+//   showCloserFaster(x, y)    'CLOSER = FASTER' stamp by the comet, once per HUD life (GameScene
+//                             keeps the lifetime flag)
 //   showTutorialStep(step, info) / hideTutorialStep()  one-time guided tutorial (screen coords;
 //                             GameScene decides when and slows time). 'hold' {px, py, pr, cx, cy}:
 //                             the page dims under ink hatching with spotlights on the planet and
@@ -569,11 +577,13 @@ const HUD_STEP = {
   arrowMin: 90,          // ... but the arrow is never shorter than this past arrowFrom
   arrowBend: 0.5,        // control point along the tangent, as a share of the chord
   arrowTargetR: 50,      // target screen radius when GameScene does not pass tr
-  word: { holdSize: 124, letgoSize: 108, subSize: 30, subY: 100, lineY: 52 },
+  // HOLD: 'grab the planet!' (sub) and a smaller 'hold anywhere' (sub2) under it: planets are
+  // friends to grab, not obstacles (a playtester dodged them).
+  word: { holdSize: 124, letgoSize: 108, subSize: 36, subY: 102, sub2Size: 25, sub2Y: 142, lineY: 52 },
   // Round the drawn parts at scale 1 (checked in the hud tests and measured in the browser):
   // the hand with its ripples / lift dashes and cream halo, and the lettering.
   handBox: { l: -72, r: 124, t: -78, b: 226 },
-  wordHoldBox: { l: -172, r: 172, t: -84, b: 124 },
+  wordHoldBox: { l: -172, r: 172, t: -84, b: 162 },
   wordLetgoBox: { l: -200, r: 200, t: -76, b: 76 },
   wordGap: 14,           // px between the word and the hand
   niceAbove: 190,        // the NICE! stamp sits this far above the comet (below it when too high)
@@ -904,6 +914,133 @@ function hudNovaWarnHz(level) {
   return W.hzMin + (W.hzMax - W.hzMin) * Math.max(0, Math.min(1, level || 0));
 }
 
+// Orbit danger: an orbit is where late deaths happen (the comet swings low, the zoomed-out camera
+// already shows the front, so the off-screen rule kept the '!!' at alpha 0 right up to the jaws:
+// measured at 8300 m, the front was on screen from eta ~1 s). While orbiting, the warning starts
+// at `eta` s, so a human letting go 150-450 ms after seeing it still gets out.
+// staleMs: a setOrbitDanger(level) older than this no longer counts.
+const HUD_ORBIT_DANGER = { eta: 1.5, full: 0.35, minLevel: 0.45, staleMs: 300 };
+
+// Pure helper (tested): orbit warning level 0..1 from the nova eta (s): 0 at/after HUD_ORBIT_DANGER.eta,
+// at least minLevel inside it, 1 from `full` down.
+function hudOrbitDangerLevel(eta) {
+  const D = HUD_ORBIT_DANGER;
+  if (typeof eta !== 'number' || isNaN(eta) || eta >= D.eta) return 0;
+  const k = Math.max(0, Math.min(1, (D.eta - Math.max(0, eta)) / (D.eta - D.full)));
+  return D.minLevel + (1 - D.minLevel) * k;
+}
+
+// Pure helper (tested): the level the '!!' and heat band aim for. In flight: the last
+// HUD_NOVA_WARN.eta s, wherever the front is (on screen it was never shown, and those were
+// the deaths that felt unfair). In an orbit: from HUD_ORBIT_DANGER.eta s. orbitDanger: an explicit
+// level from GameScene (setOrbitDanger), 0..1. The strongest wins.
+function hudNovaWarnTarget(eta, orbiting, orbitDanger) {
+  const flight = hudNovaWarnLevel(eta, null);
+  const orbit = orbiting ? hudOrbitDangerLevel(eta) : 0;
+  const forced = typeof orbitDanger === 'number' && isFinite(orbitDanger) ? Math.max(0, Math.min(1, orbitDanger)) : 0;
+  return Math.max(flight, orbit, forced);
+}
+
+// ---- Tutorial HOLD: dashed ink gravity lines from the planet to the comet ----
+// Three dashed pen lines fan from the planet's surface to just short of the comet; the dashes
+// march toward the planet (it pulls), advancing one step per boil tick, never every frame.
+const HUD_GRAVITY = { lines: 3, spread: 0.3, endSpread: 22, dash: 24, gap: 14, flowPerTick: 8, minLen: 50, surfacePad: 10, cometPad: 58 };
+
+// Pure helper (tested): the gravity lines as segments {x1, y1, x2, y2}, x1/y1 at the comet end,
+// x2/y2 on the planet's surface (screen coords). [] when the gap is too short or input is junk.
+function hudGravityLines(px, py, pr, cx, cy) {
+  const G = HUD_GRAVITY;
+  const ok = (v) => typeof v === 'number' && isFinite(v);
+  if (!ok(px) || !ok(py) || !ok(cx) || !ok(cy)) return [];
+  const r = ok(pr) && pr > 0 ? pr : 0;
+  const d = Math.hypot(cx - px, cy - py);
+  const a = Math.atan2(cy - py, cx - px);
+  const startR = r * 1.08 + G.surfacePad;
+  if (d - startR - G.cometPad < G.minLen) return [];
+  const out = [];
+  for (let i = 0; i < G.lines; i++) {
+    const k = G.lines > 1 ? i / (G.lines - 1) - 0.5 : 0;   // -0.5 .. 0.5
+    const sa = a + k * 2 * G.spread;
+    const x2 = px + Math.cos(sa) * startR;
+    const y2 = py + Math.sin(sa) * startR;
+    // Comet end: on the comet's ring, slightly fanned so the three lines stay apart.
+    const ea = a + Math.PI;
+    const nx = -Math.sin(ea);
+    const ny = Math.cos(ea);
+    const x1 = cx + Math.cos(ea) * G.cometPad + nx * k * 2 * G.endSpread;
+    const y1 = cy + Math.sin(ea) * G.cometPad + ny * k * 2 * G.endSpread;
+    out.push({ x1, y1, x2, y2 });
+  }
+  return out;
+}
+
+// Pure helper (tested): dashes along a segment from (x1, y1) to (x2, y2), shifted `phase` px
+// toward the end (wraps every dash + gap). Each dash is clipped to the segment.
+function hudDashSegments(x1, y1, x2, y2, dash, gap, phase) {
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  const period = dash + gap;
+  if (!(len > 0) || !(period > 0) || !(dash > 0)) return [];
+  const ux = (x2 - x1) / len;
+  const uy = (y2 - y1) / len;
+  const shift = ((phase % period) + period) % period;
+  const out = [];
+  for (let s = shift - period; s < len; s += period) {
+    const a = Math.max(0, s);
+    const b = Math.min(len, s + dash);
+    if (b - a < 2) continue;
+    out.push({ x1: x1 + ux * a, y1: y1 + uy * a, x2: x1 + ux * b, y2: y1 + uy * b });
+  }
+  return out;
+}
+
+// ---- First-run taped note ('Planets are your friends: ...') ----
+const HUD_FIRST_NOTE = { w: 470, h: 136, size: 36, holdMs: 2000, inMs: 200, outMs: 260, wantY: 560, cometPad: 90, bodyPad: 24 };
+
+// Pure helper (tested): a note's text as at most two lines, split after ':' (or near the middle
+// word break when there is no colon).
+function hudNoteLines(text) {
+  const s = String(text || '').trim();
+  const colon = s.indexOf(':');
+  if (colon > 0 && colon < s.length - 1) return [s.slice(0, colon + 1).trim(), s.slice(colon + 1).trim()];
+  if (s.length <= 24) return [s];
+  const mid = Math.floor(s.length / 2);
+  let cut = -1;
+  for (let k = 0; k <= mid; k++) {
+    if (s[mid - k] === ' ') { cut = mid - k; break; }
+    if (s[mid + k] === ' ') { cut = mid + k; break; }
+  }
+  return cut > 0 ? [s.slice(0, cut).trim(), s.slice(cut + 1).trim()] : [s];
+}
+
+// Pure helper (tested): where the note goes: clear of the comet, the planets / black holes
+// (circles {x, y, r}), the score note, the km/s and x-loop blocks, the pause button and the card
+// strip (rects), as near HUD_FIRST_NOTE.wantY as it can. Returns {x, y, scale, clean}.
+function hudFirstNotePlace(comet, bodies, extraRects) {
+  const N = HUD_FIRST_NOTE;
+  const box = { l: -N.w / 2 - 22, r: N.w / 2 + 22, t: -N.h / 2 - 22, b: N.h / 2 + 22 };
+  const circles = [];
+  if (comet && isFinite(comet.x) && isFinite(comet.y)) circles.push({ x: comet.x, y: comet.y, r: N.cometPad });
+  for (const b of bodies || []) if (b && isFinite(b.x) && isFinite(b.y)) circles.push({ x: b.x, y: b.y, r: (b.r || 0) + N.bodyPad });
+  const rects = hudStepHudRects().concat(extraRects || []);
+  return hudStepPlace(box, circles, rects, { x: GAME_WIDTH / 2, y: N.wantY }, { top: POP.top - 40 });
+}
+
+// ---- One-time 'CLOSER = FASTER' stamp and card proc pops ----
+const HUD_CLOSER = { size: 56, holdMs: 1300, fadeMs: 320, cometDodge: 36 };
+// Card proc: the card's mini index card pops above the comet for ~0.4 s over a small ink burst in
+// its family crayon. gapMs: the same card at most this often; rise: px above the comet.
+const HUD_PROC = { gapMs: 260, rise: 100, scale: 0.95, inMs: 140, holdMs: 120, outMs: 160, burst: 5, reach: 62, minY: 150 };
+
+// Pure helper (tested): the proc icon's spot above the comet (below it when the comet is too high),
+// kept inside the side margins.
+function hudProcSpot(x, y) {
+  const P = HUD_PROC;
+  const cx = Math.max(60, Math.min(GAME_WIDTH - 60, isFinite(x) ? x : GAME_WIDTH / 2));
+  const cy = isFinite(y) ? y : GAME_HEIGHT / 2;
+  const up = cy - P.rise;
+  return { x: cx, y: up >= P.minY ? up : cy + P.rise, from: cy };
+}
+
 // ---- Declutter: the score note and the corner blocks step back over planets / the comet ----
 
 // Pure helper (tested): any circle {x, y, r} (planet, black hole, comet) within pad of the rect.
@@ -1071,6 +1208,15 @@ class HudScene extends Phaser.Scene {
     this.popWait = [];      // pops waiting for a banner to fade (see POP_WAIT)
     this.bannerClearAt = 0;   // time the last banner stopped being readable
     this.nextWaitAt = 0;      // earliest time the next waiting pop may show
+    this.orbitDanger = 0;     // setOrbitDanger level and when it came
+    this.orbitDangerAt = -1e9;
+    this.warnBeat = 0;        // '!!' beat (warnPulse)
+    this.firstNote = null;    // showFirstRunNote's taped note (or null)
+    this.closerStamp = null;  // the one-time 'CLOSER = FASTER' stamp (or null)
+    this.closerShown = false; // stamped (or waiting) this HUD life; GameScene keeps the lifetime flag
+    this.closerPending = false;
+    this.procIcon = null;     // the card proc's mini card above the comet (or null)
+    this.procAt = {};         // card id -> time of its last proc pop
 
     // Speed written on the page, with a crayon underline (redrawn only on boil ticks / growth).
     // Crayon smudge first, so the underline, crown and number are all drawn on top of it.
@@ -1244,6 +1390,155 @@ class HudScene extends Phaser.Scene {
     this.tweens.add({ targets: g, rotation: (g.inkRot || 0) + 0.28, duration: 60, yoyo: true, repeat: 2, ease: 'Sine.InOut',
       onComplete: () => { if (g.active) g.rotation = g.inkRot || 0; } });
     cardDoodleBurst(this, badge.x, badge.y, [crayon, this.lightPage ? UI_INK.dark : UI_INK.cream], { count: 4, reach: 46, ink: this.lightPage ? UI_INK.dark : undefined });
+  }
+
+  // A card's effect fired in play (GameScene, any proc: Slingshot, Tight Spin, Overdrive, Gravity
+  // Well, Wall Kick, Shield / Armor, Shockwave, Afterburner, Chain, Perfect, Aero...): a small ink
+  // burst in the family crayon on the comet and the card's mini index card popping up above it
+  // for ~0.4 s. Visual only (the name pop stays GameScene's), light, one icon at a time, rate-
+  // limited per card. x, y: the comet on screen (defaults to setCometScreen's).
+  cardProc(id, x, y) {
+    const card = typeof cardById === 'function' ? cardById(id) : null;
+    if (!card || this.stepUp() || this.isOverScreen()) return;
+    const now = this.time.now;
+    const P = HUD_PROC;
+    if (now - (this.procAt[id] === undefined ? -1e9 : this.procAt[id]) < P.gapMs) return;
+    this.procAt[id] = now;
+    const c = this.comet || { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
+    const cx = typeof x === 'number' && isFinite(x) ? x : c.x;
+    const cy = typeof y === 'number' && isFinite(y) ? y : c.y;
+    const crayon = cardCrayon(card.family);
+    const ink = this.lightPage ? UI_INK.dark : UI_INK.cream;
+    cardDoodleBurst(this, cx, cy, [crayon, ink], { count: P.burst, reach: P.reach, squashY: 0.9, ink: this.lightPage ? UI_INK.dark : undefined });
+    const ring = uiBoilImage(this, cx, cy, 'ui_circle').setTint(this.lightPage ? hudDeepen(crayon, 0.75) : crayon).setScale(0.2).setAlpha(0.9);
+    this.tweens.add({ targets: ring, scale: 0.42, alpha: 0, duration: 300, ease: 'Quad.Out', onComplete: () => ring.destroy() });
+    if (this.procIcon) { this.tweens.killTweensOf(this.procIcon); this.procIcon.destroy(); }
+    const spot = hudProcSpot(cx, cy);
+    const mini = cardMakeMini(this, spot.x, spot.from + (spot.y - spot.from) * 0.35, id, P.scale * 0.5).setAlpha(0.6);
+    this.procIcon = mini;
+    const rot = mini.inkRot || 0;
+    this.tweens.add({ targets: mini, y: spot.y, scale: P.scale, alpha: 1, duration: P.inMs, ease: 'Back.Out' });
+    this.tweens.add({
+      targets: mini, alpha: 0, y: spot.y - 18, rotation: rot + 0.12, delay: P.inMs + P.holdMs, duration: P.outMs, ease: 'Quad.In',
+      onComplete: () => { if (this.procIcon === mini) this.procIcon = null; mini.destroy(); },
+    });
+    this.flashCard(id);
+  }
+
+  // First run, right after the intro story line (GameScene): a taped note with one line of advice
+  // for ~2 s ('Planets are your friends: grab them, swing, let go!'), clear of the comet, the
+  // planets and the score. Gone at once when a tutorial step comes up or something flies onto it.
+  showFirstRunNote(text) {
+    if (!text || this.isOverScreen()) return;
+    const N = HUD_FIRST_NOTE;
+    if (this.firstNote) { this.tweens.killTweensOf(this.firstNote); this.firstNote.destroy(); this.firstNote = null; }
+    const lines = hudNoteLines(text);
+    const parts = [uiBoilImage(this, 0, 0, uiNoteTexture(this, N.w, N.h, { tape: 'corners' }))];
+    const lineH = N.size * 1.18;
+    lines.forEach((ln, k) => {
+      const ty = (k - (lines.length - 1) / 2) * lineH;
+      // A two-line note: the first line in deep orange crayon, the advice in dark gel pen.
+      const color = k === 0 && lines.length > 1 ? uiColorHex(hudDeepen(UI_CRAYON.orange, 0.72)) : UI_INK.darkHex;
+      const t = uiInkText(this, 0, ty, ln, { size: N.size, color, stroke: null, rot: (k ? 0.012 : -0.018), boilAmount: 0.006 });
+      if (t.width > N.w - 30) t.setScale((N.w - 30) / t.width);
+      parts.push(t);
+    });
+    const rowRect = this.cardBadges.length ? [hudCardStripRect(this.cardBadges.length)] : [];
+    const spot = hudFirstNotePlace(this.comet, this.screenBodies(), rowRect);
+    const note = this.add.container(spot.x, spot.y, parts).setDepth(HUD_STEP_DEPTH - 10);
+    note.inkRot = -0.03;
+    note.setRotation(note.inkRot);
+    note.fit = spot.scale;
+    note.leaving = false;
+    // Slapped on: drops in from a little bigger and settles.
+    note.setScale(spot.scale * 1.25).setAlpha(0);
+    this.tweens.add({ targets: note, scale: spot.scale, alpha: 1, duration: N.inMs, ease: 'Back.Out' });
+    note.hideAt = this.time.now + N.inMs + N.holdMs;
+    this.firstNote = note;
+  }
+
+  hideFirstRunNote(fast) {
+    const note = this.firstNote;
+    if (!note || note.leaving) return;
+    note.leaving = true;
+    this.tweens.killTweensOf(note);
+    this.tweens.add({
+      targets: note, alpha: 0, y: note.y - 14, duration: fast ? 110 : HUD_FIRST_NOTE.outMs, ease: 'Quad.In',
+      onComplete: () => { if (this.firstNote === note) this.firstNote = null; note.destroy(); },
+    });
+  }
+
+  updateFirstNote() {
+    const note = this.firstNote;
+    if (!note || !note.active || note.leaving) return;
+    if (this.stepUp()) return this.hideFirstRunNote(true);
+    if (this.time.now >= note.hideAt) return this.hideFirstRunNote(false);
+    // The comet flying onto the note: it gets out of the way.
+    const c = this.comet;
+    const N = HUD_FIRST_NOTE;
+    const hw = (N.w / 2 + 10) * note.fit;
+    const hh = (N.h / 2 + 10) * note.fit;
+    if (c && hudBoxDistance(c.x, c.y, note.x - hw, note.y - hh, note.x + hw, note.y + hh) < 30) this.hideFirstRunNote(true);
+  }
+
+  // The first time in a player's life the close-orbit bonus kicks in (GameScene decides and keeps
+  // the lifetime flag): 'CLOSER = FASTER' hand-lettered by the comet, once. Waits for a tutorial
+  // step to go (then lands by the comet's position at that time).
+  showCloserFaster(x, y) {
+    if (this.closerShown || this.isOverScreen()) return;
+    this.closerShown = true;
+    if (this.stepWaiting()) { this.closerPending = true; return; }
+    this.stampCloser(x, y);
+  }
+
+  stampCloser(x, y) {
+    const C = HUD_CLOSER;
+    const c = this.comet || { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
+    const cx = typeof x === 'number' && isFinite(x) ? x : c.x;
+    const cy = typeof y === 'number' && isFinite(y) ? y : c.y;
+    const crayon = this.lightPage ? hudDeepen(UI_CRAYON.orange, 0.78) : UI_CRAYON.orange;
+    const title = uiTitleText(this, 0, 0, 'CLOSER = FASTER', {
+      size: C.size, color: uiColorHex(crayon), shadowColor: UI_INK.darkHex, shadowDx: 5, shadowDy: 6, rot: 0, boil: true,
+    });
+    const tw = title.main.width;
+    const line = uiBoilImage(this, 8, C.size * 0.62, 'ui_underline').setTint(UI_CRAYON.yellow).setScale(Math.min(1.1, (tw + 20) / 540), 0.75);
+    const stamp = this.add.container(0, 0, [line, title]).setDepth(HUD_STEP_DEPTH - 5);
+    const fit = Math.min(1, (GAME_WIDTH - 2 * HUD_STEP.margin) / (tw + 20));
+    stamp.halfW = ((tw + 20) * fit) / 2;
+    stamp.halfH = (C.size * 1.3 * fit) / 2;
+    const p = hudNiceSpot(cx, cy, stamp.halfW, stamp.halfH);
+    stamp.setPosition(p.x, p.y);
+    const tilt = -0.06;
+    stamp.setRotation(tilt).setScale(fit * 1.7).setAlpha(0);
+    this.tweens.add({
+      targets: stamp, scale: fit, alpha: 1, duration: 140, ease: 'Quad.In',
+      onComplete: () => {
+        if (!stamp.active) return;
+        stamp.setScale(fit * 1.1, fit * 0.88);
+        this.tweens.add({ targets: stamp, scaleX: fit, scaleY: fit, duration: 200, ease: 'Back.Out' });
+        cardDoodleBurst(this, stamp.x, stamp.y, [crayon, UI_CRAYON.yellow], { count: 6, reach: 120, squashY: 0.5, ink: this.lightPage ? UI_INK.dark : undefined });
+      },
+    });
+    this.tweens.add({
+      targets: stamp, alpha: 0, delay: 140 + C.holdMs, duration: C.fadeMs, ease: 'Quad.In',
+      onComplete: () => { if (this.closerStamp === stamp) this.closerStamp = null; stamp.destroy(); },
+    });
+    this.closerStamp = stamp;
+  }
+
+  updateCloser() {
+    if (this.closerPending && !this.stepWaiting()) {
+      this.closerPending = false;
+      this.stampCloser();
+    }
+    const m = this.closerStamp;
+    if (!m || !m.active || m.leaving || !this.comet) return;
+    const d = hudBoxDistance(this.comet.x, this.comet.y, m.x - m.halfW, m.y - m.halfH, m.x + m.halfW, m.y + m.halfH);
+    if (d < HUD_CLOSER.cometDodge) {
+      m.leaving = true;
+      this.tweens.killTweensOf(m);
+      this.tweens.add({ targets: m, alpha: 0, duration: 100, onComplete: () => { if (this.closerStamp === m) this.closerStamp = null; m.destroy(); } });
+    }
   }
 
   // Bottom of the owned-card strip on screen (0 when no card is owned).
@@ -1529,11 +1824,15 @@ class HudScene extends Phaser.Scene {
       size: S.word.holdSize, color: uiColorHex(UI_CRAYON.yellow), shadowColor: UI_INK.darkHex, shadowDx: 7, shadowDy: 9, rot: -0.04, boil: true,
     });
     const line = uiBoilImage(this, 6, S.word.lineY, 'ui_underline').setTint(UI_CRAYON.yellow);
-    const sub = uiInkText(this, 0, S.word.subY, 'anywhere on screen', { size: S.word.subSize, strokeW: 6, rot: -0.02, boilAmount: 0.01 });
+    const sub = uiInkText(this, 0, S.word.subY, 'grab the planet!', { size: S.word.subSize, color: uiColorHex(UI_CRAYON.yellow), strokeW: 7, rot: -0.02, boilAmount: 0.01 });
+    const sub2 = uiInkText(this, 4, S.word.sub2Y, 'hold anywhere', { size: S.word.sub2Size, strokeW: 5, rot: 0.015, boilAmount: 0.01 });
     const handGroup = this.add.container(0, 0, [ripples, pressHand, openHand]).setDepth(depth + 2).setAlpha(0).setVisible(false);
-    const wordGroup = this.add.container(0, 0, [line, word, sub]).setDepth(depth + 2).setAlpha(0).setVisible(false);
+    const wordGroup = this.add.container(0, 0, [line, word, sub, sub2]).setDepth(depth + 2).setAlpha(0).setVisible(false);
+    // HOLD only: dashed gravity lines planet -> comet, under the hand and the word.
+    const gravity = this.add.graphics().setDepth(depth + 1).setAlpha(0).setVisible(false);
     this.step = {
-      wash, hatch, brush, rings, arrow, handGroup, wordGroup, hand, pressHand, openHand, ripples, word, line, sub,
+      wash, hatch, brush, rings, arrow, handGroup, wordGroup, hand, pressHand, openHand, ripples, word, line, sub, sub2, gravity,
+      gravityKey: '',      // tick + positions the gravity lines were last drawn for
       arrowPath: null,     // hudStepArrowPath for 'letgo' (comet -> target)
       want: null,          // 'hold' | 'letgo' | null (fading out)
       shown: null,         // the step the group is lettered for
@@ -1627,6 +1926,7 @@ class HudScene extends Phaser.Scene {
     s.word.main.setColor(uiColorHex(crayon));
     s.line.setTint(crayon).setScale(Math.min(1.15, (s.word.main.width + 30) / 540), 0.9);
     s.sub.setVisible(step === 'hold');
+    s.sub2.setVisible(step === 'hold');
     // HOLD: the pressing index finger; LET GO: the open hand springing off the page.
     s.pressHand.setVisible(step !== 'letgo');
     s.openHand.setVisible(step === 'letgo');
@@ -1686,9 +1986,10 @@ class HudScene extends Phaser.Scene {
     const S = HUD_STEP;
     s.alpha = s.want ? hudStepFade(s.alpha, 1, S.fadeIn, dt) : hudStepFade(s.alpha, 0, S.fadeOut, dt);
     const visible = s.alpha > 0;
-    for (const o of [s.wash, s.rings, s.arrow, s.handGroup, s.wordGroup]) o.setVisible(visible).setAlpha(s.alpha);
-    if (!visible) { s.shown = null; s.layout = null; s.arrow.clear(); return; }
+    for (const o of [s.wash, s.rings, s.arrow, s.handGroup, s.wordGroup, s.gravity]) o.setVisible(visible).setAlpha(s.alpha);
+    if (!visible) { s.shown = null; s.layout = null; s.arrow.clear(); s.gravity.clear(); s.gravityKey = ''; return; }
     this.drawStepWash(s, false);
+    this.drawStepGravity(s);
     const L = s.layout;
     if (L) {
       s.handGroup.setPosition(L.hand.x, L.hand.y).setScale(L.hand.scale);
@@ -1716,6 +2017,32 @@ class HudScene extends Phaser.Scene {
       s.hand.setScale(S.handScale * (1 + down * 0.03), S.handScale * (1 - down * 0.05));
       if (p >= 0.25) this.drawStepRipples(s.ripples, (p - 0.25) / 0.75, seed, ink);
     }
+  }
+
+  // HOLD: dashed gravity lines from the planet's surface to the comet (hudGravityLines), the dashes
+  // marching toward the planet. Redrawn only on the boil clock or when the bodies moved a few px.
+  drawStepGravity(s) {
+    const g = s.gravity;
+    const i = s.info || {};
+    if (s.shown !== 'hold' || i.px === null || i.cx === null) {
+      if (s.gravityKey) { g.clear(); s.gravityKey = ''; }
+      return;
+    }
+    const tick = this.boilTick || 0;
+    const key = tick + ':' + [i.px, i.py, i.pr, i.cx, i.cy].map(v => Math.round((v || 0) / 3)).join(',');
+    if (key === s.gravityKey) return;
+    s.gravityKey = key;
+    g.clear();
+    const G = HUD_GRAVITY;
+    const lines = hudGravityLines(i.px, i.py, i.pr, i.cx, i.cy);
+    lines.forEach((L, k) => {
+      const dashes = hudDashSegments(L.x1, L.y1, L.x2, L.y2, G.dash, G.gap, tick * G.flowPerTick + k * 9);
+      dashes.forEach((d, j) => {
+        // Dark under-stroke so the cream pen reads on the wash and on bright planets alike.
+        uiScribbleLine(g, d.x1, d.y1, d.x2, d.y2, tick * 7 + k * 31 + j, { width: 11, color: UI_INK.dark, alpha: 0.55, amp: 1.2, passes: 1 });
+        uiScribbleLine(g, d.x1, d.y1, d.x2, d.y2, tick * 7 + k * 31 + j + 3, { width: k === 1 ? 6.2 : 5, color: UI_INK.cream, alpha: 0.95, amp: 1.2, passes: 1 });
+      });
+    });
   }
 
   // Three pen ripple arcs spreading from the pressed fingertip (group coords, tip at 0, 0), open
@@ -1807,8 +2134,10 @@ class HudScene extends Phaser.Scene {
     s.alpha = 0;
     s.shown = null;
     s.layout = null;
-    for (const o of [s.wash, s.rings, s.arrow, s.handGroup, s.wordGroup]) o.setVisible(false).setAlpha(0);
+    for (const o of [s.wash, s.rings, s.arrow, s.handGroup, s.wordGroup, s.gravity]) o.setVisible(false).setAlpha(0);
     s.arrow.clear();
+    s.gravity.clear();
+    s.gravityKey = '';
   }
 
   // Banners and chain stamps asked for while a step waits come out once it is gone.
@@ -1873,6 +2202,8 @@ class HudScene extends Phaser.Scene {
     this.updateMilestone();
     this.updateTutorialStep(dt);
     this.flushStepWaiting();
+    this.updateFirstNote();
+    this.updateCloser();
     // Bottom band eases toward its target alpha, so it does not blink as the comet passes.
     // The card pick's countdown ring sits over the speed band, so the band steps back meanwhile.
     const fadeTarget = this.scene.isActive('Cards') ? 0.12 : this.panelFadeTarget;
@@ -2161,25 +2492,47 @@ class HudScene extends Phaser.Scene {
     const fresh = this.time.now - this.novaEtaAt < W.staleMs;
     const game = this.scene.get('Game');
     const over = game && game.isOver;
-    const target = fresh && !over ? hudNovaWarnLevel(this.novaEta, this.novaScreenY) : 0;
+    // Orbit danger: GameScene's setOrbitDanger level (while fresh), else read from the orbit itself.
+    const D = HUD_ORBIT_DANGER;
+    const forced = this.time.now - (this.orbitDangerAt || -1e9) < D.staleMs ? this.orbitDanger : 0;
+    const orbiting = !!(game && game.orbit);
+    const target = fresh && !over ? hudNovaWarnTarget(this.novaEta, orbiting, forced) : 0;
     // Rises at once (every frame of warning counts), eases off.
     this.warnLevel = target >= this.warnLevel ? target : this.warnLevel + (target - this.warnLevel) * Math.min(1, dt * W.ease);
     if (this.warnLevel < 0.01) this.warnLevel = 0;
     const level = this.warnLevel;
     this.warnPhase = (this.warnPhase + dt * hudNovaWarnHz(level)) % 1;
     const beat = 0.5 + 0.5 * Math.cos(this.warnPhase * Math.PI * 2);   // 1 on the beat
-    this.heat.setAlpha(level * (0.55 + 0.45 * beat)).setScale(1, 0.55 + level * 0.6);
-    this.warnText.setAlpha(level > 0 ? Math.min(1, 0.35 + level) * (0.45 + 0.55 * beat) : 0)
+    this.warnBeat = level > 0 ? beat : 0;
+    // The heat band throbs harder on the beat (its height pumps too), so it reads at a glance.
+    this.heat.setAlpha(Math.min(1, level * (0.5 + 0.6 * beat))).setScale(1, 0.55 + level * (0.5 + 0.35 * beat));
+    this.warnText.setAlpha(level > 0 ? Math.min(1, 0.5 + level) * (0.6 + 0.4 * beat) : 0)
       .setScale(0.8 + level * 0.35 + beat * 0.18);
     if (level > 0) {
       // Under the comet, so the eye is already there; above the km/s block and the multiplier
       // loop (half width at the biggest pulse scale).
       const halfW = (this.warnText.width * 1.35) / 2;
-      const cx = hudNovaWarnX(this.comet ? this.comet.x : undefined, halfW);
+      // Beside the comet, toward the open side: right over the comet's orange tail the red '!!'
+      // was lost (the tail runs straight down through this row).
+      const side = this.comet && this.comet.x > GAME_WIDTH / 2 ? -1 : 1;
+      const cx = hudNovaWarnX(this.comet ? this.comet.x + side * (halfW + 40) : undefined, halfW);
       this.warnText.x += (cx - this.warnText.x) * Math.min(1, dt * 8);
       // Never left over the readout while easing in from an old spot.
       this.warnText.x = hudNovaWarnX(this.warnText.x, halfW);
     }
+  }
+
+  // GameScene (optional): the orbit danger level 0..1 this frame (e.g. from its own eta); counts for
+  // HUD_ORBIT_DANGER.staleMs. Without calls the HUD still warns from setNovaEta while orbiting.
+  setOrbitDanger(level) {
+    this.orbitDanger = typeof level === 'number' && isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+    this.orbitDangerAt = this.time ? this.time.now : 0;
+  }
+
+  // GameScene: the warning's state for pulsing the aim line in step with the '!!' and the heat
+  // band: { level 0..1, beat 0..1 (1 on the beat) }.
+  warnPulse() {
+    return { level: this.warnLevel || 0, beat: this.warnBeat || 0 };
   }
 
   // Current PERFECT chain as 'combo N' (0 hides it; 1 shows nothing, the PERFECT! pop says it).
@@ -2502,6 +2855,10 @@ class HudScene extends Phaser.Scene {
     this.clearTutorialStep();
     if (this.milestone) { this.milestone.destroy(); this.milestone = null; }
     if (this.popLine) this.removePop(this.popLine);
+    this.closerPending = false;
+    for (const k of ['firstNote', 'closerStamp', 'procIcon']) {
+      if (this[k]) { this.tweens.killTweensOf(this[k]); this[k].destroy(); this[k] = null; }
+    }
   }
 
   // Waiting high pops get their turn; a live pop the comet flies into fades out early.
