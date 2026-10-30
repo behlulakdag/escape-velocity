@@ -10,7 +10,7 @@
 
 Made in 48 hours for Slapjam #2. Theme: **Speed**.
 
-![Escape Velocity gameplay](gameplay.gif)
+![Escape Velocity gameplay](gameplay-page.gif)
 
 ## How to play
 
@@ -35,6 +35,7 @@ Made in 48 hours for Slapjam #2. Theme: **Speed**.
 
 - **Phone / tablet:** touch and hold anywhere, then let go. Plays in portrait.
 - **Desktop:** hold the mouse button or **SPACE**.
+- **Pause:** the || button in the top right (the game also pauses when you switch apps).
 
 ## Credits & tools
 

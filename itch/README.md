@@ -1,28 +1,29 @@
 # itch.io page kit: Escape Velocity
 
-Everything here was captured from the final working tree (818d5be + the last polish round: momentum visuals, milestone queueing, HUD crown backing) running in the browser. Nothing is uploaded yet.
+Everything here was recaptured on Oct 31 from the final working tree (12f38dd: tutorial, new zone pages, pause button, redrawn supernova jaws, taped set scraps) running in the browser. Nothing is uploaded yet.
 These are page assets only. The game zip still comes from `build.ps1` / `build.sh`.
 
 ## Files
 
 | File | Size | What it is | Where it goes on itch |
 |---|---|---|---|
-| `cover.png` | 630x500, 469 KB | Comet flinging away from the scowling supernova on the maroon HYPERSONIC page, title in the game's own hand-lettering | Edit game > Cover image |
+| `cover.png` | 630x500, 469 KB | Comet flinging away from the scowling supernova on the maroon HYPERSONIC page, title in the game's own hand-lettering (Oct 30 capture, still current art) | Edit game > Cover image |
 | `cover-315x250.png` | 315x250, 141 KB | Close-up: nova face and the worried comet in a PERFECT burst, no title | Spare / small thumbnail (itch scales the 630x500 one itself) |
-| `gameplay.gif` | 360x640, 12.5 fps, 6.7 s loop, 7.2 MB | Real autopilot run cut into 5 beats that climb 310 -> 605 km/s: HYPERSONIC page turn, BLAZING/UNSTOPPABLE stamps and PERFECT rings on WARP SPEED, the flame crown growing, page turn into the cream ESCAPE VELOCITY page, ends on UNSTOPPABLE! at 604 km/s | Top of the description (or as the first screenshot) |
-| `gameplay.mp4` | 540x960, 30 fps, 6.7 s, 3.6 MB | Same clip as the GIF, sharper and smoother | Social posts / the jam page. itch has no video upload, so link YouTube if you want video |
-| `screenshots/01-about-to-be-eaten.png` | 720x1280, 1.4 MB | The worried comet at 460 km/s with the flame crown, the supernova's jaws right behind it (cream ESCAPE VELOCITY page) | Screenshots |
-| `screenshots/02-cards.png` | 720x1280, 1.6 MB | Upgrade card pick: Gravity Well / Overdrive (legendary) / Slingshot | Screenshots |
-| `screenshots/03-milestone-hyperspace.png` | 720x1280, 2.0 MB | UNSTOPPABLE! stamp at 459 km/s, combo 49, PERFECT ring, flame crown, on the purple HYPERSPACE page | Screenshots |
-| `screenshots/04-escape-velocity-page.png` | 720x1280, 1.9 MB | Page turn from HYPERSPACE into the cream ESCAPE VELOCITY page at 521 km/s | Screenshots |
-| `screenshots/05-gameover.png` | 720x1280, 1.1 MB | Notebook game over page: top speed 613 km/s headline, 17256 m, combo 98, build | Screenshots |
-| `screenshots/06-menu.png` | 720x1280, 1.3 MB | Title page | Screenshots |
-| `description.md` | ~2 KB | Page text (pitch, momentum hook, theme, how to play, features, controls, AI tools credits) | Paste into Description |
+| `gameplay-page.gif` | 344x550, 9 fps, 6.2 s loop, 2.8 MB | One real autopilot run cut into 6 beats that climb 313 -> 525 km/s, edge-cropped and kept at half size (not 3/8 like the old 270x480 clip) so the HUD text and paper grain stay readable: page turn into the maroon HYPERSONIC page, page turn into WARP SPEED, UNSTOPPABLE! stamp at 389 km/s, page turn into HYPERSPACE at 442 km/s, page turn into the cream ESCAPE VELOCITY page at 521 km/s, ends on BLAZING! at 525 km/s. No stamp or card icon over a banner, no 'combo lost' | Top of the description (under the 3 MB limit) |
+| `gameplay.mp4` | 720x1280, 30 fps, 6.3 s, 3.3 MB | Same clip as the GIF, full size and smooth | Social posts / the jam page. itch has no video upload, so link YouTube if you want video |
+| `screenshots/01-speed.png` | 720x1280, 2.0 MB | Hero shot: 587 km/s, MACH 1711, flame crown, BLAZING! stamp, combo 8, PERFECT ring, long flame trail, on the kraft-brown LIGHTSPEED page | Screenshots (first) |
+| `screenshots/02-tutorial.png` | 720x1280, 1.8 MB | First-run guided tutorial, HOLD step: dimmed page, spotlight on comet and planet, fingertip, big HOLD, "grab the planet!", gravity lines, supernova face at the bottom | Screenshots |
+| `screenshots/03-about-to-be-eaten.png` | 720x1280, 1.3 MB | Death beat on the green WORMHOLE page: the supernova rises out of the fire, jaws wide around the sweating comet | Screenshots |
+| `screenshots/04-cards.png` | 720x1280, 1.4 MB | Card pick on the maroon HYPERSONIC page: Aerodynamic (flight, +1 set slipstream scrap) / Gravity Well (orbit, +1 set orbit master scrap) / Chain Reaction (legendary fling), SUPERNOVA +5% FASTER, comet above the title, supernova face under the cards | Screenshots |
+| `screenshots/05-pages.png` | 720x1280, 2.0 MB | Cream ESCAPE VELOCITY page: PERFECT! at 551 km/s, combo 12, comet climbing with a long crayon trail | Screenshots |
+| `screenshots/06-gameover.png` | 720x1280, 1.2 MB | Notebook game over page: SUPERNOVA!, 159431 NEW BEST, top speed 592 km/s headline, LIGHTSPEED reached, build strip with 4 cards (Sharpshooter set circled), missions note with coins, 8 NEW CARDS note | Screenshots |
+| `screenshots/07-menu.png` | 720x1280, 1.4 MB | Title page after a run: best score, missions note, 75 coins, SHOP and JOURNAL 8/12 with "new!" tags | Screenshots |
+| `description.md` | ~2 KB | Page text (pitch, momentum hook, theme, how to play, features, controls incl. pause, AI tools credits) | Paste into Description |
 | `README.md` | this file | Settings checklist | Not uploaded |
 
-Suggested screenshot order: 01, 03, 04, 02, 05, 06. Put the action shots first; the menu shows least.
+Suggested screenshot order: 01, 02, 03, 04, 05, 06, 07 (the numbering). Action first; the menu shows least.
 
-Capture notes: frames were driven by `game.loop.step` with audio silenced (master gain 0, speaker shown on). The GIF is a cut of one real expert-autopilot run (no forced speed). Screenshot 01 was staged with console state (altitude teleport, speed pinned at 460 km/s, supernova moved up behind the comet); 02, 03, 04 and 05 come from unforced autopilot runs.
+Capture notes: frames were driven by `game.loop.step` (with `Date.now` following the step clock so tweens run at game speed), audio silenced with `AUDIO.setSilentTest(true)` (master gain 0, speaker icon shown on). An expert autopilot played (hold near a grabbable planet, let go on a gold aim). 02, 05, 06 and 07 come from one unforced first run (tutorial included, then autopilot to 15609 m). 01 is from the same run. 03 started from a `debugTeleport` to 17600 m, then the autopilot was switched off and the supernova caught the comet on its own. The GIF and MP4 are one autopilot run that started with a `debugTeleport` to 1200 m (card picks switched off for the clip). For 04 the three choices were forced, the camera was held so the comet sits above the title, the supernova was raised under the cards, and the dimmed speed note / multiplier badge were hidden so nothing ghosts under the cards. Old localStorage was cleared afterwards.
 
 ## Upload settings (Edit game)
 
