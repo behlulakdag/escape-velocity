@@ -11,11 +11,14 @@
 // window) after 150ms; falls back to any green aim when the supernova gap is under 280px or after 2.2-3.2s.
 // masher = a friend tapping the screen at random, ignoring planets: holds 80-900 ms, lets go for 60-700 ms.
 // anyAssist = strong policy: grabs early (any grabbable planet), releases on the first green/gold aim after 150 ms.
-// FIRST RUN (tutorial on, simulated: the scene gets { simTutorial: true } and never touches real storage):
-// newbie = only follows the finger: presses 250-450 ms after a HOLD prompt appears, lets go 250-450 ms after
-//   a LET GO prompt appears (reads scene.tutorialShown), gives up a hold after 1.5 s without an orbit and
-//   lets go after 3 s in an orbit without a prompt; otherwise does nothing.
-// confused = first run, taps the screen at random like the masher.
+// FIRST RUN (simulated: the scene gets { simTutorial: true }: the guided HOLD / LET GO tutorial and the learner
+// help, never touching real storage):
+// newbie = follows the guided tutorial: presses 250-450 ms after the HOLD step starts waiting, lets go 250-450 ms
+//   after the LET GO step starts waiting (reads scene.tutorialWaiting; the world is stopped meanwhile). After
+//   the tutorial (no more prompts) it plays what it was shown, slowly (before it, it holds an orbit until told): holds 250-450 ms after a planet comes
+//   within ~110 px of its surface, lets go on the first green aim once 250-450 ms into the orbit, or after 3 s;
+//   it gives up a hold that caught nothing after 1.5 s.
+// confused = first run (guided tutorial on), taps the screen at random like the masher.
 // instant = grabs the nearest grabbable planet and lets go the very next frame (autopilot exploit check).
 // rhythmFast = blind rhythm tapping: holds 180 ms, lets go for 180 ms, forever, ignoring the screen.
 // window.simTutorial = true turns the tutorial on for every style (newbie / confused always have it).
@@ -101,11 +104,13 @@
     let expertPatience = 2500; // expert: ms it waits for a gold aim before taking any green one
     let maxSpeed = 0;
     let frames = 0;
-    // newbie: the prompt it is reacting to, and ms until its finger lands / lifts.
-    let seenPrompt = '';
+    // newbie: the tutorial step it is reacting to, and ms until its finger lands / lifts.
+    let seenStep = '';
     let reactMs = -1;
     let holdNoOrbit = 0;
-    let orbitNoPrompt = 0;
+    let orbitMs = 0;
+    let nearMs = -1;          // newbie after the tutorial: ms left before its hold lands
+    let greenMs = -1;         // ...and ms into an orbit before it starts looking for the green aim
     // supernova visibility
     let warnSince = -1;       // run seconds the eta < 1.2 s warning has been up since (-1 = off)
     let lateFrames = 0;
@@ -116,22 +121,45 @@
     while (!s.isOver && frames < maxSeconds * 60) {
       frames++;
       if (style === 'newbie') {
-        const prompt = s.tutorialShown || '';
-        if (prompt !== seenPrompt) {
-          seenPrompt = prompt;
-          reactMs = prompt ? 250 + Math.random() * 200 : -1;
+        const waiting = s.tutorialWaiting || '';
+        if (waiting !== seenStep) {
+          seenStep = waiting;
+          reactMs = waiting ? 250 + Math.random() * 200 : -1;
         }
-        if (reactMs >= 0) {
+        if (waiting) {
           reactMs -= 16.67;
           if (reactMs < 0) {
-            if (seenPrompt === 'hold' && !s.isHolding) s.pressHold();
-            else if (seenPrompt === 'release' && s.isHolding) s.releaseHold();
+            if (waiting === 'hold' && !s.isHolding) s.pressHold();
+            else if (waiting === 'letgo' && s.isHolding) s.releaseHold();
           }
+        } else if (!s.orbit) {
+          orbitMs = 0;
+          greenMs = -1;
+          let near = null;
+          for (const p of s.planets) {
+            if (p === left || p === s.noGrabPlanet) continue;
+            if (s.distanceTo(p) - p.radius < 110 && p.y < s.comet.y + 60) { near = p; break; }
+          }
+          if (near && !s.isHolding && nearMs < 0) nearMs = 250 + Math.random() * 200;
+          if (nearMs >= 0) {
+            nearMs -= 16.67;
+            if (nearMs < 0 && !s.isHolding) s.pressHold();
+          }
+          // A human gives up a hold that caught nothing.
+          holdNoOrbit = s.isHolding && !s.orbit ? holdNoOrbit + 16.67 : 0;
+          if (holdNoOrbit > 1500) { s.releaseHold(); holdNoOrbit = 0; nearMs = -1; }
+        } else {
+          left = s.orbitPlanet;
+          nearMs = -1;
+          holdNoOrbit = 0;
+          orbitMs += 16.67;
+          // Settles into the orbit for 250-450 ms, then lets go on the green aim it was shown (once the tutorial
+          // is over: until then it waits to be told), or after 3 s anyway (the tutorial then steers this release
+          // and shows LET GO on the next orbit).
+          if (greenMs < 0) greenMs = 250 + Math.random() * 200;
+          const told = !s.guided;
+          if (s.isHolding && !(s.guided && s.guided.waiting) && ((told && orbitMs > greenMs && s.currentAssist()) || orbitMs > 3000)) s.releaseHold();
         }
-        // A human gives up a hold that caught nothing, and eventually lets go of an orbit.
-        holdNoOrbit = s.isHolding && !s.orbit ? holdNoOrbit + 16.67 : 0;
-        orbitNoPrompt = s.orbit && seenPrompt !== 'release' ? orbitNoPrompt + 16.67 : 0;
-        if (holdNoOrbit > 1500 || orbitNoPrompt > 3000) { s.releaseHold(); holdNoOrbit = 0; orbitNoPrompt = 0; }
       } else if (style === 'rhythmFast') {
         mashHold -= 16.67;
         if (mashHold <= 0) {

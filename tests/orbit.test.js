@@ -534,16 +534,6 @@ test('nextMachTier stamps each tier once and only the highest when several are s
   assert.strictEqual(o.nextMachTier(2500, 9999), 0);
 });
 
-test('ghostPositionAt interpolates the path by time and reports its end', () => {
-  const pts = [{ t: 0, x: 0, y: 0 }, { t: 1, x: 10, y: -100 }, { t: 2, x: 20, y: -300 }];
-  assert.deepStrictEqual(o.ghostPositionAt(pts, 0.5), { x: 5, y: -50, done: false });
-  assert.deepStrictEqual(o.ghostPositionAt(pts, 1.5), { x: 15, y: -200, done: false });
-  assert.deepStrictEqual(o.ghostPositionAt(pts, 5), { x: 20, y: -300, done: true });
-  assert.deepStrictEqual(o.ghostPositionAt(pts, -1), { x: 0, y: 0, done: false });
-  assert.strictEqual(o.ghostPositionAt([pts[0]], 0), null);
-  assert.strictEqual(o.ghostPositionAt(null, 0), null);
-});
-
 test('the supernova leash: unchanged early, by wave travel time on the late pages', () => {
   assert.strictEqual(o.novaLeashFor(0, 900), o.TUNING.novaLeash);
   assert.strictEqual(o.novaLeashFor(8000, 2000), o.TUNING.novaLeash);
@@ -639,37 +629,6 @@ test('learnExitFactor: the wave eases from the crawl up to the calm factor', () 
   assert.ok(mid > o.TUNING.novaLearnMul && mid < 0.8);
 });
 
-test('holdPromptStep: a flickering candidate keeps the prompt up, it clears after min time + grace', () => {
-  const p = { id: 1 };
-  const dt = 1 / 60;
-  let st = { planet: null, shownT: 0, graceT: 0 };
-  let shownFrames = 0;
-  // Candidate toggles every 6 frames (100 ms) for 1.2 s: the prompt must stay up every frame.
-  for (let f = 0; f < 72; f++) {
-    st = o.holdPromptStep(st, Math.floor(f / 6) % 2 ? null : p, dt, false, false);
-    if (st.planet === p) shownFrames++;
-  }
-  assert.strictEqual(shownFrames, 72);
-  // Seen for one frame only: still up until holdPromptMin.
-  st = o.holdPromptStep({ planet: null, shownT: 0, graceT: 0 }, p, dt, false, false);
-  let t = dt;
-  while (t < o.TUNING.holdPromptMin - dt) {
-    st = o.holdPromptStep(st, null, dt, false, false);
-    t += dt;
-    assert.strictEqual(st.planet, p);
-  }
-  // ...and gone once min time + grace have passed.
-  for (let k = 0; k < Math.ceil((o.TUNING.holdPromptGrace + 0.1) / dt); k++) st = o.holdPromptStep(st, null, dt, false, false);
-  assert.strictEqual(st.planet, null);
-  // A catch (blocked) or the planet passing below the comet clears it at once.
-  st = o.holdPromptStep({ planet: null, shownT: 0, graceT: 0 }, p, dt, false, false);
-  assert.strictEqual(o.holdPromptStep(st, p, dt, true, false).planet, null);
-  assert.strictEqual(o.holdPromptStep(st, null, dt, false, true).planet, null);
-  // A new planet coming into reach replaces a passed one.
-  const q = { id: 2 };
-  assert.strictEqual(o.holdPromptStep(st, q, dt, false, true).planet, q);
-});
-
 test('tutorialLetGo: green at once; the wide assist after a while or when the wave is close', () => {
   assert.ok(!o.tutorialLetGo(null, 5, 0.1, 10));
   assert.ok(o.tutorialLetGo({ wide: false }, 0, 9, 5000));
@@ -730,4 +689,126 @@ test('warpVelocity keepClimbing: a climbing comet is never warped into a dive', 
       assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - 1000) < 1e-6);
     }
   }
+});
+
+test('guidedTutorialStep: HOLD waits for a press, then LET GO waits for a release, then done', () => {
+  const step = (st, ev) => o.guidedTutorialStep(st, ev);
+  let r = step(null, {});
+  assert.deepStrictEqual(r.st, { phase: 'hold', waiting: '' });
+  assert.strictEqual(r.action, null);
+  r = step(r.st, { reachable: true });
+  assert.strictEqual(r.action, 'showHold');
+  assert.strictEqual(r.st.waiting, 'hold');
+  // No timeout: it keeps waiting, whatever else happens, until the press.
+  for (let i = 0; i < 1000; i++) {
+    r = step(r.st, { reachable: i % 2 === 0, released: i % 3 === 0 });
+    assert.strictEqual(r.action, null);
+    assert.strictEqual(r.st.waiting, 'hold');
+  }
+  r = step(r.st, { pressed: true, holding: true });
+  assert.strictEqual(r.action, 'latch');
+  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
+  // Orbiting and holding, but the aim does not line up yet: nothing.
+  r = step(r.st, { orbiting: true, holding: true, letGoReady: false });
+  assert.strictEqual(r.action, null);
+  r = step(r.st, { orbiting: true, holding: true, letGoReady: true });
+  assert.strictEqual(r.action, 'showLetGo');
+  assert.strictEqual(r.st.waiting, 'letgo');
+  for (let i = 0; i < 500; i++) {
+    r = step(r.st, { orbiting: true, holding: true, letGoReady: i % 2 === 0, pressed: true });
+    assert.strictEqual(r.action, null);
+  }
+  r = step(r.st, { orbiting: true, released: true });
+  assert.strictEqual(r.action, 'nice');
+  assert.deepStrictEqual(r.st, { phase: 'done', waiting: '' });
+  // Done for good.
+  for (const ev of [{ reachable: true }, { orbiting: true, holding: true, letGoReady: true }, { orbiting: true, released: true }]) {
+    r = step(r.st, ev);
+    assert.strictEqual(r.action, null);
+    assert.strictEqual(r.st.waiting, '');
+  }
+});
+
+test('guidedTutorialStep: already holding skips step 1; an early release is steered, LET GO comes next orbit', () => {
+  let r = o.guidedTutorialStep({ phase: 'hold', waiting: '' }, { reachable: true, holding: true });
+  assert.strictEqual(r.action, null);
+  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
+  // An orbit begun some other way also skips step 1, and a release in that same frame is still steered.
+  r = o.guidedTutorialStep({ phase: 'hold', waiting: '' }, { orbiting: true, released: true });
+  assert.strictEqual(r.action, 'steer');
+  assert.strictEqual(r.st.phase, 'letgo');
+  // Early release (before the aim lined up): steered, step 2 still pending.
+  r = o.guidedTutorialStep({ phase: 'letgo', waiting: '' }, { orbiting: true, released: true });
+  assert.strictEqual(r.action, 'steer');
+  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
+  // Next orbit: it shows.
+  r = o.guidedTutorialStep(r.st, { orbiting: true, holding: true, letGoReady: true });
+  assert.strictEqual(r.action, 'showLetGo');
+  // A waiting step whose reason ended (no orbit any more) is cancelled, not finished.
+  r = o.guidedTutorialStep(r.st, { orbiting: false });
+  assert.strictEqual(r.action, 'cancel');
+  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
+  r = o.guidedTutorialStep({ phase: 'hold', waiting: 'hold' }, { orbiting: true });
+  assert.strictEqual(r.action, 'cancel');
+  assert.strictEqual(r.st.phase, 'letgo');
+  // Not holding in an orbit: no LET GO (nothing to let go of).
+  r = o.guidedTutorialStep({ phase: 'letgo', waiting: '' }, { orbiting: true, holding: false, letGoReady: true });
+  assert.strictEqual(r.action, null);
+  // The input state is not mutated.
+  const st = { phase: 'hold', waiting: '' };
+  o.guidedTutorialStep(st, { reachable: true });
+  assert.deepStrictEqual(st, { phase: 'hold', waiting: '' });
+});
+
+test('guided slow motion: eases down to the slow scale in guidedEaseIn, back up in guidedEaseOut', () => {
+  const T = o.TUNING;
+  assert.ok(T.guidedSlowScale >= 0.03 && T.guidedSlowScale <= 0.06);
+  assert.strictEqual(o.guidedSlowScale(0), 1);
+  assert.ok(Math.abs(o.guidedSlowScale(1) - T.guidedSlowScale) < 1e-9);
+  let p = 0;
+  let prev = 1;
+  let t = 0;
+  while (p < 1) {
+    p = o.guidedSlowProgress(p, true, 1 / 60);
+    t += 1 / 60;
+    const k = o.guidedSlowScale(p);
+    assert.ok(k <= prev + 1e-12, 'only ever slows down while waiting');
+    prev = k;
+  }
+  assert.ok(Math.abs(t - T.guidedEaseIn) < 2 / 60, String(t));
+  t = 0;
+  while (p > 0) {
+    p = o.guidedSlowProgress(p, false, 1 / 60);
+    t += 1 / 60;
+  }
+  assert.ok(Math.abs(t - T.guidedEaseOut) < 2 / 60, String(t));
+  assert.strictEqual(o.guidedSlowProgress(0, false, 1), 0);
+  assert.strictEqual(o.guidedSlowProgress(1, true, 1), 1);
+  assert.strictEqual(o.guidedSlowProgress(undefined, true, -5), 0);
+});
+
+test('parseGuidedTutorialDone: only a stored 1 retires it', () => {
+  assert.strictEqual(o.parseGuidedTutorialDone('1'), true);
+  for (const raw of [null, undefined, '', '0', 'true', '{"done":1}', 1]) assert.strictEqual(o.parseGuidedTutorialDone(raw), false, String(raw));
+});
+
+test('aimAtPlanet: the pass point beside the planet nearest the flight direction, wide', () => {
+  const planet = { x: 0, y: -1000, radius: 80 };
+  const a = o.aimAtPlanet(0, 0, 0, -1, planet);
+  assert.strictEqual(a.planet, planet);
+  assert.strictEqual(a.wide, true);
+  assert.ok(Math.abs(Math.hypot(a.aimX - planet.x, a.aimY - planet.y) - (planet.radius + o.TUNING.assistPassGap)) < 1e-6);
+  // Flying right: the right-hand pass point is the closer one.
+  const r = o.aimAtPlanet(0, 0, 1, -0.2, planet);
+  assert.ok(r.aimX > 0);
+  // Pointing straight away still aims at it (any angle), and inside the pass circle there is none.
+  assert.ok(o.aimAtPlanet(0, 0, 0, 1, planet).angle > 2.5);
+  assert.strictEqual(o.aimAtPlanet(0, -1000, 0, -1, planet), null);
+  assert.strictEqual(o.aimAtPlanet(0, 0, 0, -1, null), null);
+  // nextPlanetAboveY: the lowest planet above, never the excluded one.
+  const low = { x: 0, y: 0, radius: 60 };
+  const next = { x: 0, y: -600, radius: 60 };
+  const far = { x: 0, y: -1200, radius: 60 };
+  assert.strictEqual(o.nextPlanetAboveY([far, low, next], low, low.y), next);
+  assert.strictEqual(o.nextPlanetAboveY([low], low, low.y), null);
 });

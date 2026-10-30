@@ -83,7 +83,7 @@ const TUNING = {
   novaCalmStartBelow: 120, // extra px below the comet the wave starts (on top of novaStartBelow)
   // First runs (finger tutorial on): a short LEARNING WINDOW (see learningWindowOpen) with a crawling wave,
   // the wide assist, soft bumps and no penalty pops. It is a window, not the whole run: an autopilot that
-  // lives inside it forever would poison the best altitude, ghost and missions.
+  // lives inside it forever would poison the best altitude and missions.
   novaLearnMul: 0.35,
   tutorialCalmSeconds: 30, // the calm start on the tutorial runs (after the learning window) lasts this long
   novaLearnStartBelow: 330,
@@ -93,10 +93,12 @@ const TUNING = {
   learnIdleSeconds: 25,    // ...and at this time anyway if the player never caught a planet (idle / lost player)
   learnExitSeconds: 4,     // s the wave takes to ease from the crawl back to the calm start after the window
   tutorialHomingTime: 0.3, // s an assisted fling in the tutorial takes to turn onto its target, however wide the angle
-  // Tutorial prompts. HOLD stays up at least holdPromptMin s once shown and clears holdPromptGrace s after
-  // the planet left reach (no 10 Hz flicker); LET GO shows at once when the wave is this close.
-  holdPromptMin: 0.6,
-  holdPromptGrace: 0.3,
+  // Guided first-run tutorial (guidedTutorialStep): the world eases into near-pause slow motion over
+  // guidedEaseIn s while a step waits for the player, and back to normal over guidedEaseOut s.
+  guidedSlowScale: 0.04,
+  guidedEaseIn: 0.25,
+  guidedEaseOut: 0.2,
+  guidedHoldLead: 60,      // px before a planet's grab zone where the HOLD step starts (the ease-in carries the comet on)
   tutorialLetGoAfter: 1.2, // s in an orbit with only the wide assist before LET GO shows anyway...
   letGoEta: 2,             // ...or at once when the wave is less than this many s away...
   letGoGap: 1000,          // ...or less than this many px below the comet
@@ -561,29 +563,8 @@ function learningWindowOpen(st) {
   return !((s.ownCatches || 0) === 0 && seconds >= TUNING.learnIdleSeconds);
 }
 
-// HOLD prompt with hysteresis. st = { planet, shownT, graceT } (planet null = hidden); candidate = the
-// planet coming into reach now (or null); blocked = no HOLD wanted at all (orbiting, holding, card pick);
-// passed = the shown planet is now below the comet. Once shown it stays holdPromptMin s, and clears
-// holdPromptGrace s after its planet left reach. Returns the new state (st is not changed).
-function holdPromptStep(st, candidate, dt, blocked, passed) {
-  const hidden = { planet: null, shownT: 0, graceT: 0 };
-  if (blocked) return hidden;
-  const s = { planet: st && !passed ? st.planet : null, shownT: st ? st.shownT : 0, graceT: st ? st.graceT : 0 };
-  if (candidate) {
-    if (candidate !== s.planet) { s.planet = candidate; s.shownT = 0; }
-    s.graceT = 0;
-    s.shownT += dt;
-    return s;
-  }
-  if (!s.planet) return hidden;
-  s.shownT += dt;
-  if (s.shownT < TUNING.holdPromptMin) return s;
-  s.graceT += dt;
-  return s.graceT >= TUNING.holdPromptGrace ? hidden : s;
-}
-
-// Tutorial LET GO: with a normal (green/gold) assist at once; with only the wide tutorial assist after
-// tutorialLetGoAfter s in the orbit, or at once when the wave is close (eta s / gap px).
+// Guided tutorial LET GO step: with a normal (green/gold) assist at once; with only the wide tutorial assist
+// after tutorialLetGoAfter s in the orbit, or at once when the wave is close (eta s / gap px).
 function tutorialLetGo(assist, orbitSeconds, eta, gap) {
   if (!assist) return false;
   if (!assist.wide) return true;
@@ -670,33 +651,104 @@ function novaOrbitEta(o) {
   return TUNING.etaSwingUnder;
 }
 
-// Tutorial aim assist (first runs): when no planet is in the normal assist cone, the next planet above
-// fromY (the orbited planet) is the target anyway, whatever the angle, so a learner's release never
-// sends the comet somewhere strange. Same shape as pickAssistTarget, plus wide: true.
-function pickTutorialTarget(x, y, dirX, dirY, planets, exclude, fromY) {
+// Aim at one planet whatever the angle: the pass point beside it (assistPassGap off its surface) on the side
+// closest to the flight direction. Same shape as pickAssistTarget, plus wide: true. null when already inside.
+function aimAtPlanet(x, y, dirX, dirY, planet) {
+  if (!planet) return null;
   const len = Math.hypot(dirX, dirY) || 1;
   const ux = dirX / len;
   const uy = dirY / len;
+  const dx = planet.x - x;
+  const dy = planet.y - y;
+  const dist = Math.hypot(dx, dy);
+  const passDist = planet.radius + TUNING.assistPassGap;
+  if (dist <= passDist) return null;
+  let best = null;
+  for (const side of [1, -1]) {
+    const ax = planet.x + (-dy / dist) * passDist * side;
+    const ay = planet.y + (dx / dist) * passDist * side;
+    const al = Math.hypot(ax - x, ay - y) || 1;
+    const angle = Math.acos(Math.max(-1, Math.min(1, ((ax - x) * ux + (ay - y) * uy) / al)));
+    if (!best || angle < best.angle) best = { planet, aimX: ax, aimY: ay, angle, wide: true };
+  }
+  return best;
+}
+
+// The next planet above fromY (lowest of the ones above), skipping exclude. null = none.
+function nextPlanetAboveY(planets, exclude, fromY) {
   let next = null;
   for (const p of planets) {
     if (p === exclude || p.y >= fromY - 40) continue;
     if (!next || p.y > next.y) next = p;
   }
-  if (!next) return null;
-  const dx = next.x - x;
-  const dy = next.y - y;
-  const dist = Math.hypot(dx, dy);
-  const passDist = next.radius + TUNING.assistPassGap;
-  if (dist <= passDist) return null;
-  let best = null;
-  for (const side of [1, -1]) {
-    const ax = next.x + (-dy / dist) * passDist * side;
-    const ay = next.y + (dx / dist) * passDist * side;
-    const al = Math.hypot(ax - x, ay - y) || 1;
-    const angle = Math.acos(Math.max(-1, Math.min(1, ((ax - x) * ux + (ay - y) * uy) / al)));
-    if (!best || angle < best.angle) best = { planet: next, aimX: ax, aimY: ay, angle, wide: true };
+  return next;
+}
+
+// Tutorial aim assist (first runs): when no planet is in the normal assist cone, the next planet above
+// fromY (the orbited planet) is the target anyway, whatever the angle, so a learner's release never
+// sends the comet somewhere strange.
+function pickTutorialTarget(x, y, dirX, dirY, planets, exclude, fromY) {
+  return aimAtPlanet(x, y, dirX, dirY, nextPlanetAboveY(planets, exclude, fromY));
+}
+
+// Guided first-run tutorial, as a pure state machine. st = { phase, waiting }:
+//   phase 'hold'  -> step 1 not done yet; 'letgo' -> step 2 not done yet; 'done' -> finished for good.
+//   waiting ''    -> playing normally; 'hold' / 'letgo' -> that step is up and the game waits for the player.
+// ev = { holding, orbiting, reachable (a grabbable planet just came near), letGoReady (the orbit's aim lines
+// up with the next planet, see tutorialLetGo), pressed, released (this frame's input edges) }.
+// Returns { st, action }, action one of:
+//   'showHold'  start step 1 (slow motion, HOLD);        'latch'  step 1 answered: latch the planet now
+//   'showLetGo' start step 2 (slow motion, LET GO);      'nice'   step 2 answered: steered fling + NICE!, done
+//   'steer'     an early release before step 2: steer the fling to the next planet (step 2 waits for the next orbit)
+//   'cancel'    a waiting step lost its reason (the orbit ended some other way): hide it
+//   null        nothing to do.
+// Step 1 is skipped when the player is already holding (or already orbiting) when it would show.
+function guidedTutorialStep(st, ev) {
+  const s = { phase: st && st.phase ? st.phase : 'hold', waiting: st && st.waiting ? st.waiting : '' };
+  const e = ev || {};
+  const out = (action) => ({ st: s, action: action || null });
+  if (s.phase === 'done') { s.waiting = ''; return out(null); }
+  if (s.waiting === 'hold') {
+    if (e.pressed) { s.phase = 'letgo'; s.waiting = ''; return out('latch'); }
+    if (e.orbiting) { s.phase = 'letgo'; s.waiting = ''; return out('cancel'); }
+    return out(null);
   }
-  return best;
+  if (s.waiting === 'letgo') {
+    if (e.released) { s.phase = 'done'; s.waiting = ''; return out('nice'); }
+    if (!e.orbiting) { s.waiting = ''; return out('cancel'); }
+    return out(null);
+  }
+  if (s.phase === 'hold') {
+    if (!e.orbiting && !(e.reachable && e.holding)) {
+      if (!e.reachable) return out(null);
+      s.waiting = 'hold';
+      return out('showHold');
+    }
+    s.phase = 'letgo';   // step 1 skipped: on to step 2 (an early release this frame is still steered)
+  }
+  // phase 'letgo', nothing waiting
+  if (e.orbiting && e.released) return out('steer');
+  if (e.orbiting && e.holding && e.letGoReady) { s.waiting = 'letgo'; return out('showLetGo'); }
+  return out(null);
+}
+
+// Guided tutorial slow motion: progress p (0 = normal time, 1 = full slow motion) after realDt s, rising
+// over guidedEaseIn while a step waits and falling over guidedEaseOut after it.
+function guidedSlowProgress(p, waiting, realDt) {
+  const v = p || 0;
+  const dt = Math.max(0, realDt || 0);
+  return waiting ? Math.min(1, v + dt / TUNING.guidedEaseIn) : Math.max(0, v - dt / TUNING.guidedEaseOut);
+}
+
+// World time scale for slow-motion progress p (smoothstep from 1 down to guidedSlowScale).
+function guidedSlowScale(p) {
+  const t = Math.max(0, Math.min(1, p || 0));
+  return 1 - (1 - TUNING.guidedSlowScale) * t * t * (3 - 2 * t);
+}
+
+// Guided tutorial storage: done once the stored value is '1' (anything else, missing or broken = not done).
+function parseGuidedTutorialDone(raw) {
+  return raw === '1';
 }
 
 function flightDecay(altitude) {
@@ -843,25 +895,6 @@ function nextMachTier(stampedTier, mach) {
   return tier;
 }
 
-// Best-run ghost playback: position at time t on a path of {t, x, y} points sorted by t,
-// linearly interpolated. done = t is past the end (the ghost run ended there). null = no path.
-function ghostPositionAt(points, t) {
-  if (!points || points.length < 2) return null;
-  const last = points[points.length - 1];
-  if (t >= last.t) return { x: last.x, y: last.y, done: true };
-  if (t <= points[0].t) return { x: points[0].x, y: points[0].y, done: false };
-  let lo = 0;
-  let hi = points.length - 1;
-  while (hi - lo > 1) {
-    const mid = (lo + hi) >> 1;
-    if (points[mid].t <= t) lo = mid; else hi = mid;
-  }
-  const a = points[lo];
-  const b = points[hi];
-  const k = b.t > a.t ? (t - a.t) / (b.t - a.t) : 0;
-  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, done: false };
-}
-
 if (typeof module !== 'undefined') {
-  module.exports = { novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, holdPromptStep, tutorialLetGo, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
