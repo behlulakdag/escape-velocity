@@ -11,13 +11,17 @@
 //   revealStats(), setDanger(0..1), setCometScreen(x, y)
 //   setPage(zoneIndex)        page/zone changed: the cream last page switches the HUD to dark ink
 //   pop(label, color, opts)   the only pop path: one line at a time, placed away from the comet;
-//                             low/medium pops sent while a banner is up wait until it fades
+//                             low/medium pops sent while a banner is up wait until it fades;
+//                             HUD_POP_GATE: '-N% SPEED' at most once per 2 s (merged into the
+//                             bigger number), one new line per 0.25 s, a card name twice a run
 //   flash(color, alpha, duration, maxAlpha?)  alpha capped at 0.12 (maxAlpha may raise it to 0.18)
 //   showBanner(title, subtitle, { duration }), hideBanner()   (showHint / hideHint: retired no-ops)
 //   showMachTier(mach)        'MACH 500!' stamp (milestone style); waits for banners, the card
 //                             pick and any stamp on screen. The MACH readout under the km/s
 //                             number is computed from the shown km/s (setStats' 4th argument)
-//   setCards(ownedIds)        row of owned upgrade-card minis (under the score note, right-aligned)
+//   setCards(ownedIds)        owned upgrade cards as small taped icons in the top band, right of
+//                             the score note (hudCardStripSlots), out of the play field
+//   flashCard(id)             a card's proc without a pop: its icon wiggles over a crayon flare
 //   setNovaEta(seconds)       every frame: time until the supernova reaches the comet; under ~1.2 s
 //                             with the front below the screen, a heat band + pulsing '!!' warn
 //   showTutorialStep(step, info) / hideTutorialStep()  one-time guided tutorial (screen coords;
@@ -27,14 +31,14 @@
 //                             'letgo' {cx, cy, dirX, dirY, px, py, pr}: the finger lifts, a curved
 //                             arrow along dir + 'LET GO'; 'nice' {cx, cy}: fades out, NICE! stamp.
 //                             Idempotent every frame, never interactive (input reaches GameScene).
-//                             While a step waits, pops / stamps / banners / set bonuses wait too.
+//                             While a step is up, pops and stamps are dropped (never queued);
+//                             banners / set bonuses wait. During its ~0.2 s fade-out they wait.
 //   showSetBonus(familyKey)   family-colored SET BONUS banner (SET_BONUSES in src/cards.js)
 //   scoreText is read by GameScene, so it stays a Text object.
 
 // Pop rules (see pop()): only ONE pop line is ever on screen; it never sits on the comet.
 const POP = {
   top: 270,              // below the stats note (note + chain line end around y 245)
-  topWithCards: 372,     // below the owned-card row when it is shown
   bottomMargin: 330,     // above the bottom-corner speed / xN blocks (y ~1074)
   sideMargin: 26,
   minSize: 34,
@@ -60,7 +64,8 @@ const POP_LOW = 1;
 
 // Repeats ('it keeps writing X'): the same pop / stamp word never comes out twice within ms.
 // A pop of the same kind arriving while the first is still up merges into it instead
-// ('-15% SPEED' then '-10% SPEED' reads '-25% SPEED'; anything else just keeps the line up).
+// ('-15% SPEED' then '-30% SPEED' reads '-30% SPEED': the bigger loss; anything else just keeps
+// the line up).
 const HUD_REPEAT = { ms: 1500, maxPenalty: 90 };
 
 // Pure helper (tested): may `label` come out at `now`? Records it when it may. seen: {label: time}.
@@ -77,13 +82,14 @@ function hudPopKind(label) {
   return String(label).toUpperCase().replace(/[0-9]+(\.[0-9]+)?/g, '#').trim();
 }
 
-// Pure helper (tested): one line for two pops of the same kind. '-N% X' penalties add up
-// (capped); anything else reads as the newer label.
+// Pure helper (tested): one line for two pops of the same kind. Two '-N% X' penalties read as
+// the bigger one (capped; adding them up overstated bursts of small bumps); anything else reads
+// as the newer label.
 function hudMergePopLabel(prev, next) {
   const re = /^-(\d+)%\s*(.*)$/;
   const a = re.exec(String(prev));
   const b = re.exec(String(next));
-  if (a && b && a[2] === b[2]) return '-' + Math.min(HUD_REPEAT.maxPenalty, Number(a[1]) + Number(b[1])) + '% ' + b[2];
+  if (a && b && a[2] === b[2]) return '-' + Math.min(HUD_REPEAT.maxPenalty, Math.max(Number(a[1]), Number(b[1]))) + '% ' + b[2];
   return String(next);
 }
 
@@ -143,9 +149,9 @@ const HUD_MILESTONE = {
   ],
 };
 
-// Zone banner title y: lower when the owned-card row is shown, so the row never touches it.
+// Zone banner title y (the owned-card strip lives in the top band now, so it never moves).
 // fadeMs: hideBanner() fade; clearMs: the card header's hold-back, a little longer than the fade.
-const HUD_BANNER = { y: 400, yWithCards: 474, fadeMs: 90, clearMs: 120 };
+const HUD_BANNER = { y: 400, fadeMs: 90, clearMs: 120 };
 
 // Pure helper (tested): the next queue after a pop arrives while a banner is up.
 // Same label replaces its older copy; the queue keeps the newest POP_WAIT.max entries,
@@ -160,16 +166,80 @@ function hudQueueWaitingPop(queue, item) {
   return out;
 }
 
-// Pure helper (tested): x position and scale of the owned-card row so that its whole span
-// (rowLeft..rowRight, relative to the row origin) sits inside the on-screen walls.
-function hudFitCardRow(rowLeft, rowRight, preferredX, wallLeft, wallRight, margin) {
-  const minX = wallLeft + margin;
-  const maxX = wallRight - margin;
-  const width = rowRight - rowLeft;
-  const scale = Math.min(1, (maxX - minX) / width);
-  let x = Math.min(preferredX, maxX - rowRight * scale);
-  x = Math.max(x, minX - rowLeft * scale);
-  return { x, scale };
+// ---- Pop gates (pop()) ----
+// lossMs: the whole '-N% SPEED' family comes out at most once per lossMs (a second loss while the
+// first line is still up merges into it, keeping the bigger number). newMs: at most one NEW pop
+// line per newMs; a high pop arriving sooner waits for the gap, anything lower is dropped.
+// namedMax: a card's name is written at most this often per run (the pick pop + one proc);
+// after that the card's own icon in the HUD strip flashes instead (flashCard).
+const HUD_POP_GATE = { lossMs: 2000, newMs: 250, namedMax: 2 };
+
+// Pure helper (tested): a '-N% SPEED' loss pop.
+function hudIsLossPop(label) {
+  return /^-\d+%\s*SPEED/.test(String(label).trim().toUpperCase());
+}
+
+// Pure helper (tested): may a new pop line come out now? gate: { lossAt, newAt } (times of the
+// last loss pop and the last new line). Returns { act: 'show' } | { act: 'drop' } |
+// { act: 'defer', at } (high pops only: shown at `at`).
+function hudPopGate(gate, label, priority, now) {
+  const G = HUD_POP_GATE;
+  const since = (t) => (typeof t === 'number' ? now - t : Infinity);
+  const lossAgo = since(gate && gate.lossAt);
+  if (hudIsLossPop(label) && lossAgo >= 0 && lossAgo < G.lossMs) return { act: 'drop' };
+  const newAgo = since(gate && gate.newAt);
+  if (newAgo >= 0 && newAgo < G.newMs) {
+    return priority >= POP_HIGH ? { act: 'defer', at: gate.newAt + G.newMs } : { act: 'drop' };
+  }
+  return { act: 'show' };
+}
+
+// Records a new pop line (or a loss merged into the live one) in the gate.
+function hudPopGateRecord(gate, label, now, merged) {
+  if (!merged) gate.newAt = now;
+  if (hudIsLossPop(label)) gate.lossAt = now;
+}
+
+// Pure helper (tested): the card id whose name a pop spells ('SLINGSHOT!' -> 'sling'), else null.
+function hudCardIdForPop(label, cards) {
+  const bare = String(label).toUpperCase().replace(/[!.]+$/, '').trim();
+  for (const c of cards || []) if (c && c.name && c.name.toUpperCase() === bare) return c.id;
+  return null;
+}
+
+// Owned cards: small taped icons in the HUD's top band, right of the score note and left of the
+// fullscreen button (x 578+), so they never sit in the play field. Up to perRow cards make one
+// row; more wrap into two rows (12 cards: two rows of 6). left/right: card edges.
+const HUD_CARDS = { left: 314, right: 570, singleY: 122, rowY: [98, 150], perRow: 5, scale: 0.66, cardW: 42, cardH: 50, maxPitch: 52, under: 0.5, ease: 8 };
+
+// Pure helper (tested): slot centers {x, y} for n owned cards, left to right, row by row.
+function hudCardStripSlots(n) {
+  const L = HUD_CARDS;
+  n = Math.max(0, Math.floor(Number(n) || 0));
+  if (!n) return [];
+  const rows = n > L.perRow ? 2 : 1;
+  const perRow = Math.ceil(n / rows);
+  const span = L.right - L.left - L.cardW;
+  const pitch = perRow > 1 ? Math.min(L.maxPitch, span / (perRow - 1)) : 0;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const r = Math.floor(i / perRow);
+    out.push({ x: L.left + L.cardW / 2 + (i % perRow) * pitch, y: rows === 1 ? L.singleY : L.rowY[r] });
+  }
+  return out;
+}
+
+// Pure helper (tested): the strip's screen rect for n cards (null for none).
+function hudCardStripRect(n) {
+  const slots = hudCardStripSlots(n);
+  if (!slots.length) return null;
+  const L = HUD_CARDS;
+  const xs = slots.map(s => s.x);
+  const ys = slots.map(s => s.y);
+  return {
+    left: Math.min(...xs) - L.cardW / 2, right: Math.max(...xs) + L.cardW / 2,
+    top: Math.min(...ys) - L.cardH / 2, bottom: Math.max(...ys) + L.cardH / 2,
+  };
 }
 
 // Speed readout: any rise shows at once (a boost must read as a jump, never a slow count);
@@ -258,10 +328,92 @@ const HUD_PANEL = { left: 24, right: 320, top: HUD_SPEED.y - 56, bottom: HUD_SPE
 const HUD_BADGE = { x: GAME_WIDTH - 86, y: HUD_SPEED.y + 6, size: 40, scaleX: 0.5, scaleY: 0.62 };
 const HUD_BADGE_PANEL = { left: HUD_BADGE.x - 62, right: HUD_BADGE.x + 62, top: HUD_BADGE.y - 62, bottom: HUD_BADGE.y + 62 };
 // Corner blocks' alpha while the comet (or a planet) is under them.
-const HUD_PANEL_UNDER = { comet: 0.3, planet: 0.55, cometPad: 90, planetPad: 4 };
-// Owned-card row: under the score note (which ends near y 232) and the chain line (y ~246),
-// right-aligned. scale 1.34 makes a 64 px mini scrap ~86 px wide.
-const HUD_CARDS = { y: 304, scale: 1.34, gap: 94, groupGap: 18, right: GAME_WIDTH - 76, minLeft: 70, cardW: 86, cardH: 99 };
+// planet: only a light step back: the blocks sit on their own paper scraps now, so the number must
+// stay readable, and GameScene keeps new planets out of these rects anyway.
+const HUD_PANEL_UNDER = { comet: 0.3, planet: 0.75, cometPad: 90, planetPad: 4 };
+// Torn cream-paper scraps taped behind the km/s + MACH block and the x-loop, so the numbers
+// always read (planets, orbit rings and the supernova used to show through). w x h: the paper;
+// x, y: its center; rot: its tilt. alpha ~85%: the page still shows faintly through.
+const HUD_SCRAP = {
+  speed: { x: 168, y: HUD_SPEED.y + 16, w: 274, h: 134, rot: 0.025 },
+  badge: { x: HUD_BADGE.x, y: HUD_BADGE.y + 2, w: 112, h: 118, rot: -0.06 },
+  alpha: 0.86, pad: 20, tear: 7,
+};
+
+// Pure helper (tested): outline of a torn scrap in a (w + 2 pad) x (h + 2 pad) canvas, clockwise
+// from the top-left corner. The top edge is a clean cut; the other three are torn: short jagged
+// steps in and out by up to `tear` px. rnd: () => 0..1 (fixed per texture, so the tear never boils).
+function hudTornScrapPoints(w, h, pad, tear, rnd) {
+  const pts = [];
+  const edge = (x0, y0, x1, y1, torn) => {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const n = torn ? Math.max(4, Math.round(len / 9)) : Math.max(2, Math.round(len / 60));
+    const nx = (y1 - y0) / len;   // outward normal of a clockwise edge (y down)
+    const ny = -(x1 - x0) / len;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      const off = torn ? (rnd() - 0.6) * tear : (rnd() - 0.5) * 1.5;
+      pts.push({ x: x0 + (x1 - x0) * t + nx * off, y: y0 + (y1 - y0) * t + ny * off });
+    }
+  };
+  const l = pad;
+  const r = pad + w;
+  const t = pad;
+  const b = pad + h;
+  edge(l, t, r, t, false);
+  edge(r, t, r, b, true);
+  edge(r, b, l, b, true);
+  edge(l, b, l, t, true);
+  return pts;
+}
+
+// The scrap texture: drop shadow, note cream, paper fibers, a pale fibrous fringe on the torn
+// edges, a faint pencil edge and a strip of tape over the top.
+function hudScrapTexture(scene, key, w, h) {
+  const P = HUD_SCRAP.pad;
+  return uiSketchTexture(scene, key, w + P * 2, h + P * 2, (ctx, shape, jitter) => {
+    const pts = hudTornScrapPoints(w, h, P, HUD_SCRAP.tear, shape);
+    uiTracePath(ctx, pts.map((p) => ({ x: p.x + 4, y: p.y + 6 })), true);
+    ctx.fillStyle = 'rgba(5,6,16,0.42)';
+    ctx.fill();
+    uiTracePath(ctx, pts, true);
+    ctx.fillStyle = uiCss(UI_CRAYON.note);
+    ctx.fill();
+    ctx.save();
+    uiTracePath(ctx, pts, true);
+    ctx.clip();
+    for (let i = 0; i < (w * h) / 500; i++) {
+      const x = P + shape() * w;
+      const y = P + shape() * h;
+      ctx.strokeStyle = 'rgba(120,95,50,' + (0.06 + shape() * 0.08) + ')';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (shape() - 0.5) * 22, y + (shape() - 0.5) * 9);
+      ctx.stroke();
+    }
+    ctx.restore();
+    uiTracePath(ctx, pts, true);
+    ctx.strokeStyle = 'rgba(255,252,238,0.9)';
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+    uiTracePath(ctx, pts, true);
+    ctx.strokeStyle = 'rgba(138,122,90,0.55)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(P + w * (0.4 + shape() * 0.2), P + 2 + (jitter() - 0.5));
+    ctx.rotate((shape() - 0.5) * 0.3);
+    const half = Math.min(40, w * 0.26);
+    const tape = [];
+    for (let i = 0; i <= 3; i++) tape.push({ x: half + (i % 2 ? 4 : 0), y: -11 + i * 7.3 });
+    for (let i = 3; i >= 0; i--) tape.push({ x: -half - (i % 2 ? 4 : 0), y: -11 + i * 7.3 });
+    uiTracePath(ctx, tape, true);
+    ctx.fillStyle = 'rgba(240,232,190,0.62)';
+    ctx.fill();
+    ctx.restore();
+  });
+}
 // Multiplier circle tint by level (x1..x5): the same warm ramp as the comet.
 // Supernova front (screen y) near the bottom band: its orange flames sit right behind the speed
 // readout and the momentum crown. 0 while the front is below farY, 1 once it is up at nearY.
@@ -719,18 +871,6 @@ function hudCirclesUnder(rect, circles, pad) {
 // under the paper; the old test (whole texture, ring-grown radius, 6 px pad) greyed it out with
 // nothing visibly under it.
 const HUD_NOTE = { rect: { left: 15, right: 305, top: 52, bottom: 236 }, paper: { left: 33, right: 289, top: 72, bottom: 218 }, under: 0.5, pad: 6, ease: 8 };
-// Owned-card row: steps back to `under` while a planet (with its rings and orbit room) or the
-// comet comes within pad of it, so it never hides what the player steers by.
-const HUD_CARD_FADE = { under: 0.35, pad: 120, ease: 8 };
-
-// Pure helper (tested): the owned-card row's screen rect from its container x / scale and span
-// (relative to the row's right end, see setCards). null when there is no row.
-function hudCardRowRect(rowX, rowScale, span) {
-  if (!span || typeof rowX !== 'number' || !isFinite(rowX)) return null;
-  const k = typeof rowScale === 'number' && rowScale > 0 ? rowScale : 1;
-  const half = (HUD_CARDS.cardH / 2 + 12) * k;
-  return { left: rowX + span.left * k, right: rowX + span.right * k, top: HUD_CARDS.y - half, bottom: HUD_CARDS.y + half };
-}
 
 // Set bonus: short, high, never in the lower third or near the bottom speed band.
 const HUD_SETBONUS = { y: 300, rowGap: 110, cometBand: 190, below: 250, maxY: 720, holdMs: 900, fadeMs: 300, labelDy: -82, subDy: 92, subHalf: 24 };
@@ -791,7 +931,7 @@ class HudScene extends Phaser.Scene {
     // Last values written to each text, so setText/setColor (which re-render the text texture)
     // only run when something actually changed.
     this.shown = {};
-    this.chainY = 192;        // right of the score note, above the owned-card row
+    this.chainY = 204;        // right of the score note, under the owned-card strip
 
     // Taped note (top-left, below the notch-safe line): score big, altitude under it.
     const note = uiBoilImage(this, 0, 0, 'hud_note');
@@ -820,14 +960,24 @@ class HudScene extends Phaser.Scene {
     this.stepNiceShown = false;
     this.popSeen = {};        // pop kind -> time it last came out (HUD_REPEAT)
     this.stampSeen = {};      // stamp word -> time it was last stamped
-    this.cardRowFade = 1;     // owned-card row alpha (steps back over planets / the comet)
+    this.cardRowFade = 1;     // owned-card strip alpha (steps back only with a planet body under it)
+    this.cardSetsShown = [];  // families whose set loops are drawn
+    this.cardFlashAt = {};    // card id -> time its icon last flashed
+    this.popGate = { lossAt: -1e9, newAt: -1e9 };   // HUD_POP_GATE
+    this.namedPopCount = {};  // card name pop -> times written this run
     this.popWait = [];      // pops waiting for a banner to fade (see POP_WAIT)
     this.bannerClearAt = 0;   // time the last banner stopped being readable
     this.nextWaitAt = 0;      // earliest time the next waiting pop may show
 
     // Speed written on the page, with a crayon underline (redrawn only on boil ticks / growth).
     // Crayon smudge first, so the underline, crown and number are all drawn on top of it.
-    this.speedHalo = uiBoilImage(this, HUD_HALO.x, HUD_HALO.y, 'hud_speed_halo').setTint(HUD_HALO.ink).setAlpha(HUD_HALO.alpha);
+    // The block is written on a torn cream scrap (HUD_SCRAP) in dark ink on every page, so the
+    // number reads over planets, rings and the supernova; the old ink smudge stays hidden.
+    this.speedHalo = uiBoilImage(this, HUD_HALO.x, HUD_HALO.y, 'hud_speed_halo').setTint(HUD_HALO.ink).setAlpha(HUD_HALO.alpha).setVisible(false);
+    const SS = HUD_SCRAP.speed;
+    this.speedScrap = uiBoilImage(this, SS.x, SS.y, 'hud_speed_scrap').setRotation(SS.rot).setAlpha(HUD_SCRAP.alpha);
+    const SB = HUD_SCRAP.badge;
+    this.badgeScrap = uiBoilImage(this, SB.x, SB.y, 'hud_badge_scrap').setRotation(SB.rot).setAlpha(HUD_SCRAP.alpha);
     this.novaNear = 0;          // eased hudNovaNear() of the supernova front (Game scene)
     this.novaDrawn = 0;         // novaNear the crown was last drawn at
     this.speedLine = this.add.graphics();
@@ -839,13 +989,13 @@ class HudScene extends Phaser.Scene {
     this.speedSeen = false;     // the first setStats only sets the number (no punch at launch)
     this.speedBaseX = HUD_SPEED.x;
     this.speedBaseY = HUD_SPEED.y;
-    this.speedText = uiInkText(this, this.speedBaseX, this.speedBaseY, '', { size: HUD_SPEED.size, rot: -0.03, boil: false });
+    this.speedText = uiInkText(this, this.speedBaseX, this.speedBaseY, '', { size: HUD_SPEED.size, rot: -0.03, boil: false, color: UI_INK.darkHex, stroke: UI_INK.creamHex });
     // 'MACH 1568' in smaller lettering under the underline: the same speed, a huger number.
     this.machText = uiInkText(this, HUD_SPEED.x - 4, HUD_SPEED.lineY + HUD_MACH.dy, '', {
-      size: HUD_MACH.size, color: uiColorHex(UI_CRAYON.yellow), strokeW: 5, rot: -0.025, boilAmount: 0.008,
+      size: HUD_MACH.size, color: uiColorHex(hudDeepen(UI_CRAYON.orange, 0.7)), stroke: UI_INK.creamHex, strokeW: 5, rot: -0.025, boilAmount: 0.008,
     });
     this.createMultiplierBadge();
-    this.bottomPanel = this.add.container(0, 0, [this.speedHalo, this.speedLine, this.momentumGfx, this.speedText, this.machText, this.badge]);
+    this.bottomPanel = this.add.container(0, 0, [this.speedHalo, this.speedScrap, this.badgeScrap, this.speedLine, this.momentumGfx, this.speedText, this.machText, this.badge]);
     // One layer for the stats, so the intro fade never fights the bump tweens on its children.
     this.statsLayer = this.add.container(0, 0, [this.note, this.bottomPanel]);
     const game = this.scene.get('Game');
@@ -862,7 +1012,6 @@ class HudScene extends Phaser.Scene {
     this.cardLoops = [];       // gold loops round completed set groups
     // The scene object outlives a restart: drop the last run's (destroyed) row container.
     this.cardRow = null;
-    this.cardRowSpan = null;
     this.setBonusLayer = null;
     this.setBonusWait = [];    // set bonuses waiting for the zone banner / card pick / another set
     this.pendingBanner = null; // banner waiting for a set bonus to clear out
@@ -871,10 +1020,10 @@ class HudScene extends Phaser.Scene {
     uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawSpeedLine(true); this.drawMomentum(true); });
   }
 
-  // Owned upgrade cards as taped index-card scraps in one row under the score note, right-aligned
-  // (the note, chain line and fullscreen button stay clear). Each family's cards sit together;
-  // a completed set gets ONE gold crayon loop round the whole group. New cards are slapped on
-  // with an ink burst. Minis are ~86 game px wide (~44 CSS px on a 375 px phone).
+  // Owned upgrade cards as small taped icon scraps in the HUD's top band (hudCardStripSlots):
+  // right of the score note, left of the fullscreen button, never in the play field. Each
+  // family's cards sit together; every card of a completed set gets a small gold crayon loop.
+  // New cards are slapped on with an ink burst; a proc flashes its card (flashCard).
   setCards(ownedIds) {
     const raw = (ownedIds || []).filter(id => typeof cardById === 'function' && cardById(id));
     const ids = typeof cardGroupedOrder === 'function' ? cardGroupedOrder(raw) : raw;
@@ -885,74 +1034,70 @@ class HudScene extends Phaser.Scene {
     this.cardBadges = [];
     this.cardLoops = [];
     const L = HUD_CARDS;
-    // The row is one container anchored at its right end; fitCardRow() slides (and if needed
-    // shrinks) it so it always stays inside the side walls, which close in as the camera zooms out.
-    if (!this.cardRow) {
-      this.cardRow = this.add.container(L.right, L.y);
-      this.cardRowFit = { x: L.right, scale: 1 };
-    }
-    // x per card (relative to the row's right end), right to left; a family change adds a small
-    // gap so neighbouring loops never touch.
-    const xs = new Array(ids.length);
-    let x = 0;
-    for (let i = ids.length - 1; i >= 0; i--) {
-      xs[i] = x;
-      const next = ids[i - 1];
-      if (next !== undefined) x -= L.gap + (cardById(next).family !== cardById(ids[i]).family ? L.groupGap : 0);
-    }
-    // Span used by fitCardRow: the cards plus the set loop margin on both ends.
-    this.cardRowSpan = { left: (ids.length ? xs[0] : 0) - L.cardW / 2 - 14, right: L.cardW / 2 + 14 };
-    for (const family of sets) {
-      const members = ids.map((id, i) => (cardById(id).family === family ? i : -1)).filter(i => i >= 0);
-      if (!members.length) continue;
-      const x0 = xs[members[0]];
-      const x1 = xs[members[members.length - 1]];
-      const w = x1 - x0 + L.cardW + 26;
-      const loop = uiBoilImage(this, (x0 + x1) / 2, 2, cardSetGroupLoopTexture(this, w, L.cardH + 22, this.lightPage ? 0xc0861a : undefined));
-      this.cardRow.add(loop);
-      this.cardLoops.push(loop);
-      if (members.some(i => known.indexOf(ids[i]) < 0)) {
-        // The loop is scrawled round the group once the new card has landed.
-        loop.setAlpha(0).setScale(0.85);
-        this.tweens.add({ targets: loop, alpha: 1, scale: 1, delay: 380, duration: 200, ease: 'Back.Out' });
-      }
-    }
-    this.fitCardRow(true);
+    if (!this.cardRow) this.cardRow = this.add.container(0, 0);
+    const slots = hudCardStripSlots(ids.length);
+    const ink = this.lightPage ? UI_INK.dark : UI_INK.cream;
     ids.forEach((id, i) => {
       const card = cardById(id);
-      const cx = xs[i];
-      const g = cardMakeMini(this, cx, 0, id, L.scale);
+      const { x, y } = slots[i];
+      if (sets.indexOf(card.family) >= 0) {
+        const loop = uiBoilImage(this, x, y + 1, cardSetLoopTexture(this)).setScale(L.scale);
+        if (this.lightPage) loop.setTint(0xc0861a);
+        this.cardRow.add(loop);
+        this.cardLoops.push(loop);
+        if (known.indexOf(id) < 0 || this.cardSetsShown.indexOf(card.family) < 0) {
+          // The loop is scrawled round the card once the new card has landed.
+          loop.setAlpha(0).setScale(L.scale * 0.85);
+          this.tweens.add({ targets: loop, alpha: 1, scale: L.scale, delay: 380, duration: 200, ease: 'Back.Out' });
+        }
+      }
+      const g = cardMakeMini(this, x, y, id, L.scale);
       this.cardRow.add(g);
-      this.cardBadges.push({ id, gfx: g });
+      this.cardBadges.push({ id, gfx: g, x, y });
       if (known.indexOf(id) < 0) {
         g.setScale(L.scale * 1.8).setAlpha(0);
         this.tweens.add({ targets: g, scale: L.scale, alpha: 1, duration: 220, delay: 120, ease: 'Quad.In',
           onComplete: () => {
             g.setScale(L.scale * 1.12, L.scale * 0.86);
             this.tweens.add({ targets: g, scaleX: L.scale, scaleY: L.scale, duration: 200, ease: 'Back.Out' });
-            const row = this.cardRow;
-            cardDoodleBurst(this, row.x + cx * row.scaleX, row.y, [cardCrayon(card.family), this.lightPage ? UI_INK.dark : UI_INK.cream], { count: 6, reach: 100, ink: this.lightPage ? UI_INK.dark : undefined });
+            cardDoodleBurst(this, x, y, [cardCrayon(card.family), ink], { count: 6, reach: 70, ink: this.lightPage ? UI_INK.dark : undefined });
           } });
       }
     });
+    this.cardSetsShown = sets.slice();
   }
 
-  // Keeps the owned-card row inside the on-screen walls (eased, so it glides as the zoom moves).
-  fitCardRow(snap) {
-    if (!this.cardRow || !this.cardRowSpan) return;
-    const walls = this.wallsOnScreen();
-    const fit = hudFitCardRow(this.cardRowSpan.left, this.cardRowSpan.right, HUD_CARDS.right, walls.left, walls.right, 12);
-    const f = this.cardRowFit;
-    const k = snap ? 1 : 0.2;
-    f.x += (fit.x - f.x) * k;
-    f.scale += (fit.scale - f.scale) * k;
-    this.cardRow.setPosition(f.x, HUD_CARDS.y).setScale(f.scale);
+  // A card's proc after its name was already written (GameScene.cardProcPop, and pop() once a
+  // card name has come out HUD_POP_GATE.namedMax times): the card's taped icon wiggles and a
+  // crayon smudge flares behind it in the family color. Rate-limited per card.
+  flashCard(id) {
+    const badge = this.cardBadges && this.cardBadges.find(b => b.id === id);
+    if (!badge || !badge.gfx || !badge.gfx.active) return;
+    const now = this.time.now;
+    if (!this.cardFlashAt) this.cardFlashAt = {};
+    if (now - (this.cardFlashAt[id] || -1e9) < 300) return;
+    this.cardFlashAt[id] = now;
+    const card = cardById(id);
+    const crayon = card ? cardCrayon(card.family) : UI_CRAYON.yellow;
+    const L = HUD_CARDS;
+    const smudge = uiBoilImage(this, badge.x, badge.y, 'ui_circle').setTint(this.lightPage ? hudDeepen(crayon, 0.75) : crayon)
+      .setScale(0.22, 0.34).setAlpha(0.95);
+    this.cardRow.addAt(smudge, 0);
+    this.tweens.add({ targets: smudge, scaleX: 0.36, scaleY: 0.52, alpha: 0, duration: 420, ease: 'Quad.Out', onComplete: () => smudge.destroy() });
+    const g = badge.gfx;
+    this.tweens.killTweensOf(g);
+    g.setScale(L.scale * 1.3).setAlpha(1);
+    g.rotation = g.inkRot || 0;
+    this.tweens.add({ targets: g, scale: L.scale, duration: 260, ease: 'Back.Out' });
+    this.tweens.add({ targets: g, rotation: (g.inkRot || 0) + 0.28, duration: 60, yoyo: true, repeat: 2, ease: 'Sine.InOut',
+      onComplete: () => { if (g.active) g.rotation = g.inkRot || 0; } });
+    cardDoodleBurst(this, badge.x, badge.y, [crayon, this.lightPage ? UI_INK.dark : UI_INK.cream], { count: 4, reach: 46, ink: this.lightPage ? UI_INK.dark : undefined });
   }
 
-  // Bottom of the owned-card row on screen (0 when no row is shown).
+  // Bottom of the owned-card strip on screen (0 when no card is owned).
   cardRowBottom() {
-    if (!this.cardBadges.length || !this.cardRow) return 0;
-    return HUD_CARDS.y + (HUD_CARDS.cardH / 2 + 12) * this.cardRow.scaleY;
+    const rect = this.cardBadges.length ? hudCardStripRect(this.cardBadges.length) : null;
+    return rect ? rect.bottom : 0;
   }
 
   // Set bonus moment: the set name lettered big in the family crayon between its two cards,
@@ -1030,7 +1175,9 @@ class HudScene extends Phaser.Scene {
   // opts.at {cx, cy}: the comet to place it by (hudNiceSpot) instead of placeMilestone.
   showMilestone(name, level, opts) {
     opts = opts || {};
-    // A tutorial step is waiting: the stamp comes out once it is gone (the newest one only).
+    // A tutorial step is up: the stamp is dropped. One fading out: the stamp comes out once it
+    // is gone (the newest one only).
+    if (!opts.force && this.stepUp()) return;
     if (!opts.force && this.stepWaiting()) { this.stepMilestone = [name, level]; return; }
     const now = this.time.now;
     // The same word again within HUD_REPEAT.ms (tutorial NICE! then the chain's NICE!, a queued
@@ -1161,6 +1308,7 @@ class HudScene extends Phaser.Scene {
 
   flushMachTier(now) {
     if (!this.machWait.length) return;
+    if (this.stepUp()) { this.machWait = []; return; }   // old news by the time the step is done
     const m = this.milestone && this.milestone.active ? this.milestone : null;
     // A chain stamp that has been read for a moment makes way: the MACH tier would otherwise
     // keep waiting and be lost if the run ends (clearPops drops waiting stamps on the death beat).
@@ -1275,9 +1423,11 @@ class HudScene extends Phaser.Scene {
       tx: num(info.tx), ty: num(info.ty), tr: num(info.tr),
     };
     if (s.want !== step) {
-      // A pop or stamp on screen makes way (the step is the only thing to read).
+      // A pop or stamp on screen makes way (the step is the only thing to read), and anything
+      // still waiting is dropped: shown after the step it would be out of context.
       if (this.popLine) this.removePop(this.popLine);
       if (this.milestone) { this.milestone.destroy(); this.milestone = null; }
+      this.dropWaitingPops();
     }
     s.want = step;
     if (s.shown !== step) this.letterStep(s, step);
@@ -1292,6 +1442,19 @@ class HudScene extends Phaser.Scene {
   // GameScene: the player did what the step asked: everything fades out (~0.2 s).
   hideTutorialStep() {
     if (this.step) this.step.want = null;
+  }
+
+  // A tutorial step is up right now (not just fading out): pops and stamps are dropped.
+  stepUp() {
+    return !!(this.step && this.step.want);
+  }
+
+  // Pops, high pops in line and stamps waiting to come out: all dropped (a step started).
+  dropWaitingPops() {
+    this.popWait = [];
+    this.popQueue.length = 0;
+    this.machWait = [];
+    this.stepMilestone = null;
   }
 
   // A tutorial step is waiting for the player (pops, stamps and banners hold back meanwhile).
@@ -1505,8 +1668,8 @@ class HudScene extends Phaser.Scene {
 
   // "x3" written on the page inside a crayon circle that pulses when the multiplier rises.
   createMultiplierBadge() {
-    this.badgeCircle = uiBoilImage(this, 0, 0, 'ui_circle').setScale(HUD_BADGE.scaleX, HUD_BADGE.scaleY).setTint(HUD_LEVEL_TINTS[0]);
-    this.badgeText = uiInkText(this, 0, 0, 'x1', { size: HUD_BADGE.size, rot: 0.06, boil: false });
+    this.badgeCircle = uiBoilImage(this, 0, 0, 'ui_circle').setScale(HUD_BADGE.scaleX, HUD_BADGE.scaleY).setTint(this.levelTint(1));
+    this.badgeText = uiInkText(this, 0, 0, 'x1', { size: HUD_BADGE.size, rot: 0.06, boil: false, color: UI_INK.darkHex, stroke: UI_INK.creamHex });
     this.badge = this.add.container(HUD_BADGE.x, HUD_BADGE.y, [this.badgeCircle, this.badgeText]);
     uiBoilRotation(this, this.badge, 0.02);
   }
@@ -1558,7 +1721,6 @@ class HudScene extends Phaser.Scene {
     this.updateMilestone();
     this.updateTutorialStep(dt);
     this.flushStepWaiting();
-    this.fitCardRow(false);
     // Bottom band eases toward its target alpha, so it does not blink as the comet passes.
     // The card pick's countdown ring sits over the speed band, so the band steps back meanwhile.
     const fadeTarget = this.scene.isActive('Cards') ? 0.12 : this.panelFadeTarget;
@@ -1607,11 +1769,8 @@ class HudScene extends Phaser.Scene {
     this.lightPage = light;
     const ink = light ? UI_INK.darkHex : UI_INK.creamHex;
     const edge = light ? UI_INK.creamHex : UI_INK.darkHex;
-    for (const t of [this.speedText, this.badgeText, this.bannerText, this.bannerSub]) t.setColor(ink).setStroke(edge, t.style.strokeThickness);
-    this.machText.setColor(light ? uiColorHex(hudDeepen(UI_CRAYON.orange, 0.7)) : uiColorHex(UI_CRAYON.yellow))
-      .setStroke(edge, this.machText.style.strokeThickness);
-    this.shown.speedInk = null;   // the momentum crayon is re-applied on the next frame
-    this.badgeCircle.setTint(this.levelTint(this.lastMultiplier));
+    // The km/s block and the x-loop sit on their own cream scraps: always dark ink, never restyled.
+    for (const t of [this.bannerText, this.bannerSub]) t.setColor(ink).setStroke(edge, t.style.strokeThickness);
     for (const t of [this.comboWord, this.comboNum]) t.setStroke(edge, t.style.strokeThickness);
     if (this.chain >= 2) this.styleCombo(this.chain);
     // The fullscreen button is a full-colour crayon scrap (its own dark under-strokes read on any
@@ -1626,10 +1785,9 @@ class HudScene extends Phaser.Scene {
     this.drawSpeedLine(true);
   }
 
-  // Multiplier loop color: the warm ramp, pressed harder (and x1 in dark ink) on the cream page.
+  // Multiplier loop color: the warm ramp pressed hard onto its cream scrap (x1 in dark ink).
   levelTint(level) {
     const tint = HUD_LEVEL_TINTS[level - 1];
-    if (!this.lightPage) return tint;
     return level === 1 ? UI_INK.dark : hudDeepen(tint, 0.72);
   }
 
@@ -1655,7 +1813,8 @@ class HudScene extends Phaser.Scene {
     this.setTextIfChanged('mach', this.machText, kmPerS > 0 ? 'MACH ' + hudMachNumber(kmPerS) : '');
     this.momentum += (this.momentumTarget - this.momentum) * Math.min(1, dt * HUD_MOMENTUM.ease);
     const style = hudMomentumStyle(this.momentum);
-    const ink = this.lightPage ? (this.momentum < 0.3 ? UI_INK.dark : hudDeepen(style.ink, 0.66)) : style.ink;
+    // On its cream scrap: dark ink, heating to pressed-hard crayon with momentum.
+    const ink = this.momentum < 0.45 ? UI_INK.dark : hudDeepen(style.ink, 0.66);
     this.setColorIfChanged('speedInk', this.speedText, uiColorHex(ink));
     this.speedPunch *= Math.exp(-dt * HUD_SNAP.punchDecay);
     if (this.speedPunch < 0.005) this.speedPunch = 0;
@@ -1736,12 +1895,12 @@ class HudScene extends Phaser.Scene {
     this.lineLen = len;
     const g = this.speedLine;
     const seed = this.boilTick || 0;
-    const color = this.lightPage ? hudDeepen(speedColor(f), 0.7) : speedColor(f);
+    const color = hudDeepen(speedColor(f), 0.7);   // on the cream scrap
     const x0 = HUD_SPEED.x - 104;
     g.clear();
     uiScribbleLine(g, x0, HUD_SPEED.lineY, x0 + len, HUD_SPEED.lineY - len * 0.03, seed, { width: 7, color, amp: 2.5 });
     if (f > 0.45) {
-      const ink = this.lightPage ? UI_INK.dark : UI_INK.cream;
+      const ink = UI_INK.dark;
       const marks = 1 + Math.floor((f - 0.45) / 0.18);
       for (let i = 0; i < marks; i++) {
         const y = HUD_SPEED.y - 20 + i * 18;
@@ -1825,10 +1984,11 @@ class HudScene extends Phaser.Scene {
     const noteTarget = hudCirclesUnder(HUD_NOTE.paper, cores.concat(cometCircle), 0) ? HUD_NOTE.under : 1;
     this.noteFade += (noteTarget - this.noteFade) * Math.min(1, dt * HUD_NOTE.ease);
     if (this.note) this.note.setAlpha(this.noteFade);
-    // Owned-card row: see-through while a planet / black hole / the comet is near it.
-    const row = this.cardRow && this.cardBadges.length ? hudCardRowRect(this.cardRow.x, this.cardRow.scaleX, this.cardRowSpan) : null;
-    const rowTarget = row && hudCirclesUnder(row, bodies.concat(cometCircle), HUD_CARD_FADE.pad) ? HUD_CARD_FADE.under : 1;
-    this.cardRowFade += (rowTarget - this.cardRowFade) * Math.min(1, dt * HUD_CARD_FADE.ease);
+    // Owned-card strip (top band, out of the play field): like the note, it only steps back
+    // while a planet body or the comet is really under it.
+    const row = this.cardBadges.length ? hudCardStripRect(this.cardBadges.length) : null;
+    const rowTarget = row && hudCirclesUnder(row, cores.concat(cometCircle), 0) ? HUD_CARDS.under : 1;
+    this.cardRowFade += (rowTarget - this.cardRowFade) * Math.min(1, dt * HUD_CARDS.ease);
     if (this.cardRow) this.cardRow.setAlpha(this.cardRowFade);
     this.badgeFade += (this.badgeFadeTarget - this.badgeFade) * Math.min(1, dt * 10);
     if (this.badge) this.badge.setAlpha(this.badgeFade);
@@ -1946,10 +2106,21 @@ class HudScene extends Phaser.Scene {
     opts = opts || {};
     const now = this.time.now;
     const priority = opts.priority || popPriority(label);
-    // A tutorial step is waiting: nothing prints over it; the pop waits like it does for a banner.
+    // A tutorial step is up: nothing prints over it, and nothing is kept for later either (a
+    // PERFECT! landing seconds after its fling reads as noise): the pop is dropped. While a
+    // step only fades out (~0.2 s, right after the fling) the pop waits for it, then shows.
+    if (this.stepUp()) return;
     if (this.stepWaiting()) {
       this.popWait = hudQueueWaitingPop(this.popWait, { label, color, opts, at: now, high: priority >= POP_HIGH });
       return;
+    }
+    if (!this.popGate) this.popGate = { lossAt: -1e9, newAt: -1e9 };
+    // A card's name is written at most HUD_POP_GATE.namedMax times a run (the pick + one proc);
+    // after that its icon in the strip flashes instead.
+    const named = typeof CARDS !== 'undefined' ? hudCardIdForPop(label, CARDS) : null;
+    if (named) {
+      if (!this.namedPopCount) this.namedPopCount = {};
+      if ((this.namedPopCount[named] || 0) >= HUD_POP_GATE.namedMax) { this.flashCard(named); return; }
     }
     const cur = this.popLine && this.popLine.active ? this.popLine : null;
     const age = cur ? now - cur.bornAt : Infinity;
@@ -1957,7 +2128,7 @@ class HudScene extends Phaser.Scene {
     if (!this.popSeen) this.popSeen = {};
     if (cur && !cur.leaving && hudPopKind(cur.label) === kind) {
       // The same kind of event while its line is still up: one line, never a second copy. A
-      // penalty adds up into it; the same word just stays up a little longer.
+      // penalty keeps the bigger number; the same word just stays up a little longer.
       const merged = hudMergePopLabel(cur.label, label);
       cur.lifetime = Math.max(450, opts.duration || 700);
       if (merged !== cur.label) {
@@ -1969,6 +2140,15 @@ class HudScene extends Phaser.Scene {
         this.animatePop(cur, age < POP.sameLabelMs ? true : 'quiet');
       }
       this.popSeen[kind] = now;
+      hudPopGateRecord(this.popGate, label, now, true);
+      return;
+    }
+    // One gate for the whole loss family and at most one new line per HUD_POP_GATE.newMs.
+    const gate = hudPopGate(this.popGate, label, priority, now);
+    if (gate.act === 'drop') return;
+    if (gate.act === 'defer') {
+      if (!this.popQueue.some(q => q.label === label)) this.popQueue.push({ label, color, opts, at: gate.at });
+      this.popQueue.sort((a, b) => a.at - b.at);
       return;
     }
     // The same kind came out under HUD_REPEAT.ms ago (and is gone already): not again so soon.
@@ -2018,6 +2198,9 @@ class HudScene extends Phaser.Scene {
     if (replacing && !t.cleanSpot) return t;   // caller queues it; the live pop stays
     if (replacing && replacing.active) this.removePop(replacing);
     this.popLine = t;
+    if (this.popGate) hudPopGateRecord(this.popGate, label, t.bornAt, false);
+    const named = typeof CARDS !== 'undefined' ? hudCardIdForPop(label, CARDS) : null;
+    if (named && this.namedPopCount) this.namedPopCount[named] = (this.namedPopCount[named] || 0) + 1;
     this.animatePop(t, false);
     return t;
   }
@@ -2054,9 +2237,9 @@ class HudScene extends Phaser.Scene {
     return { left: Math.max(0, toScreen(0)), right: Math.min(GAME_WIDTH, toScreen(GAME_WIDTH)) };
   }
 
-  // Top of the area pops may use (below the score note, or the owned-card row when shown).
+  // Top of the area pops may use (below the score note, the combo line and the card strip).
   popTop() {
-    return this.cardBadges && this.cardBadges.length ? POP.topWithCards : POP.top;
+    return POP.top;
   }
 
   // Picks the spot: on the comet's opposite side horizontally and a little above it (where the
@@ -2227,6 +2410,7 @@ class HudScene extends Phaser.Scene {
   // stale ones (the moment has passed) are dropped.
   flushWaitingPops(now) {
     if (!this.popWait.length) return;
+    if (this.stepUp()) { this.popWait = []; return; }
     if (this.bannerUp() || this.scene.isActive('Cards') || this.stepWaiting()) { this.bannerClearAt = 0; return; }
     if (!this.bannerClearAt) this.bannerClearAt = now;
     if (now - this.bannerClearAt < POP_WAIT.afterMs || now < (this.nextWaitAt || 0)) return;
@@ -2271,7 +2455,7 @@ class HudScene extends Phaser.Scene {
     const parts = this.bannerParts();
     this.tweens.killTweensOf(parts);
     // Pushed down under the owned-card row when it is shown.
-    const y = this.cardBadges.length ? Math.max(HUD_BANNER.yWithCards, this.cardRowBottom() + 70) : HUD_BANNER.y;
+    const y = HUD_BANNER.y;
     this.bannerText.setY(y);
     this.bannerShadow.setY(y + 7);
     this.bannerLine.setY(y + 52);
@@ -2721,6 +2905,9 @@ function uiMakeHudTextures(scene) {
     }
     uiGrain(ctx, w, h, jitter, 0.02);
   });
+  // Torn cream scraps behind the km/s block and the x-loop (HUD_SCRAP).
+  hudScrapTexture(scene, 'hud_speed_scrap', HUD_SCRAP.speed.w, HUD_SCRAP.speed.h);
+  hudScrapTexture(scene, 'hud_badge_scrap', HUD_SCRAP.badge.w, HUD_SCRAP.badge.h);
   // Crayon scribble that is dense at the bottom edge and thins out upward (white, tinted red).
   uiSketchTexture(scene, 'hud_danger', GAME_WIDTH, 300, (ctx, shape, jitter) => {
     ctx.lineCap = 'round';

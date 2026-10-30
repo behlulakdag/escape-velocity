@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardRowRect, HUD_CARD_FADE })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -60,34 +60,36 @@ test('pops waiting for a banner: same label replaces, the queue keeps the newest
   assert.deepStrictEqual(q.map(i => i.label), ['SHOCKWAVE!', 'WARP!']);
 });
 
-test('card row stays inside the walls: slides first, shrinks only when it cannot fit', () => {
+test('owned-card strip: small icons in the top band, out of the play field, never overlapping', () => {
   const L = hud.HUD_CARDS;
-  // 5 cards: span from the left-most card to the right end of the row.
-  const left = -4 * L.gap - L.groupGap - L.cardW / 2 - 14;
-  const right = L.cardW / 2 + 14;
-  // Walls off screen (zoom 1): the row keeps its preferred spot.
-  let fit = hud.hudFitCardRow(left, right, L.right, 0, 720, 12);
-  assert.strictEqual(fit.x, L.right);
-  assert.strictEqual(fit.scale, 1);
-  // Camera zoomed out: the right wall at screen x 640 -> the row slides left, still full size.
-  fit = hud.hudFitCardRow(left, right, L.right, 80, 640, 12);
-  assert.ok(fit.x + right * fit.scale <= 628 + 1e-9, 'right edge inside the wall');
-  assert.ok(fit.x + left * fit.scale >= 92 - 1e-9, 'left edge inside the wall');
-  assert.strictEqual(fit.scale, 1);
-  // Very zoomed out: shrinks to fit between the walls.
-  fit = hud.hudFitCardRow(left, right, L.right, 140, 580, 12);
-  assert.ok(fit.scale < 1);
-  assert.ok(Math.abs(fit.x + right * fit.scale - 568) < 1e-6);
-  assert.ok(fit.x + left * fit.scale >= 152 - 1e-6);
+  const N = hud.HUD_NOTE;
+  assert.strictEqual(hud.hudCardStripSlots(0).length, 0);
+  assert.strictEqual(hud.hudCardStripRect(0), null);
+  for (let n = 1; n <= 12; n++) {
+    const slots = hud.hudCardStripSlots(n);
+    assert.strictEqual(slots.length, n);
+    const r = hud.hudCardStripRect(n);
+    assert.ok(r.left >= N.paper.right + 20, 'right of the score note paper (' + n + ')');
+    assert.ok(r.right <= 720 - 150, 'left of the fullscreen button (' + n + ')');
+    assert.ok(r.top >= 70 && r.bottom <= 180, 'in the top band, above the pop area (' + n + ')');
+    assert.ok(r.bottom + 20 < hud.POP.top, 'pops start below it');
+    // Neighbours in a row never overlap.
+    for (let i = 1; i < n; i++) {
+      if (slots[i].y === slots[i - 1].y) assert.ok(slots[i].x - slots[i - 1].x >= L.cardW, 'no overlap (' + n + ')');
+    }
+  }
+  // Up to perRow cards: one row; more: two rows.
+  assert.strictEqual(new Set(hud.hudCardStripSlots(L.perRow).map(s => s.y)).size, 1);
+  assert.strictEqual(new Set(hud.hudCardStripSlots(L.perRow + 1).map(s => s.y)).size, 2);
 });
 
-test('milestone levels escalate in size; the banner sits lower when the card row is up', () => {
+test('milestone levels escalate in size; the banner clears the card strip', () => {
   const sizes = hud.HUD_MILESTONE.levels.map(l => l.size);
   for (let i = 1; i < sizes.length; i++) assert.ok(sizes[i] > sizes[i - 1]);
   assert.ok(hud.HUD_MILESTONE.holdMs + hud.HUD_MILESTONE.fadeMs + 130 <= 1100, 'stamp lasts about 0.9 s');
-  const rowBottom = hud.HUD_CARDS.y + hud.HUD_CARDS.cardH / 2 + 12;
-  // Banner title is ~84 px tall: its top must clear the row.
-  assert.ok(hud.HUD_BANNER.yWithCards - 50 > rowBottom, 'banner title clears the card row');
+  const rowBottom = hud.hudCardStripRect(12).bottom;
+  // Banner title is ~84 px tall: its top must clear the strip.
+  assert.ok(hud.HUD_BANNER.y - 50 > rowBottom, 'banner title clears the card strip');
 });
 
 test('speed readout: rises snap at once, big rises punch, drops ease down', () => {
@@ -406,7 +408,7 @@ test('set bonus: short, high, clear of the card row, never in the lower third or
   const S = hud.HUD_SETBONUS;
   const hintY = hud.HUD_PANEL.top - 30;   // the old hint line sat here; the band stays clear
   assert.ok(S.holdMs + S.fadeMs <= 1300 && S.holdMs <= 1000);
-  const rowBottom = hud.HUD_CARDS.y + hud.HUD_CARDS.cardH / 2 + 12;
+  const rowBottom = hud.hudCardStripRect(12).bottom;
   for (const cometY of [100, 300, 450, 520, 640, 780, 900, 1200, undefined]) {
     for (const row of [0, rowBottom]) {
       const y = hud.hudSetBonusY(cometY, row);
@@ -673,29 +675,91 @@ test('repeats: the same pop / stamp never twice within 1.5 s; penalties merge', 
   assert.strictEqual(hud.hudPopKind('-15% SPEED'), hud.hudPopKind('-8% SPEED'));
   assert.strictEqual(hud.hudPopKind('PERFECT x4!'), hud.hudPopKind('PERFECT x5!'));
   assert.notStrictEqual(hud.hudPopKind('WALL KICK!'), hud.hudPopKind('WARP!'));
-  // Penalties add up (capped), anything else reads as the newer label.
-  assert.strictEqual(hud.hudMergePopLabel('-15% SPEED', '-10% SPEED'), '-25% SPEED');
-  assert.strictEqual(hud.hudMergePopLabel('-60% SPEED', '-50% SPEED'), '-' + R.maxPenalty + '% SPEED');
+  // Penalties merge into the bigger one (capped), anything else reads as the newer label.
+  assert.strictEqual(hud.hudMergePopLabel('-15% SPEED', '-10% SPEED'), '-15% SPEED');
+  assert.strictEqual(hud.hudMergePopLabel('-15% SPEED', '-30% SPEED'), '-30% SPEED');
+  assert.strictEqual(hud.hudMergePopLabel('-95% SPEED', '-50% SPEED'), '-' + R.maxPenalty + '% SPEED');
   assert.strictEqual(hud.hudMergePopLabel('PERFECT x4!', 'PERFECT x5!'), 'PERFECT x5!');
   assert.strictEqual(hud.hudMergePopLabel('WALL KICK!', 'WALL KICK!'), 'WALL KICK!');
 });
 
-test('owned-card row fades near planets / the comet; the score note only greys with something under its paper', () => {
+test('owned-card strip only greys with a planet body on it; the score note likewise', () => {
   const L = hud.HUD_CARDS;
-  const span = { left: -2 * L.gap - L.cardW / 2 - 14, right: L.cardW / 2 + 14 };
-  const row = hud.hudCardRowRect(L.right, 1, span);
-  assert.ok(row.left < row.right && row.top < L.y && row.bottom > L.y);
-  assert.ok(Math.abs(row.right - (L.right + span.right)) < 1e-6);
-  assert.strictEqual(hud.hudCardRowRect(NaN, 1, span), null);
-  assert.strictEqual(hud.hudCardRowRect(600, 1, null), null);
-  const F = hud.HUD_CARD_FADE;
-  assert.ok(F.under >= 0.3 && F.under <= 0.4 && F.pad >= 120);
-  // A planet whose orbit room reaches up to the row: faded; far below: not.
-  assert.strictEqual(hud.hudCirclesUnder(row, [{ x: 560, y: row.bottom + 160, r: 60 }], F.pad), true);
-  assert.strictEqual(hud.hudCirclesUnder(row, [{ x: 360, y: 900, r: 60 }], F.pad), false);
-  // The note: a planet just below the note's paper (body clear) no longer greys it.
+  const row = hud.hudCardStripRect(7);
+  assert.ok(L.under >= 0.4 && L.under <= 0.6);
+  // A planet in the play field below the strip (even a big ringed one) leaves it alone.
+  assert.strictEqual(hud.hudCirclesUnder(row, [{ x: 450, y: 320, r: 100 }], 0), false);
+  assert.strictEqual(hud.hudCirclesUnder(row, [{ x: 450, y: 150, r: 40 }], 0), true);
   const N = hud.HUD_NOTE;
   assert.ok(N.paper.left > N.rect.left && N.paper.bottom < N.rect.bottom);
   assert.strictEqual(hud.hudCirclesUnder(N.paper, [{ x: 200, y: 280, r: 50 }], 0), false, 'body clear of the paper');
   assert.strictEqual(hud.hudCirclesUnder(N.paper, [{ x: 200, y: 250, r: 50 }], 0), true, 'body on the paper');
 });
+
+test('loss pops: one family, at most once per 2 s, whatever the number', () => {
+  const G = hud.HUD_POP_GATE;
+  assert.ok(G.lossMs >= 2000);
+  assert.ok(hud.hudIsLossPop('-30% SPEED') && hud.hudIsLossPop('-15% speed') && hud.hudIsLossPop(' -8%SPEED'));
+  assert.ok(!hud.hudIsLossPop('+SPEED') && !hud.hudIsLossPop('SHATTER! +SPEED') && !hud.hudIsLossPop('PERFECT!'));
+  const gate = { lossAt: -1e9, newAt: -1e9 };
+  assert.strictEqual(hud.hudPopGate(gate, '-30% SPEED', hud.POP_LOW, 1000).act, 'show');
+  hud.hudPopGateRecord(gate, '-30% SPEED', 1000, false);
+  // Another number is the same family: dropped 0.93 s and 1.29 s later (the old exact-string gate let these through).
+  assert.strictEqual(hud.hudPopGate(gate, '-15% SPEED', hud.POP_LOW, 1930).act, 'drop');
+  assert.strictEqual(hud.hudPopGate(gate, '-30% SPEED', hud.POP_LOW, 2290).act, 'drop');
+  assert.strictEqual(hud.hudPopGate(gate, '-30% SPEED', hud.POP_LOW, 1000 + G.lossMs).act, 'show');
+  // A merge into the live line restarts the family gate but is not a new line.
+  hud.hudPopGateRecord(gate, '-30% SPEED', 1500, true);
+  assert.strictEqual(gate.newAt, 1000);
+  assert.strictEqual(hud.hudPopGate(gate, '-20% SPEED', hud.POP_LOW, 1000 + G.lossMs).act, 'drop');
+  assert.strictEqual(hud.hudPopGate(gate, '-20% SPEED', hud.POP_LOW, 1500 + G.lossMs).act, 'show');
+});
+
+test('at most one new pop line per 0.25 s: high pops wait for the gap, the rest are dropped', () => {
+  const G = hud.HUD_POP_GATE;
+  assert.strictEqual(G.newMs, 250);
+  const gate = { lossAt: -1e9, newAt: -1e9 };
+  hud.hudPopGateRecord(gate, 'PERFECT!', 5000, false);
+  assert.strictEqual(hud.hudPopGate(gate, '+SPEED', hud.POP_LOW, 5070).act, 'drop');
+  assert.strictEqual(hud.hudPopGate(gate, 'PERFECT!', hud.POP_MEDIUM, 5100).act, 'drop');
+  const d = hud.hudPopGate(gate, 'CLOSE CALL!', hud.POP_HIGH, 5070);
+  assert.strictEqual(d.act, 'defer');
+  assert.strictEqual(d.at, 5000 + G.newMs);
+  assert.strictEqual(hud.hudPopGate(gate, '+SPEED', hud.POP_LOW, 5000 + G.newMs).act, 'show');
+  // Junk gate state never blocks.
+  assert.strictEqual(hud.hudPopGate({}, '+SPEED', hud.POP_LOW, 10).act, 'show');
+  assert.strictEqual(hud.hudPopGate(null, '-10% SPEED', hud.POP_LOW, 10).act, 'show');
+});
+
+test('card name pops map to their card (written at most twice a run, then the icon flashes)', () => {
+  const cards = [{ id: 'sling', name: 'Slingshot' }, { id: 'wallkick', name: 'Wall Kick' }];
+  assert.strictEqual(hud.hudCardIdForPop('SLINGSHOT!', cards), 'sling');
+  assert.strictEqual(hud.hudCardIdForPop('WALL KICK!', cards), 'wallkick');
+  assert.strictEqual(hud.hudCardIdForPop('SHATTER! +SPEED', cards), null);
+  assert.strictEqual(hud.hudCardIdForPop('+SPEED', null), null);
+  assert.strictEqual(hud.HUD_POP_GATE.namedMax, 2, 'the pick pop counts as the first of the two');
+});
+
+test('paper scraps sit behind the km/s + MACH block and the x-loop, torn but bounded', () => {
+  const S = hud.HUD_SCRAP;
+  assert.ok(S.alpha >= 0.8 && S.alpha <= 0.9, '~85% opaque');
+  const sp = S.speed;
+  // The scrap covers the number, the underline and the MACH line.
+  assert.ok(sp.y - sp.h / 2 < hud.HUD_SPEED.y - 20 && sp.y + sp.h / 2 > hud.HUD_SPEED.lineY + hud.HUD_MACH.dy + 10);
+  assert.ok(sp.x - sp.w / 2 >= 16 && sp.x + sp.w / 2 <= hud.HUD_PANEL.right);
+  assert.ok(sp.y + sp.h / 2 <= 1280 - hud.HUD_SAFE_BOTTOM, 'clear of the bottom browser bar');
+  const b = S.badge;
+  assert.ok(Math.abs(b.x - hud.HUD_BADGE.x) < 10 && b.x + b.w / 2 <= 720 - 16);
+  assert.ok(Math.abs(sp.rot) > 0 && Math.abs(sp.rot) < 0.1 && Math.abs(b.rot) > 0 && Math.abs(b.rot) < 0.1, 'slightly tilted');
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const pts = hud.hudTornScrapPoints(200, 100, S.pad, S.tear, rnd);
+  assert.ok(pts.length > 40, 'torn edges have many small steps');
+  for (const p of pts) {
+    assert.ok(p.x >= S.pad - S.tear && p.x <= S.pad + 200 + S.tear && p.y >= S.pad - S.tear && p.y <= S.pad + 100 + S.tear, 'inside the canvas');
+  }
+  // Not a plain rectangle: the bottom edge wanders.
+  const bottom = pts.filter(p => p.y > S.pad + 100 - S.tear);
+  assert.ok(Math.max(...bottom.map(p => p.y)) - Math.min(...bottom.map(p => p.y)) > 2);
+});
+
