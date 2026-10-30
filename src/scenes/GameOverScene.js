@@ -271,7 +271,7 @@ class GameOverScene extends Phaser.Scene {
     note.add(purse);
     const rowY = (i) => -M.noteH / 2 + M.rowTop + i * M.rowStep;
     const rows = plan.map((p, i) => {
-      const row = uiMissionRow(this, 0, rowY(i), p.mission, M.rowW, { size: 28 });
+      const row = uiMissionRow(this, 0, rowY(i), p.mission, M.rowW, { size: 28, fresh: !!p.isNew });
       note.add(row);
       if (p.isNew) this.markNewRow(note, row);
       return row;
@@ -299,7 +299,7 @@ class GameOverScene extends Phaser.Scene {
         if (!next) return;
         const old = rows[i];
         this.tweens.add({ targets: old, x: -GAME_WIDTH, alpha: 0, delay: k * 140, duration: 260, ease: 'Quad.In', onComplete: () => old.destroy() });
-        const row = uiMissionRow(this, GAME_WIDTH, rowY(i), next, M.rowW, { size: 28 });
+        const row = uiMissionRow(this, GAME_WIDTH, rowY(i), next, M.rowW, { size: 28, fresh: true });
         note.add(row);
         this.tweens.add({
           targets: row, x: 0, delay: 200 + k * 140, duration: 300, ease: 'Back.Out',

@@ -610,6 +610,13 @@ function uiMissionProgressLabel(m) {
   return uiShortNumber(Math.min(m.progress || 0, m.goal)) + '/' + uiShortNumber(m.goal) + uiMissionUnit(m);
 }
 
+// A mission that just replaced a finished one has not been played yet: '0/5' right under a run
+// that already did 5 reads as broken, so it says 'next run' until it has progress.
+function uiMissionRowLabel(m, fresh) {
+  if (fresh && m && !m.done && !(m.progress > 0)) return 'next run';
+  return uiMissionProgressLabel(m);
+}
+
 // Menu onboarding flags, one small JSON key: runDone (a run has reached the game over page),
 // metaSeen (the missions / SHOP / JOURNAL layer has been shown once, so 'new!' only shows once).
 const UI_MENU_FLAGS_KEY = 'escape_velocity_menu_v1';
@@ -778,7 +785,7 @@ function uiMissionRow(scene, x, y, mission, width, o) {
   const reward = uiInkText(scene, width / 2 - 32, 1, '+' + (mission.reward || 0), {
     size: size - 2, color: '#9a5a08', stroke: null, ox: 1, rot: -0.03, boil: false,
   });
-  const progressLabel = uiMissionProgressLabel(mission);
+  const progressLabel = uiMissionRowLabel(mission, o.fresh);
   const progress = uiInkText(scene, reward.x - reward.width - 14, 2, progressLabel, {
     size: size - 5, color: '#2f6fa8', stroke: null, ox: 1, rot: 0.01, boil: false,
   });
@@ -807,6 +814,8 @@ function uiMissionRow(scene, x, y, mission, width, o) {
     scene.tweens.add({
       targets: state, p: 1, duration: duration || 320, ease: 'Quad.easeOut', onUpdate: draw,
       onComplete: () => {
+        // RETRY can tear the page down mid-strike; the row's texts are gone by then.
+        if (!row.active || !text.active) return;
         draw();
         box.destroy();
         row.addAt(uiBoilImage(scene, left + 20, 0, uiCheckboxTexture(scene, true)), 0);
