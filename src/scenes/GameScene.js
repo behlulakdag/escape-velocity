@@ -147,6 +147,9 @@ class GameScene extends Phaser.Scene {
     this.explodeT = -1;         // seconds since the intro star exploded, -1 = not yet
     this.deathT = -1;           // real seconds into the death beat (jaws close), -1 = alive
     this.kickGraceT = 0;        // seconds after a Wall Kick in which a planet bump costs nothing
+    this.windGraceT = 0;        // seconds after SECOND WIND / UNBREAKABLE in which a bump costs nothing
+    this.perfectFlashAt = -1e9; // time.now of the last PERFECT (every one, chained or not): comet flash
+    this.momentumZoom = 0;      // eased extra zoom-out from momentum (feel only)
     this.lastPopAt = -1e9;      // time.now of the last pop sent (low-priority pops wait for quiet)
     this.hudPage = -1;          // page index the HUD was last told about (hud.setPage)
     // The scene instance is reused between runs, so this must be reset or later runs skip launch().
@@ -276,6 +279,7 @@ class GameScene extends Phaser.Scene {
     this.shockFx = { y: from, push: this.novaY - from, t: 0 };
     this.closeArmed = false;
     this.breakChain();
+    this.windGraceT = GameScene.WIND_GRACE;
     this.popText('UNBREAKABLE!', GameScene.hex(CARD_FAMILIES.shield.color), { size: 64, duration: 1200 });
     this.sfx('rescue');
     if (this.hud.flash) this.hud.flash(CARD_FAMILIES.shield.color, 0.16, 260, 0.16);
@@ -303,6 +307,7 @@ class GameScene extends Phaser.Scene {
     this.closeArmed = false;
     this.breakChain();
     // Priority 3 = the HUD's high priority: it goes below the comet, never queued behind a banner.
+    this.windGraceT = GameScene.WIND_GRACE;
     this.popText('SECOND WIND!', '#5eff8f', { size: 60, duration: 1100, priority: 3 });
     this.sfx('secondwind');
     if (this.hud.flash) this.hud.flash(0x5eff8f, 0.14, 240, 0.14);
@@ -436,8 +441,8 @@ class GameScene extends Phaser.Scene {
     if (!this.headless) ART.warmAll(this, 'l');
     this.cameras.main.setBackgroundColor(ZONES[0].paper);
     // Oversized so the background still fills the screen when the camera zooms out.
-    const w = GAME_WIDTH / TUNING.minZoom;
-    const h = GAME_HEIGHT / TUNING.minZoom;
+    const w = GAME_WIDTH / (TUNING.minZoom - TUNING.momentumZoomOut);
+    const h = GAME_HEIGHT / (TUNING.minZoom - TUNING.momentumZoomOut);
     this.pageRect = { x: (GAME_WIDTH - w) / 2, y: (GAME_HEIGHT - h) / 2, w, h };
     const layer = (key) => this.add.tileSprite(this.pageRect.x, this.pageRect.y, w, h, key).setOrigin(0).setScrollFactor(0);
     this.paper = layer(ART.paperTexture(this, 0));
@@ -488,6 +493,11 @@ class GameScene extends Phaser.Scene {
     this.speed = Math.max(this.speed, Math.min(this.speedCap(), this.speed + amount));
   }
 
+  // A speed gain that snowballs with momentum (catch, PERFECT, milestone): faster = bigger gains.
+  addMomentumSpeed(amount) {
+    this.addSpeed(amount * momentumGainMul(this.speed));
+  }
+
   // Leaves the orbit. overspeed: the planet let go by itself (held at the cap too long), which
   // never scores a PERFECT and does not touch isHolding (the finger may still be down).
   fling(overspeed) {
@@ -495,7 +505,7 @@ class GameScene extends Phaser.Scene {
     const assist = this.currentAssist();
     const perfect = !overspeed && assist && assist.angle < this.perfectAngle();
     if (perfect) {
-      this.addSpeed(TUNING.perfectBonus);
+      this.addMomentumSpeed(TUNING.perfectBonus);
       this.onPerfect();
     } else {
       this.breakChain();
@@ -545,6 +555,7 @@ class GameScene extends Phaser.Scene {
     this.perfectChain++;
     this.maxChain = Math.max(this.maxChain, this.perfectChain);
     this.perfectPulseAt = this.time.now;
+    this.perfectFlashAt = this.time.now;   // art: ink ring burst + comet flash on EVERY PERFECT
     const chain = this.perfectChain;
     this.score += perfectChainBonus(chain) * this.mods.chainScoreMul;
     if (this.mods.afterburnerSeconds > 0) this.afterburnerT = this.mods.afterburnerSeconds;
@@ -572,7 +583,7 @@ class GameScene extends Phaser.Scene {
   // NICE! / BLAZING! / UNSTOPPABLE!: a speed bonus scaled by level plus a HUD stamp.
   chainMilestone(level) {
     const chain = this.perfectChain;
-    this.addSpeed(milestoneSpeedBonus(level));
+    this.addMomentumSpeed(milestoneSpeedBonus(level));
     this.sfx('milestone', { level, chain });
     if (this.headless) return;
     if (this.hud.showMilestone) this.hud.showMilestone(CHAIN_MILESTONE_NAMES[level], level);
@@ -653,6 +664,7 @@ class GameScene extends Phaser.Scene {
     const altitude = this.startY - this.comet.y;
     this.afterburnerT = Math.max(0, this.afterburnerT - dt);
     this.kickGraceT = Math.max(0, this.kickGraceT - dt);
+    this.windGraceT = Math.max(0, this.windGraceT - dt);
 
     if (this.noGrabPlanet && this.distanceTo(this.noGrabPlanet) > this.noGrabPlanet.radius + this.grabRange()) {
       this.noGrabPlanet = null;
@@ -671,7 +683,7 @@ class GameScene extends Phaser.Scene {
     if (this.scrape) {
       // updateScrape already placed the comet on the surface.
     } else if (this.orbit) {
-      const boost = { gainMul: this.mods.orbitGainMul, closeMul: this.mods.closeOrbitMul };
+      const boost = { gainMul: this.mods.orbitGainMul, closeMul: this.mods.closeOrbitMul, tighten: this.mods.orbitTighten };
       const step = orbitStep(this.orbit, this.speed, dt, this.orbitPlanet.radius, this.speedCap(), boost);
       this.orbit = step.orbit;
       this.speed = step.speed;
@@ -1098,8 +1110,14 @@ class GameScene extends Phaser.Scene {
     this.flightTarget = null;
     this.capTime = 0;
     this.catches++;
-    this.addSpeed(TUNING.catchBonus);
-    const close = orbitCloseness(this.orbit.targetRadius, planet.radius) > 0.7;
+    this.addMomentumSpeed(TUNING.catchBonus);
+    const closeness = orbitCloseness(this.orbit.targetRadius, planet.radius);
+    const close = closeness > 0.7;
+    if (this.mods.tightCatchBonus > 0 && closeness > 0.6) {
+      // Tight Spin: diving in deep before the hold is rewarded on the spot.
+      this.addMomentumSpeed(this.mods.tightCatchBonus);
+      this.burst(c.x, c.y, CARD_FAMILIES.orbit.color, 10, 150);
+    }
     const teal = GameScene.hex(CARD_FAMILIES.orbit.color);
     if (this.mods.catchBurst > 0) {
       // Orbit Master: a speed burst on every catch.
@@ -1143,6 +1161,11 @@ class GameScene extends Phaser.Scene {
   }
 
   loseSpeed(keep) {
+    if (this.windGraceT > 0) {
+      // Right after SECOND WIND / UNBREAKABLE: a bump into the next planet is free (no shield used).
+      this.burst(this.comet.x, this.comet.y, 0x5eff8f, 6, 110);
+      return;
+    }
     if (this.useHeatShield()) return;
     this.speed = speedAfterHit(this.speed, keep);
     this.breakChain();
@@ -1232,7 +1255,9 @@ class GameScene extends Phaser.Scene {
     this.look.x = Phaser.Math.Linear(this.look.x, lookX, ease);
     this.look.y = Phaser.Math.Linear(this.look.y, lookY, ease);
     this.zoomKick *= Math.exp(-dt * 7);
-    cam.setZoom(this.baseZoom + this.zoomKick);
+    // Momentum pulls the camera out a little more (feel only: the anchor and nova leash ignore it).
+    this.momentumZoom = Phaser.Math.Linear(this.momentumZoom, momentum(this.speed) * TUNING.momentumZoomOut, Math.min(1, dt * 1.5));
+    cam.setZoom(this.baseZoom - this.momentumZoom + this.zoomKick);
     cam.scrollX = this.look.x;
     cam.scrollY = center + this.look.y - GAME_HEIGHT / 2;
     // Look-ahead (feel only) must not push the comet into the bottom HUD band either.
@@ -1386,6 +1411,7 @@ class GameScene extends Phaser.Scene {
     g.clear();
     if (this.headless) return;
     const intensity = Phaser.Math.Clamp((speedFraction(this.speed) - 0.45) / 0.55, 0, 1);
+    const mom = momentum(this.speed);   // past 450 km/s the lines keep getting heavier
     let ux = this.comet.vx;
     let uy = this.comet.vy;
     if (this.orbit) {
@@ -1424,7 +1450,7 @@ class GameScene extends Phaser.Scene {
       const a = Math.sin(k * Math.PI) * (0.3 + intensity * 0.5);
       // Dashed pen speed lines: two dashes per streak in the page's ink.
       const L = s.length;
-      g.lineStyle(3, ART.ink, a);
+      g.lineStyle(3 + mom * 4, ART.ink, Math.min(1, a + mom * 0.2));
       g.lineBetween(toX(s.x), toY(s.y), toX(s.x + ux * L * 0.5), toY(s.y + uy * L * 0.5));
       g.lineBetween(toX(s.x + ux * L * 0.66), toY(s.y + uy * L * 0.66), toX(s.x + ux * L), toY(s.y + uy * L));
       return true;
@@ -1602,6 +1628,8 @@ class GameScene extends Phaser.Scene {
       perfectChain: this.perfectChain,
       closeCall: this.closeCall,
       perfectPulse: Math.max(0, 1 - (this.time.now - this.perfectPulseAt) / 400),
+      perfectFlash: Math.max(0, 1 - (this.time.now - this.perfectFlashAt) / 220),
+      momentum: momentum(this.speed),
       zonePulse: Math.max(0, 1 - (this.time.now - this.zonePulseAt) / 600),
       intro: this.introActive,
       aimKind: assist ? (assist.angle < this.perfectAngle() ? 'perfect' : 'target') : 'none',
@@ -1740,7 +1768,8 @@ class GameScene extends Phaser.Scene {
 
   updateHud() {
     if (!this.hud.scoreText) return;   // HUD scene still starting
-    this.hud.setStats(Math.floor(this.score), this.bestAltitude, this.speed);
+    this.hud.setStats(Math.floor(this.score), this.bestAltitude, this.speed, this.speed / 10);
+    if (this.hud.setMomentum) this.hud.setMomentum(momentum(this.speed));
   }
 
   gameOver(reason) {
@@ -1800,6 +1829,7 @@ GameScene.WALL_KICK_UP = -0.8;
 GameScene.SHOCK_FX_TIME = 0.5;
 // Wall Kick: seconds after the kick in which bumping a planet costs no speed (and pops nothing).
 GameScene.KICK_GRACE = 0.45;
+GameScene.WIND_GRACE = 1.0;     // s after SECOND WIND / UNBREAKABLE in which a planet bump is free
 // Zone entry: real seconds between the zone banner / page turn and the card pick.
 GameScene.PICK_DELAY = 1.2;
 // ms after any pop in which routine (low) pops are skipped.

@@ -10,7 +10,9 @@
 //     perfectPulse (0..1), zonePulse (0..1), front (optional Graphics drawn above the bodies),
 //     afterburner (0..1): Afterburner card burning, the tail turns to blue crayon flame streaks,
 //     shieldReady (bool): a Heat Shield charge is ready, a hand-drawn pink bubble rings the comet,
-//     grabRangeBonus (px): added to TUNING.grabRange so the drawn grab ring matches the real range }
+//     grabRangeBonus (px): added to TUNING.grabRange so the drawn grab ring matches the real range,
+//     momentum (0..1): MOMENTUM, the flame crown grows and extra flame scribbles peel off the head,
+//     perfectFlash (0..1): set on EVERY PERFECT, the head flashes pale and an ink ring bursts out }
 //
 // Performance: static things (planets, asteroids, black holes, paper) are pre-rendered ONCE into
 // canvas textures, 3 boil variants each, and shown as Images that cycle variants every 100 ms.
@@ -1361,6 +1363,9 @@ const ART = {
     if (zonePulse > 0) ART.drawShockBurst(g, comet.x, comet.y, zonePulse, ink, 1.6, t);
     const perfectPulse = Math.max(0, Math.min(1, ctx.perfectPulse || 0));
     if (perfectPulse > 0) ART.drawShockBurst(g, comet.x, comet.y, perfectPulse, SKETCH.gold, 1, t);
+    const flash = Math.max(0, Math.min(1, ctx.perfectFlash || 0));
+    if (flash > 0) ART.drawPerfectRing(g, comet.x, comet.y, flash, t);
+    const mom = Math.max(0, Math.min(1, ctx.momentum || 0));
 
     const stretch = Math.max(1, Math.min(2.2, ctx.stretch || 1));
     const squash = Math.max(0, Math.min(1, ctx.squash || 0));
@@ -1373,16 +1378,36 @@ const ART = {
     g.scaleCanvas(alongScale, acrossScale);
     // Flame crown: jagged pen-outlined tongues licking backward.
     const j = () => (rnd() - 0.5) * r * 0.18;
-    const long = 1 + 0.5 * burn;   // the afterburner crown licks further back
+    // The afterburner and MOMENTUM both make the crown lick further back (and a bit wider).
+    const long = 1 + 0.5 * burn + 0.9 * mom;
+    const tall = 1 + 0.35 * mom;
     const crown = [
       { x: r * 0.3, y: -r * 1.0 },
-      { x: -r * 0.9 * long + j(), y: -r * 1.35 + j() },
+      { x: -r * 0.9 * long + j(), y: -r * 1.35 * tall + j() },
       { x: -r * 0.8, y: -r * 0.55 },
       { x: -r * 2.3 * long + j(), y: j() * 0.6 },
       { x: -r * 0.8, y: r * 0.55 },
-      { x: -r * 0.9 * long + j(), y: r * 1.35 + j() },
+      { x: -r * 0.9 * long + j(), y: r * 1.35 * tall + j() },
       { x: r * 0.3, y: r * 1.0 },
     ];
+    if (mom > 0.15) {
+      // MOMENTUM: loose red crayon flame tongues behind the crown, more and longer the faster you go.
+      const tongues = 1 + Math.floor(mom * 4);
+      for (let i = 0; i < tongues; i++) {
+        const side = i % 2 ? 1 : -1;
+        const y0 = side * r * (0.35 + 0.18 * i);
+        const reach = r * (1.6 + 1.6 * mom + rnd() * 0.6);
+        const tongue = [
+          { x: -r * 0.6, y: y0 - side * r * 0.25 },
+          { x: -r * 0.6 - reach * 0.55 + j(), y: y0 + side * r * (0.35 + 0.3 * mom) + j() },
+          { x: -r * 0.6 - reach + j(), y: y0 + side * r * 0.15 + j() },
+          { x: -r * 0.6 - reach * 0.45, y: y0 - side * r * 0.05 },
+        ];
+        g.fillStyle(i % 2 ? SKETCH.red : SKETCH.orange, 0.9);
+        g.fillPoints(tongue, true);
+        ART.pen(g, tongue, true, 2.5 + mom * 1.5, ink, 0.9, rnd);
+      }
+    }
     g.fillStyle(tint(SKETCH.orange, 0x4f8fe8), 1);
     g.fillPoints(crown, true);
     g.fillStyle(tint(SKETCH.yellow, 0xd8efff), 1);
@@ -1392,7 +1417,8 @@ const ART = {
     const head = ART.wobblyLoop(0, 0, r, r, 12, 0.1, rnd, rnd());
     g.fillStyle(ART.backing, 0.9);
     g.fillCircle(0, 0, r + 6);
-    g.fillStyle(body, 1);
+    // PERFECT flash: the head fill goes pale cream for a moment (crayon, not a glow).
+    g.fillStyle(flash > 0 ? lerpColor(body, 0xfffbe8, flash * 0.85) : body, 1);
     g.fillPoints(head.map((p) => ({ x: p.x + 2.5, y: p.y + 2 })), true);
     ART.hatchCircle(g, -r * 0.15, r * 0.25, r * 0.75, -0.9, 6, 3, SKETCH.orange, 0.8, rnd);
     ART.pen(g, head, true, 5.5, ink, 1, rnd);
@@ -1441,6 +1467,33 @@ const ART = {
 
   // Ink doodle burst around (x, y): a dashed ring + pen rays + a few asterisks.
   // p: 1 at the moment of the event, fading to 0. scale widens the burst.
+  // PERFECT (every one): a quick hand-inked ring that bursts off the comet, two pen passes that do
+  // not quite meet plus short tick marks, so a chained PERFECT reads without any text.
+  drawPerfectRing(g, x, y, p, t) {
+    const r = TUNING.cometRadius;
+    const rnd = artRandom(ART.boilFrame(t || 0) * 97 + 11);
+    const k = 1 - p;
+    const ringR = r * 1.3 + (1 - (1 - k) * (1 - k)) * 70;
+    for (let pass = 0; pass < 2; pass++) {
+      const start = rnd() * Math.PI * 2;
+      const sweep = Math.PI * (1.7 + pass * 0.25);
+      const pts = [];
+      for (let i = 0; i <= 18; i++) {
+        const a = start + (i / 18) * sweep;
+        const rr = ringR + pass * 7 + (rnd() - 0.5) * 5;
+        pts.push({ x: x + Math.cos(a) * rr, y: y + Math.sin(a) * rr });
+      }
+      g.lineStyle((pass ? 3 : 5) * p + 1.5, pass ? SKETCH.gold : ART.ink, Math.min(1, p * 1.6));
+      g.strokePoints(pts, false);
+    }
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + rnd() * 0.4;
+      const from = ringR + 8;
+      g.lineStyle(3 * p + 1, ART.ink, p);
+      g.lineBetween(x + Math.cos(a) * from, y + Math.sin(a) * from, x + Math.cos(a) * (from + 14 * p + 4), y + Math.sin(a) * (from + 14 * p + 4));
+    }
+  },
+
   drawShockBurst(g, x, y, p, color, scale, t) {
     const r = TUNING.cometRadius;
     const k = 1 - p;

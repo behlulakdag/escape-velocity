@@ -4,8 +4,14 @@ const TUNING = {
   cometRadius: 28,
   startSpeed: 620,
   minSpeed: 140,          // the comet never drops below this; the supernova is what kills you
-  maxSpeed: 4500,          // absolute top speed (late zones); speedFraction() is relative to this
-  zoneSpeedPerMeter: 0.05, // past the last zone the cap keeps creeping up by this per meter
+  maxSpeed: 8000,          // absolute top speed (800 km/s, deep past the last zone)
+  visualTopSpeed: 4500,    // speedFraction() / score multiplier reference: colors and x5 stay where they were
+  zoneSpeedPerMeter: 0.1,  // past the last zone the cap keeps creeping up by this per meter
+  // MOMENTUM: the faster you go, the faster you accelerate. Every speed gain (orbit, catch,
+  // PERFECT, milestone) is multiplied by 1 + momentumGain * momentum(speed).
+  momentumFrom: 1000,      // px/s where momentum starts building (0 below)
+  momentumGain: 1.2,       // gain multiplier at full momentum = 1 + this
+  momentumZoomOut: 0.06,   // extra camera zoom-out at full momentum (feel only)
   flightDecay: 40,        // px/s lost per second while flying
   flightDecayPerKm: 6,    // extra decay per 1000 px of altitude (difficulty ramp)
   maxFlightDecay: 140,
@@ -41,7 +47,8 @@ const TUNING = {
   novaStartBelow: 300,    // how far below the comet the supernova starts
   novaBaseSpeed: 160,     // px/s the wave climbs at the start
   novaRamp: 5,            // extra px/s every second
-  novaMaxSpeed: 950,
+  novaMaxSpeed: 950,      // wave top speed in the first zone; it scales with the zone's speed cap...
+  novaMaxAbsolute: 1900,  // ...up to this, so late zones at 600-800 km/s stay dangerous
   novaAltitudeRamp: 0.01, // extra px/s per meter of best altitude, so faster zones get a faster wave
   novaLeash: 250,         // the wave is never further than this below the visible screen (falling back = death)
   minPlanetGap: 520,      // vertical distance between planets at the start
@@ -91,14 +98,20 @@ function orbitCloseness(radius, planetRadius) {
 // Advances an orbit by dt seconds. Orbits are stable (no crash); closer orbits gain speed
 // faster, so diving in deep before grabbing is the skill.
 // boost (optional, from upgrade cards): { gainMul, closeMul } multiply orbitGain / closeOrbitBonus.
+// boost.tighten (px/s, Tight Spin): the orbit slowly spirals in toward the surface, so even an
+// early grab ends up in a fast close orbit. Gains are scaled by momentum (see momentumGainMul).
 function orbitStep(orbit, speed, dt, planetRadius, maxSpeed, boost) {
   const gainMul = boost && boost.gainMul ? boost.gainMul : 1;
   const closeMul = boost && boost.closeMul ? boost.closeMul : 1;
+  const tighten = boost && boost.tighten ? boost.tighten : 0;
   const spin = Math.min(speed / orbit.radius, TUNING.maxOrbitSpin);
   const angle = orbit.angle + orbit.dir * spin * dt;
-  const gain = TUNING.orbitGain * gainMul * (1 + TUNING.closeOrbitBonus * closeMul * orbitCloseness(orbit.radius, planetRadius));
-  const target = orbit.targetRadius || orbit.radius;
-  const radius = Math.min(target, orbit.radius + TUNING.orbitSettleSpeed * dt);
+  const gain = TUNING.orbitGain * gainMul * momentumGainMul(speed) * (1 + TUNING.closeOrbitBonus * closeMul * orbitCloseness(orbit.radius, planetRadius));
+  let target = orbit.targetRadius || orbit.radius;
+  if (tighten > 0) target = Math.max(planetRadius + TUNING.minOrbitGap, target - tighten * dt);
+  // Ease toward the target either way (out after a too-close grab, in while tightening).
+  const settle = TUNING.orbitSettleSpeed * dt;
+  const radius = orbit.radius < target ? Math.min(target, orbit.radius + settle) : Math.max(target, orbit.radius - settle);
   return {
     orbit: { angle, radius, targetRadius: target, dir: orbit.dir },
     // Never above the cap, but never cut down either (the cap only grows with altitude).
@@ -188,11 +201,11 @@ function nextPlanetLayout(prevSide, altitude, worldWidth, rand) {
 // sky/paper = paper color, ink = pen color on that page, fx = extra marks drawn on the page.
 const ZONES = [
   { from: 0, name: 'LIFTOFF', sky: 0x1d2747, paper: 0x1d2747, ink: 0xf4ead0, fx: 'none', maxSpeed: 2400 },
-  { from: 500, name: 'ORBIT', sky: 0x123f45, paper: 0x123f45, ink: 0xf4ead0, fx: 'none', maxSpeed: 2650 },
-  { from: 1500, name: 'HYPERSONIC', sky: 0x4a1a22, paper: 0x4a1a22, ink: 0xf4ead0, fx: 'heat', maxSpeed: 2950 },
-  { from: 3000, name: 'WARP SPEED', sky: 0x121116, paper: 0x121116, ink: 0xf4ead0, fx: 'streaks', maxSpeed: 3300 },
-  { from: 5000, name: 'HYPERSPACE', sky: 0x2e1d4f, paper: 0x2e1d4f, ink: 0xf4ead0, fx: 'grid', maxSpeed: 3700 },
-  { from: 8000, name: 'ESCAPE VELOCITY', sky: 0xefdcae, paper: 0xefdcae, ink: 0x2a2018, fx: 'rays', maxSpeed: 4100 },
+  { from: 500, name: 'ORBIT', sky: 0x123f45, paper: 0x123f45, ink: 0xf4ead0, fx: 'none', maxSpeed: 2700 },
+  { from: 1500, name: 'HYPERSONIC', sky: 0x4a1a22, paper: 0x4a1a22, ink: 0xf4ead0, fx: 'heat', maxSpeed: 3100 },
+  { from: 3000, name: 'WARP SPEED', sky: 0x121116, paper: 0x121116, ink: 0xf4ead0, fx: 'streaks', maxSpeed: 3700 },
+  { from: 5000, name: 'HYPERSPACE', sky: 0x2e1d4f, paper: 0x2e1d4f, ink: 0xf4ead0, fx: 'grid', maxSpeed: 4400 },
+  { from: 8000, name: 'ESCAPE VELOCITY', sky: 0xefdcae, paper: 0xefdcae, ink: 0x2a2018, fx: 'rays', maxSpeed: 5200 },
 ];
 
 // Speed cap at an altitude (meters): interpolates between zone caps, then creeps up to TUNING.maxSpeed.
@@ -290,11 +303,19 @@ function warpVelocity(hx, hy, x, y, vx, vy) {
   return { vx: vx * cos - vy * sin, vy: vx * sin + vy * cos };
 }
 
+// Supernova top speed at an altitude: grows in step with the zone speed cap (the first zone
+// keeps novaMaxSpeed), so a comet doing 700 km/s still has a wave on its tail.
+function novaMaxForAltitude(meters) {
+  const scale = maxSpeedForAltitude(meters) / ZONES[0].maxSpeed;
+  return Math.min(TUNING.novaMaxAbsolute, TUNING.novaMaxSpeed * scale);
+}
+
 // How fast the supernova climbs after `seconds` of play; meters (best altitude, optional) adds a
-// little, so the wave keeps pace when the speed cap rises in later zones.
+// little and raises its top speed, so the wave keeps pace when the speed cap rises in later zones.
 function novaSpeed(seconds, meters) {
-  const climb = TUNING.novaAltitudeRamp * Math.max(0, meters || 0);
-  return Math.min(TUNING.novaMaxSpeed, TUNING.novaBaseSpeed + TUNING.novaRamp * seconds + climb);
+  const m = Math.max(0, meters || 0);
+  const climb = TUNING.novaAltitudeRamp * m;
+  return Math.min(novaMaxForAltitude(m), TUNING.novaBaseSpeed + TUNING.novaRamp * seconds + climb);
 }
 
 function flightDecay(altitude) {
@@ -304,10 +325,23 @@ function flightDecay(altitude) {
   );
 }
 
-// 0 = about to freeze, 1 = top speed. Drives every speed-based visual.
+// 0 = about to freeze, 1 = 450 km/s (visualTopSpeed). Drives the speed colors and the multiplier;
+// above it, momentum() carries the escalation.
 function speedFraction(speed) {
-  const t = (speed - TUNING.minSpeed) / (TUNING.maxSpeed - TUNING.minSpeed);
+  const t = (speed - TUNING.minSpeed) / (TUNING.visualTopSpeed - TUNING.minSpeed);
   return Math.max(0, Math.min(1, t));
+}
+
+// MOMENTUM 0..1: 0 up to momentumFrom, 1 at the absolute cap. Drives the gain snowball and
+// the momentum visuals (flame size, speed-line weight, zoom, the HUD's ink cue).
+function momentum(speed) {
+  const t = (speed - TUNING.momentumFrom) / (TUNING.maxSpeed - TUNING.momentumFrom);
+  return Math.max(0, Math.min(1, t));
+}
+
+// Every speed gain is multiplied by this: good play snowballs (x1 slow, up to 1 + momentumGain).
+function momentumGainMul(speed) {
+  return 1 + TUNING.momentumGain * momentum(speed);
 }
 
 // Comet color by speed: cold grey -> red -> orange -> yellow -> white-blue.
@@ -404,5 +438,5 @@ function cometStretch(fraction, accel) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { momentum, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

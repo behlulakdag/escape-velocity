@@ -154,6 +154,7 @@ test('warp through a black hole turns the path ~60 degrees and keeps speed', () 
 test('supernova speeds up over time and is capped', () => {
   assert.strictEqual(o.novaSpeed(0), o.TUNING.novaBaseSpeed);
   assert.ok(o.novaSpeed(30) > o.novaSpeed(0));
+  // Time alone (no altitude) never lifts the wave past the first zone's top speed.
   assert.strictEqual(o.novaSpeed(1e6), o.TUNING.novaMaxSpeed);
 });
 
@@ -253,7 +254,7 @@ test('auto catch only covers the first assisted flings, early in the run', () =>
 test('the supernova climbs faster at higher altitude, still capped', () => {
   assert.strictEqual(o.novaSpeed(10), o.novaSpeed(10, 0));
   assert.ok(o.novaSpeed(10, 3000) > o.novaSpeed(10, 0));
-  assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxSpeed);
+  assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxAbsolute);
 });
 
 test('orbitStep boost multiplies the orbit gain and the close-orbit bonus', () => {
@@ -298,4 +299,74 @@ test('second wind: once per run, below HYPERSONIC, only after a few catches', ()
   assert.strictEqual(o.secondWindAllowed(false, 1499, n), true);
   assert.strictEqual(o.secondWindAllowed(false, 300, n - 1), false, 'idle player never earns it');
   assert.strictEqual(o.secondWindAllowed(false, 300, 0), false);
+});
+
+test('momentum is 0 when slow, grows with speed and is 1 at the absolute cap', () => {
+  assert.strictEqual(o.momentum(0), 0);
+  assert.strictEqual(o.momentum(o.TUNING.momentumFrom), 0);
+  assert.strictEqual(o.momentum(o.TUNING.maxSpeed), 1);
+  assert.strictEqual(o.momentum(1e9), 1);
+  let prev = -1;
+  for (let v = 0; v <= o.TUNING.maxSpeed; v += 250) {
+    assert.ok(o.momentum(v) >= prev, 'never drops (at ' + v + ')');
+    prev = o.momentum(v);
+  }
+});
+
+test('momentum multiplier: x1 slow, grows with speed, 1 + momentumGain at the cap', () => {
+  assert.strictEqual(o.momentumGainMul(o.TUNING.startSpeed), 1);
+  assert.ok(o.momentumGainMul(4500) > o.momentumGainMul(2400));
+  assert.ok(o.momentumGainMul(2400) > 1);
+  assert.ok(Math.abs(o.momentumGainMul(o.TUNING.maxSpeed) - (1 + o.TUNING.momentumGain)) < 1e-9);
+});
+
+test('orbit gain snowballs: the same orbit gains more per second when already fast', () => {
+  const orbit = { angle: 0, radius: 200, targetRadius: 200, dir: 1 };
+  const slow = o.orbitStep(orbit, 800, 0.1, 60, 8000).speed - 800;
+  const fast = o.orbitStep(orbit, 5000, 0.1, 60, 8000).speed - 5000;
+  assert.ok(fast > slow * 1.4, 'fast ' + fast + ' vs slow ' + slow);
+});
+
+test('zone caps keep growing past 450 km/s and the absolute cap is far above it', () => {
+  assert.ok(o.TUNING.maxSpeed >= 7500);
+  for (let i = 1; i < o.ZONES.length; i++) assert.ok(o.ZONES[i].maxSpeed > o.ZONES[i - 1].maxSpeed, o.ZONES[i].name);
+  assert.ok(o.ZONES[o.ZONES.length - 1].maxSpeed > 4500, 'the last zone already starts above the old 450 km/s cap');
+  assert.ok(o.maxSpeedForAltitude(20000) > 6000, 'deep runs keep escalating');
+});
+
+test('the supernova top speed scales with the zone speed cap and is capped', () => {
+  assert.strictEqual(o.novaMaxForAltitude(0), o.TUNING.novaMaxSpeed);
+  let prev = 0;
+  for (let m = 0; m <= 60000; m += 500) {
+    const v = o.novaMaxForAltitude(m);
+    assert.ok(v >= prev, 'never drops (at ' + m + ' m)');
+    assert.ok(v <= o.TUNING.novaMaxAbsolute);
+    prev = v;
+  }
+  assert.ok(o.novaMaxForAltitude(8000) > o.novaMaxForAltitude(1500));
+  assert.strictEqual(o.novaMaxForAltitude(1e6), o.TUNING.novaMaxAbsolute);
+});
+
+test('speed fraction (colors, score multiplier) still tops out at 450 km/s', () => {
+  assert.strictEqual(o.speedFraction(o.TUNING.visualTopSpeed), 1);
+  assert.strictEqual(o.speedMultiplier(o.TUNING.visualTopSpeed), 5);
+});
+
+test('Tight Spin tighten: the orbit spirals in to the minimum orbit and gains more there', () => {
+  let orbit = { angle: 0, radius: 60 + 150, targetRadius: 60 + 150, dir: 1 };
+  let loose = { angle: 0, radius: 60 + 150, targetRadius: 60 + 150, dir: 1 };
+  let speedT = 1000;
+  let speedL = 1000;
+  for (let i = 0; i < 240; i++) {
+    const a = o.orbitStep(orbit, speedT, 1 / 60, 60, 8000, { tighten: 45 });
+    const b = o.orbitStep(loose, speedL, 1 / 60, 60, 8000);
+    orbit = a.orbit; speedT = a.speed;
+    loose = b.orbit; speedL = b.speed;
+  }
+  assert.ok(orbit.radius < 60 + 150 - 100, 'spiralled in: ' + orbit.radius);
+  assert.ok(orbit.radius >= 60 + o.TUNING.minOrbitGap);
+  assert.strictEqual(loose.radius, 60 + 150, 'no tighten = stable orbit');
+  assert.ok(speedT > speedL);
+  for (let i = 0; i < 600; i++) orbit = o.orbitStep(orbit, 1000, 1 / 60, 60, 8000, { tighten: 45 }).orbit;
+  assert.strictEqual(orbit.radius, 60 + o.TUNING.minOrbitGap, 'never inside the minimum orbit');
 });

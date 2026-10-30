@@ -7,6 +7,8 @@
 // holder = holds the whole run and never lets go (panic player; overspeed flings it on),
 // mid = a mid-skill human: holds only once within ~110px of a planet's surface, after a 10-15 frame
 // reaction delay, and lets go on the first green aim once 150-400ms (random) into the orbit (never waits for gold).
+// expert = grabs early like skilled, but only releases on a dead-center gold aim (< 0.55 x the PERFECT
+// window) after 150ms; falls back to any green aim when the supernova gap is under 280px or after 2.2-3.2s.
 // Upgrade cards: on every zone entry the headless scene picks a random card at once (reported as cards / avgCards).
 (() => {
   let clock = performance.now();
@@ -40,6 +42,13 @@
     s.chainMilestone = function (level) { milestones++; return proto.chainMilestone.call(this, level); };
     // window.simNoCards = true runs the base game without cards, for comparison.
     if (window.simNoCards) s.openCardPick = function () {};
+    // window.simForceCards = ['spin', ...] picks those cards in order instead of random ones (A/B a build).
+    if (window.simForceCards) {
+      s.openCardPick = function () {
+        const id = window.simForceCards.find((c) => this.ownedCards.indexOf(c) < 0);
+        if (id) this.pickCard(id);
+      };
+    }
     // Only the first PERFECT of a chain pops now, so count them where they happen.
     s.onPerfect = function () { perfects++; proto.onPerfect.call(this); maxChain = Math.max(maxChain, this.perfectChain); };
     s.popText = function (label, color, opts) {
@@ -54,6 +63,7 @@
     let reactFrames = -1;     // mid: frames left before the delayed hold lands
     let greenSince = -1;      // mid: ms of orbit when the aim first turned green
     let greenWait = 0;
+    let expertPatience = 2500; // expert: ms it waits for a gold aim before taking any green one
     let maxSpeed = 0;
     let frames = 0;
     while (!s.isOver && frames < maxSeconds * 60) {
@@ -89,7 +99,11 @@
         left = s.orbitPlanet;
         held += 16.67;
         const assist = s.currentAssist();
+        if (held <= 16.67) expertPatience = 2200 + Math.random() * 1000;
+        const novaGap = s.novaY - s.comet.y;
         const release = style === 'careful' ? assist && held > 200
+          : style === 'expert' ? (assist && assist.angle < 0.55 * s.perfectAngle() && held > 150)
+            || (assist && (novaGap < 280 || held > expertPatience)) || held > expertPatience + 1500
           : style === 'skilled' ? (assist && assist.angle < TUNING.perfectAngle && held > 200) || held > 2500
           : held > releaseAfter;
         if (release) s.releaseHold();
@@ -114,7 +128,7 @@
     const median = (xs) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
     const out = {};
     for (const style of styles) {
-      const runs = Array.from({ length: runsEach }, () => window.simRun(style, 240));
+      const runs = Array.from({ length: runsEach }, () => window.simRun(style, style === 'expert' ? 600 : 240));
       out[style] = {
         seconds: runs.map((r) => r.seconds).sort((a, b) => a - b).join(','),
         medianAlt: median(runs.map((r) => r.alt)),
@@ -130,6 +144,11 @@
         reachedCard: runs.filter((r) => r.firstPickAt !== null).length + '/' + runs.length,
         reached1500: runs.filter((r) => r.alt >= 1500).length + '/' + runs.length,
         medianSeconds: median(runs.map((r) => r.seconds)),
+        maxScore: Math.max(...runs.map((r) => r.score)),
+        maxAlt: Math.max(...runs.map((r) => r.alt)),
+        // Top speed in km/s (the readout): median and best run.
+        medianTopKms: Math.round(median(runs.map((r) => r.maxSpeed)) / 10),
+        maxTopKms: Math.round(Math.max(...runs.map((r) => r.maxSpeed)) / 10),
       };
     }
     // Leave the game as a player would find it: no headless Game scene left running in the background.

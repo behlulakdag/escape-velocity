@@ -163,3 +163,13 @@ test('unknown ids are ignored', () => {
   assert.deepStrictEqual(c.cardMods(['bogus']), c.cardMods([]));
   assert.deepStrictEqual(c.familyCounts(['well', 'bogus', 'armor']), { orbit: 1, fling: 0, flight: 0, shield: 1 });
 });
+
+test('Tight Spin also spirals the orbit in and kicks close catches', () => {
+  const m = c.cardMods(['spin']);
+  assert.strictEqual(m.orbitTighten, c.CARD_TUNING.tightenSpeed);
+  assert.strictEqual(m.tightCatchBonus, c.CARD_TUNING.tightCatchBonus);
+  assert.ok(m.closeOrbitMul > 1.5, 'buffed above the old x1.5');
+  const none = c.cardMods([]);
+  assert.strictEqual(none.orbitTighten, 0);
+  assert.strictEqual(none.tightCatchBonus, 0);
+});

@@ -11,7 +11,7 @@ const CARD_FAMILIES = {
 // Each family has one common, one rare and one legendary card.
 const CARDS = [
   { id: 'well', family: 'orbit', rarity: 'common', name: 'Gravity Well', desc: 'Grab range +30%', icon: 'well' },
-  { id: 'spin', family: 'orbit', rarity: 'rare', name: 'Tight Spin', desc: 'Close orbits gain x1.5', icon: 'spin' },
+  { id: 'spin', family: 'orbit', rarity: 'rare', name: 'Tight Spin', desc: 'Orbits spiral in, close x1.8', icon: 'spin' },
   { id: 'overdrive', family: 'orbit', rarity: 'legendary', name: 'Overdrive', desc: 'Orbit speed gain +25%', icon: 'overdrive' },
   { id: 'perfect', family: 'fling', rarity: 'common', name: 'Wide Perfect', desc: 'Wider PERFECT window', icon: 'perfect' },
   { id: 'sling', family: 'fling', rarity: 'rare', name: 'Slingshot', desc: '+10% speed every release', icon: 'sling' },
@@ -39,7 +39,9 @@ const RARITY_WEIGHT = { common: 6, rare: 3, legendary: 1.5 };
 const CARD_TUNING = {
   setSize: 2,                 // cards of one family needed for its set bonus
   grabRangeMul: 1.3,
-  closeOrbitMul: 1.5,
+  closeOrbitMul: 1.8,
+  tightenSpeed: 45,           // Tight Spin: px/s the orbit spirals in toward the surface
+  tightCatchBonus: 120,       // Tight Spin: px/s kick for a close catch (diving in deep before the hold)
   orbitGainMul: 1.25,
   releaseBonus: 0.1,          // Slingshot: +10% speed on every release
   perfectAngleWide: 0.18,     // rad (base TUNING.perfectAngle is 0.12)
@@ -110,6 +112,8 @@ function cardMods(ownedIds) {
     count: owned.length,
     grabRangeMul: has('well') ? CARD_TUNING.grabRangeMul : 1,
     closeOrbitMul: has('spin') ? CARD_TUNING.closeOrbitMul : 1,
+    orbitTighten: has('spin') ? CARD_TUNING.tightenSpeed : 0,
+    tightCatchBonus: has('spin') ? CARD_TUNING.tightCatchBonus : 0,
     orbitGainMul: has('overdrive') ? CARD_TUNING.orbitGainMul : 1,
     releaseBonus: has('sling') ? CARD_TUNING.releaseBonus : 0,
     perfectAngle,
