@@ -63,3 +63,9 @@
 4. User: play on a real phone in the itch iframe and LISTEN to the audio (never heard yet).
 5. Make the page Public, user submits on the jam page (private prize-contact email!) - early afternoon Oct 31, not at the last hour.
 
+## Oct 30 afternoon
+- [x] Momentum (gains scale with speed, cap 800 km/s, nova scales), flame crown HUD, PERFECT ink ring, second wind grace, Tight Spin buff, earlier visual momentum, milestone stamps wait for card picks. Critic: Fun 4.6, Visual 4.6, Theme 4.7. Final QA: 16/16, ready to submit.
+- [x] User tested on a real phone (no issues) and listened to the audio (sounds good).
+- [x] New itch page https://behlulakdag.itch.io/escape-velocity (DRAFT): HTML, played in browser, 405x720, mobile friendly portrait, fullscreen, cover, GIF (itch/gameplay-page.gif, <3 MB limit) + 6 screenshots, description with AI disclosure (graphics/sounds/code), tags, genre Action, navy/cream theme. deploy.ps1 now targets behlulakdag/escape-velocity.
+- [ ] User reviews the page -> set Public -> user submits on the jam page (private prize-contact email!)
+
