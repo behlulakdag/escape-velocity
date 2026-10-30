@@ -2,7 +2,12 @@
 // supernova. Score, NEW BEST circled in red crayon, a handwritten stats list and the next goal.
 // GameScene passes score, altitude, reason, newBestAltitude, bestAltitude and (optional)
 // topSpeedKmh, maxChain, zoneIndex, seconds, secondWind; a missing optional stat drops its row.
-const GO_CARD = { w: 600, h: 700, pad: 34, x: GAME_WIDTH / 2, y: 548, rowTop: -22, rowStep: 54 };
+const GO_CARD = { w: 600, h: 700, pad: 34, x: GAME_WIDTH / 2, y: 548 };
+// Top speed is the theme's headline stat: written big in hot crayon with doodled flames, between
+// the score and the stats list. The list sits on the page's rule lines (row y + 24).
+const GO_HEAD = { y: -16, labelX: -228, numX: 150, numSize: 96, unitSize: 40 };
+const GO_ROWS = { top: 58, step: 52 };
+const GO_GOAL_Y = 264;
 // Build strip under the page (strip-local coordinates). Five cards get ~127 px slots; names are
 // written at 26 px (~13 CSS px on a 360 px phone) on up to two lines.
 const GO_STRIP = { y: 914, h: 164, left: 62, right: 700, maxSlot: 150, cardY: -30, cardScale: 0.95, labelY: 6, labelSize: 26 };
@@ -83,7 +88,7 @@ class GameOverScene extends Phaser.Scene {
       // Red crayon loop around the score, scrawled in once the count-up lands.
       const ring = uiBoilImage(this, 0, top + 190, 'ui_circle').setTint(UI_CRAYON.red).setScale(0);
       card.add(ring);
-      const label = uiInkText(this, 150, top + 262, 'NEW BEST!', { size: 46, color: uiColorHex(UI_CRAYON.red), stroke: null, rot: -0.08, boil: false });
+      const label = uiInkText(this, this.topSpeed !== undefined ? -140 : 150, top + 262, 'NEW BEST!', { size: 46, color: uiColorHex(UI_CRAYON.red), stroke: null, rot: -0.08, boil: false });
       label.setAlpha(0);
       card.add(label);
       this.time.delayedCall(550, () => {
@@ -97,20 +102,22 @@ class GameOverScene extends Phaser.Scene {
         this.starBurst(at.x, at.y);
       });
     } else {
-      card.add(uiInkText(this, 0, top + 262, 'best: ' + Math.max(previousBest, this.finalScore), { size: 36, color: pencil, stroke: null, rot: 0.02 }));
+      // Left of centre when the top speed flames rise on the right.
+      card.add(uiInkText(this, this.topSpeed !== undefined ? -120 : 0, top + 262, 'best: ' + Math.max(previousBest, this.finalScore), { size: 36, color: pencil, stroke: null, rot: 0.02 }));
     }
 
+    if (this.topSpeed !== undefined) this.showTopSpeed(card);
     this.statRows().forEach((row, i) => {
-      const y = GO_CARD.rowTop + i * GO_CARD.rowStep;
+      const y = this.rowY(i);
       card.add(uiInkText(this, -228, y, row.label, { size: 30, color: pencil, stroke: null, ox: 0, rot: 0.004 * (i % 2 ? 1 : -1) }));
       card.add(uiInkText(this, 250, y - 2, row.value, { size: 36, color: row.color || dark, stroke: null, ox: 1, rot: -0.01 }));
     });
     if (this.secondWind) {
       // Pencil aside in the gap of the last stat row (between its label and value).
       const last = Math.max(0, this.statRows().length - 1);
-      card.add(uiInkText(this, 22, GO_CARD.rowTop + last * GO_CARD.rowStep, '(second wind used)', { size: 25, color: '#2f6fa8', stroke: null, rot: -0.04, boil: false }));
+      card.add(uiInkText(this, 22, this.rowY(last), '(second wind used)', { size: 25, color: '#2f6fa8', stroke: null, rot: -0.04, boil: false }));
     }
-    const goal = uiInkText(this, 10, GO_CARD.rowTop + 5 * GO_CARD.rowStep + 18, this.nextGoal(), { size: 31, color: '#b4441a', stroke: null, rot: -0.025 });
+    const goal = uiInkText(this, 10, GO_GOAL_Y, this.nextGoal(), { size: 31, color: '#b4441a', stroke: null, rot: -0.025 });
     goal.setScale(Math.min(1, 480 / goal.width));
     card.add(goal);
 
@@ -176,6 +183,59 @@ class GameOverScene extends Phaser.Scene {
     this.tweens.add({ targets: strip, y, alpha: 1, delay: 120, duration: 240, ease: 'Back.Out' });
   }
 
+  // Stat row y on the card: under the top speed headline, or one line higher without it.
+  rowY(i) {
+    return GO_ROWS.top + (i + (this.topSpeed !== undefined ? 0 : -1)) * GO_ROWS.step;
+  }
+
+  // "top speed" in pencil, then the number big in hot crayon with flame licks doodled off its top
+  // and dashed speed lines trailing it. It counts up with the score, then punches.
+  showTopSpeed(card) {
+    const H = GO_HEAD;
+    const kms = Math.max(0, Math.round(this.topSpeed));
+    card.add(uiInkText(this, H.labelX, H.y - 8, 'top speed', { size: 32, color: UI_INK.pencilDarkHex, stroke: null, ox: 0, rot: -0.05 }));
+    const flames = this.add.graphics();
+    card.add(flames);
+    const num = uiInkText(this, H.numX, H.y, '0', { size: H.numSize, color: '#d2501c', stroke: '#4a1606', strokeW: 4, ox: 1, rot: -0.04 });
+    const unit = uiInkText(this, H.numX + 12, H.y + 18, 'km/s', { size: H.unitSize, color: '#8a3412', stroke: null, ox: 0, rot: -0.02 });
+    card.add([num, unit]);
+    // Hotter flames for faster runs: 0 at 100 km/s, full at 600 km/s.
+    const heat = Phaser.Math.Clamp((kms - 100) / 500, 0.25, 1);
+    const draw = (tick) => {
+      flames.clear();
+      const w = Math.max(80, num.width * num.scaleX);
+      const seed = tick % 3;
+      const baseY = H.y - num.height * 0.26;
+      const n = 3 + Math.round(heat * 3);
+      for (let i = 0; i < n; i++) {
+        const u = n === 1 ? 0.5 : i / (n - 1);
+        const x = H.numX - w * 0.9 + w * 0.8 * u;
+        const h = (26 + heat * 44) * (0.65 + 0.35 * Math.sin(Math.PI * u)) * (0.85 + uiNoise(i * 5 + seed, 2) * 0.3);
+        inkFlameLick(flames, x, baseY, h, 22 + heat * 12, -0.4, i * 29 + seed * 7, {
+          color: i % 2 ? UI_CRAYON.red : 0xc0561a, fill: i % 2 ? UI_CRAYON.orange : UI_CRAYON.yellow, width: 4, alpha: 0.95,
+        });
+      }
+      // Speed dashes trailing the number to the left.
+      for (let i = 0; i < 3; i++) {
+        const y = H.y - 20 + i * 20;
+        const x1 = H.numX - w - 16 - (i % 2) * 12;
+        uiScribbleLine(flames, x1 - 50 - heat * 20, y + 2, x1, y, seed * 11 + i, { width: 4 + heat * 2, color: UI_INK.dark, amp: 1.2, passes: 1 });
+      }
+    };
+    draw(0);
+    uiOnBoil(this, (v, tick) => { if (flames.active) draw(tick); });
+    const counter = { value: 0 };
+    this.tweens.add({
+      targets: counter, value: kms, duration: 650, ease: 'Cubic.easeOut', delay: 250,
+      onUpdate: () => num.setText(String(Math.floor(counter.value))),
+      onComplete: () => {
+        num.setText(String(kms));
+        num.setScale(1.25);
+        this.tweens.add({ targets: num, scale: 1, duration: 260, ease: 'Back.Out' });
+      },
+    });
+  }
+
   // Handwritten list on the page's rule lines; rows without data are left out.
   statRows() {
     const rows = [];
@@ -184,7 +244,7 @@ class GameOverScene extends Phaser.Scene {
       value: this.altitude + ' m' + (this.newBestAltitude ? '  best!' : ''),
       color: this.newBestAltitude ? '#2f7d32' : undefined,
     });
-    if (this.topSpeed !== undefined) rows.push({ label: 'top speed', value: Math.round(this.topSpeed) + ' km/s' });
+    // Top speed is not a row: it is the page's headline (showTopSpeed).
     // 'combo N' as in the HUD: the 'x' only ever means the score multiplier.
     if (this.maxChain !== undefined) rows.push({ label: 'best combo', value: this.maxChain >= 1 ? this.maxChain + ' perfect' : '-' });
     if (this.zoneIndex !== undefined) rows.push({ label: 'reached', value: ZONES[this.zoneIndex].name });
@@ -258,11 +318,11 @@ function goCardTexture(scene) {
       ctx.lineTo(x + Math.cos(a) * (6 + shape() * 18), y + Math.sin(a) * (6 + shape() * 18));
       ctx.stroke();
     }
-    // Rule lines line up with the stat rows (card-local y = rowTop + k*rowStep + 24).
+    // Rule lines line up with the stat rows (card-local y = GO_ROWS.top + k * step + 24).
     const toTex = (localY) => localY + h / 2 + pad;
     ctx.lineWidth = 2;
-    for (let k = -4; k <= 6; k++) {
-      const y = toTex(GO_CARD.rowTop + k * GO_CARD.rowStep + 24);
+    for (let k = -5; k <= 4; k++) {
+      const y = toTex(GO_ROWS.top + k * GO_ROWS.step + 24);
       ctx.strokeStyle = 'rgba(90,135,200,0.42)';
       ctx.beginPath();
       ctx.moveTo(pad, y + (shape() - 0.5) * 2);

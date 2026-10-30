@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -88,4 +88,54 @@ test('milestone levels escalate in size; the banner sits lower when the card row
   const rowBottom = hud.HUD_CARDS.y + hud.HUD_CARDS.cardH / 2 + 12;
   // Banner title is ~84 px tall: its top must clear the row.
   assert.ok(hud.HUD_BANNER.yWithCards - 50 > rowBottom, 'banner title clears the card row');
+});
+
+test('speed readout: rises snap at once, big rises punch, drops ease down', () => {
+  // A small orbit gain shows at once without a punch.
+  let r = hud.hudSpeedSnap(300, 302);
+  assert.strictEqual(r.shown, 302);
+  assert.strictEqual(r.punch, 0);
+  // A boost (SECOND WIND, milestone, card) snaps and punches, capped.
+  r = hud.hudSpeedSnap(200, 260);
+  assert.strictEqual(r.shown, 260);
+  assert.ok(r.punch > 0.1 && r.punch <= hud.HUD_SNAP.punchMax);
+  assert.strictEqual(hud.hudSpeedSnap(100, 2000).punch, hud.HUD_SNAP.punchMax);
+  // A bigger boost punches harder.
+  assert.ok(hud.hudSpeedSnap(200, 240).punch > hud.hudSpeedSnap(200, 215).punch);
+  // A drop is not snapped by hudSpeedSnap; hudSpeedEase walks down and lands exactly.
+  r = hud.hudSpeedSnap(300, 250);
+  assert.strictEqual(r.shown, 300);
+  let shown = 300;
+  for (let i = 0; i < 120; i++) shown = hud.hudSpeedEase(shown, 250, 1 / 60);
+  assert.strictEqual(shown, 250);
+  const one = hud.hudSpeedEase(300, 250, 1 / 60);
+  assert.ok(one < 300 && one > 290, 'eases, does not jump down');
+  assert.strictEqual(hud.hudSpeedEase(250, 300, 1 / 60), 300, 'ease never lags a rise');
+});
+
+test('momentum cue escalates: more and taller flames, bigger and hotter number, shake only at the top', () => {
+  const none = hud.hudMomentumStyle(0);
+  assert.strictEqual(none.licks, 0);
+  assert.strictEqual(none.shake, 0);
+  assert.strictEqual(none.ink, hud.UI_INK.cream);
+  let prev = hud.hudMomentumStyle(0.1);
+  for (const m of [0.3, 0.5, 0.7, 0.9, 1]) {
+    const s = hud.hudMomentumStyle(m);
+    assert.ok(s.licks >= prev.licks, 'licks at ' + m);
+    assert.ok(s.height > prev.height, 'height at ' + m);
+    assert.ok(s.scale > prev.scale, 'scale at ' + m);
+    prev = s;
+  }
+  assert.strictEqual(hud.hudMomentumStyle(0.6).shake, 0, 'no shake at mid momentum');
+  assert.ok(hud.hudMomentumStyle(1).shake > 0);
+  assert.ok(hud.hudMomentumStyle(1).shake <= hud.HUD_MOMENTUM.shakeMax);
+  assert.strictEqual(hud.hudMomentumStyle(1).ink, hud.UI_CRAYON.red);
+  assert.strictEqual(hud.hudMomentumStyle(0.625).ink, hud.UI_CRAYON.yellow);
+  // Out of range and junk input are clamped.
+  assert.deepStrictEqual(hud.hudMomentumStyle(5), hud.hudMomentumStyle(1));
+  assert.strictEqual(hud.hudMomentumStyle(NaN).licks, 0);
+  // The number's crayon only changes in a few steps (each change re-renders its texture).
+  const inks = new Set();
+  for (let m = 0; m <= 1; m += 0.01) inks.add(hud.hudMomentumStyle(m).ink);
+  assert.ok(inks.size <= 9);
 });

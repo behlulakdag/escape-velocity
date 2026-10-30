@@ -410,3 +410,103 @@ function cardDoodleBurst(scene, x, y, tints, o) {
   }
   scene.tweens.add({ targets: g, alpha: 0, duration: 380, ease: 'Quad.Out', onComplete: () => g.destroy() });
 }
+
+// Doodled flame lick (HUD momentum cue, game over top speed): a pen outline open at the base,
+// rising from (x, y) to a tip h px up that leans by lean * h, with a colored-pencil fill
+// pressed slightly off the outline. Same seed = same wobble (callers change it on the boil clock).
+// o: color (outline), fill (crayon, optional), width, alpha
+function inkFlameLick(g, x, y, h, w, lean, seed, o) {
+  o = o || {};
+  const n = 10;
+  const sway = uiNoise(seed, 99) * 6;
+  const side = (s) => {
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const u = i / n;
+      // Teardrop: round bottom, belly about a third of the way up, pinched to a tip.
+      const half = (w / 2) * Math.sin(Math.PI * Math.pow(1 - u, 1.35));
+      // The centre line sways and the tip whips back (lean), like a licking flame.
+      const cx = x + lean * h * u * u + Math.sin(u * 5 + sway) * w * 0.14 * u;
+      const wob = (uiNoise(seed + (s > 0 ? 17 : 0), i) - 0.5) * Math.max(2, w * 0.14) * u;
+      pts.push({ x: cx + s * half + wob, y: y - h * u + (uiNoise(seed + 5, i) - 0.5) * 2 });
+    }
+    return pts;
+  };
+  const left = side(-1);
+  const right = side(1).reverse();
+  const outline = left.concat(right.slice(1));
+  if (o.fill !== undefined) {
+    g.fillStyle(o.fill, (o.alpha === undefined ? 1 : o.alpha) * 0.8);
+    g.fillPoints(outline.map((p) => ({ x: p.x + 2, y: p.y + 2 })), true);
+  }
+  const width = o.width || 4;
+  for (let pass = 0; pass < 2; pass++) {
+    g.lineStyle(width * (pass ? 0.55 : 1), o.color === undefined ? UI_INK.cream : o.color, (o.alpha === undefined ? 1 : o.alpha) * (pass ? 0.6 : 1));
+    g.beginPath();
+    outline.forEach((p, i) => {
+      const px = p.x + (pass ? 1.5 : 0);
+      if (i === 0) g.moveTo(px, p.y); else g.lineTo(px, p.y);
+    });
+    g.strokePath();
+  }
+}
+
+// Doodled crown of fire along a baseline (x0..x1 at baseY): `tongues` licks of flame up to h px
+// tall, tips whipping back by lean px, as one gel-pen outline with a crayon fill. The baseline
+// itself is not stroked (it hides behind whatever the fire sits on). Same seed = same wobble.
+// o: color (outline), fill (crayon), width, alpha, heights (optional per-tongue 0..1 factors)
+function inkFlameCrown(g, x0, x1, baseY, h, tongues, seed, o) {
+  o = o || {};
+  const n = Math.max(1, tongues);
+  const step = (x1 - x0) / n;
+  const lean = o.lean === undefined ? -step * 0.3 : o.lean;
+  const keys = [{ x: x0, y: baseY }];
+  for (let k = 0; k < n; k++) {
+    const a = x0 + k * step;
+    const rnd = (i) => uiNoise(seed + k * 13, i);
+    const bell = 0.65 + 0.35 * Math.sin(Math.PI * (k + 0.5) / n);
+    const H = h * bell * (0.75 + rnd(1) * 0.4) * (o.heights ? o.heights[k] || 1 : 1);
+    const valley = baseY - h * (0.08 + rnd(2) * 0.12);
+    if (k > 0) keys.push({ x: a, y: valley });
+    // Rises with a slight hollow, whips to a tip, comes down with a fat belly.
+    keys.push({ x: a + step * 0.18, y: baseY - H * 0.45 });
+    keys.push({ x: a + step * 0.42 + lean * 0.5, y: baseY - H * 0.82 });
+    keys.push({ x: a + step * 0.45 + lean, y: baseY - H });
+    keys.push({ x: a + step * 0.78, y: baseY - H * 0.42 });
+  }
+  keys.push({ x: x1, y: baseY });
+  // Catmull-Rom through the keys, with a little pen wobble.
+  const pts = [];
+  for (let i = 0; i < keys.length - 1; i++) {
+    const p0 = keys[Math.max(0, i - 1)];
+    const p1 = keys[i];
+    const p2 = keys[i + 1];
+    const p3 = keys[Math.min(keys.length - 1, i + 2)];
+    for (let s = 0; s < 4; s++) {
+      const t = s / 4;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const cr = (a0, a1, a2, a3) => 0.5 * (2 * a1 + (-a0 + a2) * t + (2 * a0 - 5 * a1 + 4 * a2 - a3) * t2 + (-a0 + 3 * a1 - 3 * a2 + a3) * t3);
+      const j = i * 4 + s;
+      pts.push({ x: cr(p0.x, p1.x, p2.x, p3.x) + (uiNoise(seed + 3, j) - 0.5) * 2.2, y: cr(p0.y, p1.y, p2.y, p3.y) + (uiNoise(seed + 7, j) - 0.5) * 2.2 });
+    }
+  }
+  pts.push(keys[keys.length - 1]);
+  const alpha = o.alpha === undefined ? 1 : o.alpha;
+  if (o.fill !== undefined) {
+    // Pressed slightly off the outline, like colored pencil.
+    g.fillStyle(o.fill, alpha * 0.85);
+    g.fillPoints(pts.map((p) => ({ x: p.x + 2, y: p.y + 2.5 })), true);
+  }
+  const width = o.width || 4;
+  for (let pass = 0; pass < 2; pass++) {
+    g.lineStyle(width * (pass ? 0.5 : 1), o.color === undefined ? UI_INK.cream : o.color, alpha * (pass ? 0.55 : 1));
+    g.beginPath();
+    pts.forEach((p, i) => {
+      const px = p.x + (pass ? 1.5 : 0);
+      const py = p.y + (pass ? -1 : 0);
+      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    });
+    g.strokePath();
+  }
+}

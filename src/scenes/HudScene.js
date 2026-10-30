@@ -129,6 +129,81 @@ function hudFitCardRow(rowLeft, rowRight, preferredX, wallLeft, wallRight, margi
   return { x, scale };
 }
 
+// Speed readout: any rise shows at once (a boost must read as a jump, never a slow count);
+// a big rise punches the number; only a drop eases down.
+const HUD_SNAP = {
+  punchMin: 5,           // km/s: a rise at least this big (and >= punchFrac of the shown speed) punches
+  punchFrac: 0.03,
+  punchBase: 0.1,        // punch scale added: punchBase + jump / punchPer, capped at punchMax
+  punchPer: 120,
+  punchMax: 0.4,
+  burstAt: 25,           // km/s: a rise this big also throws a small ink burst off the number
+  decayRate: 5,          // per second, easing toward a lower speed
+  punchDecay: 9,         // per second, the punch settling back
+};
+
+// Pure helper (tested): the readout after a new target. Rises snap; drops keep the shown value
+// (hudSpeedEase walks it down). punch: extra scale for the readout (0 = none).
+function hudSpeedSnap(shown, target) {
+  if (!(target > shown)) return { shown, punch: 0, jump: 0 };
+  const jump = target - shown;
+  const big = jump >= Math.max(HUD_SNAP.punchMin, shown * HUD_SNAP.punchFrac);
+  return { shown: target, jump, punch: big ? Math.min(HUD_SNAP.punchMax, HUD_SNAP.punchBase + jump / HUD_SNAP.punchPer) : 0 };
+}
+
+// Pure helper (tested): one frame of the readout walking down toward a lower target.
+function hudSpeedEase(shown, target, dt) {
+  if (target >= shown) return target;
+  const gap = target - shown;
+  if (Math.abs(gap) < 0.5) return target;
+  return shown + gap * Math.min(1, dt * HUD_SNAP.decayRate);
+}
+
+// Momentum cue round the speed readout (setMomentum, 0..1): flame licks doodled behind the
+// number, the number pressed in hotter crayon and written bigger, a shiver at the top. Never a bar.
+const HUD_MOMENTUM = {
+  minShow: 0.08,         // below this nothing is drawn
+  maxLicks: 7,
+  minH: 30,              // flame height at minShow .. at 1
+  maxH: 84,
+  ease: 6,               // per second: the shown momentum follows setMomentum
+  shakeFrom: 0.7,
+  shakeMax: 4,           // px
+  scale: 0.16,           // extra readout scale at 1
+  // Number crayon on dark pages: cream ink heats to yellow, orange, then red.
+  stops: [[0, UI_INK.cream], [0.25, UI_INK.cream], [0.625, UI_CRAYON.yellow], [0.875, UI_CRAYON.orange], [1, UI_CRAYON.red]],
+};
+
+function hudLerpColor(a, b, t) {
+  const ch = (s) => Math.round(((a >> s) & 255) + (((b >> s) & 255) - ((a >> s) & 255)) * t);
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
+}
+
+// Pure helper (tested): what the momentum cue looks like at m.
+function hudMomentumStyle(m) {
+  const M = HUD_MOMENTUM;
+  m = Math.max(0, Math.min(1, m || 0));
+  // Quantized so the number's texture is re-rendered only a few times over the whole range.
+  const q = Math.round(m * 8) / 8;
+  let ink = M.stops[M.stops.length - 1][1];
+  for (let i = 1; i < M.stops.length; i++) {
+    if (q <= M.stops[i][0]) {
+      const [t0, c0] = M.stops[i - 1];
+      const [t1, c1] = M.stops[i];
+      ink = hudLerpColor(c0, c1, (q - t0) / (t1 - t0));
+      break;
+    }
+  }
+  if (m < M.minShow) return { licks: 0, height: 0, shake: 0, scale: 0, ink };
+  return {
+    licks: Math.max(2, Math.round(m * M.maxLicks)),
+    height: M.minH + (M.maxH - M.minH) * m,
+    shake: Math.max(0, (m - M.shakeFrom) / (1 - M.shakeFrom)) * M.shakeMax,
+    scale: m * M.scale,
+    ink,
+  };
+}
+
 // Bottom HUD band (speed readout + multiplier) bounds, for fading it under the comet.
 const HUD_PANEL = { left: 130, right: 650, top: GAME_HEIGHT - 190, bottom: GAME_HEIGHT - 70 };
 const HUD_SPEED = { x: 300, y: GAME_HEIGHT - 140, lineY: GAME_HEIGHT - 100, minLine: 70, maxLine: 330 };
@@ -193,11 +268,17 @@ class HudScene extends Phaser.Scene {
 
     // Speed written on the page, with a crayon underline (redrawn only on boil ticks / growth).
     this.speedLine = this.add.graphics();
+    this.momentumGfx = this.add.graphics();   // flame licks behind the number (setMomentum)
+    this.momentum = 0;          // shown momentum, eased toward momentumTarget
+    this.momentumTarget = 0;
+    this.momentumDrawn = -1;    // momentum the flames were last drawn at
+    this.speedPunch = 0;        // extra readout scale from the last boost, settling back
+    this.speedSeen = false;     // the first setStats only sets the number (no punch at launch)
     this.speedBaseX = HUD_SPEED.x;
     this.speedBaseY = HUD_SPEED.y;
     this.speedText = uiInkText(this, this.speedBaseX, this.speedBaseY, '', { size: 54, rot: -0.03, boil: false });
     this.createMultiplierBadge();
-    this.bottomPanel = this.add.container(0, 0, [this.speedLine, this.speedText, this.badge]);
+    this.bottomPanel = this.add.container(0, 0, [this.speedLine, this.momentumGfx, this.speedText, this.badge]);
     // One layer for the stats, so the intro fade never fights the bump tweens on its children.
     this.statsLayer = this.add.container(0, 0, [this.note, this.bottomPanel]);
     const game = this.scene.get('Game');
@@ -218,8 +299,11 @@ class HudScene extends Phaser.Scene {
     this.cardRow = null;
     this.cardRowSpan = null;
     this.setBonusLayer = null;
+    this.setBonusWait = [];    // set bonuses waiting for the zone banner / card pick / another set
+    this.pendingBanner = null; // banner waiting for a set bonus to clear out
+    this.bigClearAt = 0;       // last time a banner or set bonus was on screen
     this.fullscreenButton = addFullscreenButton(this);
-    uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawSpeedLine(true); });
+    uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawSpeedLine(true); this.drawMomentum(true); });
   }
 
   // Owned upgrade cards as taped index-card scraps in one row under the score note, right-aligned
@@ -307,9 +391,31 @@ class HudScene extends Phaser.Scene {
   }
 
   // Set bonus moment: the set name lettered big in the family crayon between its two cards,
-  // above or below the comet (it follows a card pick, so the zone banner is already gone).
+  // above or below the comet. Never on top of a zone banner: while one (or the card pick, or
+  // another set bonus) is up, it waits its turn (flushSetBonus).
   showSetBonus(familyKey) {
     if (typeof SET_BONUSES === 'undefined' || !SET_BONUSES[familyKey]) return;
+    if (this.bigMomentBusy() || this.setBonusWait.length) {
+      if (this.setBonusWait.indexOf(familyKey) < 0) this.setBonusWait.push(familyKey);
+      return;
+    }
+    this.playSetBonus(familyKey);
+  }
+
+  // A zone banner, a banner about to show, a set bonus or the card pick is on screen.
+  bigMomentBusy() {
+    return !!((this.bannerText && this.bannerText.alpha > 0.02) || this.pendingBanner
+      || (this.setBonusLayer && this.setBonusLayer.active) || this.scene.isActive('Cards'));
+  }
+
+  // Waiting set bonuses come out one after the other, a beat after the screen is clear.
+  flushSetBonus(now) {
+    if (this.bigMomentBusy()) { this.bigClearAt = now; return; }
+    if (!this.setBonusWait.length || now - this.bigClearAt < 150) return;
+    this.playSetBonus(this.setBonusWait.shift());
+  }
+
+  playSetBonus(familyKey) {
     const bonus = SET_BONUSES[familyKey];
     const crayon = cardCrayon(familyKey);
     // Away from the comet: it must stay visible while the set name is up.
@@ -502,6 +608,7 @@ class HudScene extends Phaser.Scene {
     this.updateSpeedReadout(time, dt);
     this.updatePageInk();
     this.updatePops();
+    this.flushSetBonus(time);
     this.updateMilestone();
     this.fitCardRow(false);
     // Bottom band eases toward its target alpha, so it does not blink as the comet passes.
@@ -531,6 +638,7 @@ class HudScene extends Phaser.Scene {
     const ink = light ? UI_INK.darkHex : UI_INK.creamHex;
     const edge = light ? UI_INK.creamHex : UI_INK.darkHex;
     for (const t of [this.speedText, this.badgeText, this.bannerText, this.bannerSub]) t.setColor(ink).setStroke(edge, t.style.strokeThickness);
+    this.shown.speedInk = null;   // the momentum crayon is re-applied on the next frame
     this.badgeCircle.setTint(this.levelTint(this.lastMultiplier));
     // Hint: dark ink outlined in orange crayon on cream; yellow on dark pages.
     this.hintText.setColor(light ? UI_INK.darkHex : uiColorHex(UI_CRAYON.yellow))
@@ -566,24 +674,72 @@ class HudScene extends Phaser.Scene {
     this.setColorIfChanged('comboWord', this.comboWord, this.lightPage ? UI_INK.pencilDarkHex : uiColorHex(UI_CRAYON.yellow));
   }
 
-  // The number rolls toward the real speed (fast up, a bit slower down) so gains feel like a
-  // climb, and the handwriting shivers near the top of the range.
+  // Rises were already snapped in setStats (with a punch); drops ease down here. The number is
+  // written bigger and in hotter crayon with momentum, and shivers near the top of the range.
   updateSpeedReadout(time, dt) {
-    const gap = this.targetSpeed - this.shownSpeed;
-    const rate = gap > 0 ? 8 : 5;
-    if (Math.abs(gap) < 0.5) this.shownSpeed = this.targetSpeed;
-    else this.shownSpeed += gap * Math.min(1, dt * rate);
+    this.shownSpeed = hudSpeedEase(this.shownSpeed, this.targetSpeed, dt);
     this.setTextIfChanged('speed', this.speedText, Math.round(this.shownSpeed) + ' km/s');
+    this.momentum += (this.momentumTarget - this.momentum) * Math.min(1, dt * HUD_MOMENTUM.ease);
+    const style = hudMomentumStyle(this.momentum);
+    const ink = this.lightPage ? (this.momentum < 0.3 ? UI_INK.dark : hudDeepen(style.ink, 0.66)) : style.ink;
+    this.setColorIfChanged('speedInk', this.speedText, uiColorHex(ink));
+    this.speedPunch *= Math.exp(-dt * HUD_SNAP.punchDecay);
+    if (this.speedPunch < 0.005) this.speedPunch = 0;
     const f = this.speedFrac;
     const hot = Math.max(0, (f - 0.6) / 0.4);   // 0 below 60% of max, 1 at max
-    const climbing = gap > 3 ? 0.06 : 0;
-    this.speedText.setScale(1 + f * 0.12 + climbing);
-    const shake = hot * 3.5;
+    this.speedText.setScale(1 + f * 0.06 + style.scale + this.speedPunch);
+    const shake = hot * 2 + style.shake;
     this.speedText.setPosition(
       this.speedBaseX + (shake ? Math.sin(time * 0.09) * shake : 0),
       this.speedBaseY + (shake ? Math.cos(time * 0.113) * shake * 0.6 : 0),
     );
     this.drawSpeedLine(false);
+    this.drawMomentum(false);
+  }
+
+  // Momentum 0..1 from GameScene every frame: drives the flame licks and the number's crayon.
+  setMomentum(m) {
+    this.momentumTarget = Math.max(0, Math.min(1, typeof m === 'number' && isFinite(m) ? m : 0));
+  }
+
+  // Flame licks doodled behind the speed number, rising off its top edge and leaning back
+  // (the number is flying). More, taller and hotter with momentum. Redrawn on the boil clock
+  // (line boil) or when the momentum moved enough to change the drawing.
+  drawMomentum(force) {
+    const g = this.momentumGfx;
+    if (!g) return;
+    const m = this.momentum;
+    if (!force && Math.abs(m - this.momentumDrawn) < 0.04) return;
+    this.momentumDrawn = m;
+    g.clear();
+    const style = hudMomentumStyle(m);
+    if (!style.licks) return;
+    const seed = (this.boilTick || 0) % 3;   // three boil poses, like the other ink
+    const textW = Math.max(150, this.speedText.width * this.speedText.scaleX);
+    const textH = this.speedText.height * this.speedText.scaleY;
+    const cx = this.speedText.x;
+    const baseY = this.speedText.y - textH * 0.34;
+    const dark = this.lightPage;
+    const outer = dark ? hudDeepen(UI_CRAYON.red, 0.8) : UI_CRAYON.red;
+    const mid = dark ? hudDeepen(UI_CRAYON.orange, 0.75) : UI_CRAYON.orange;
+    const inner = dark ? hudDeepen(UI_CRAYON.yellow, 0.7) : UI_CRAYON.yellow;
+    const ink = dark ? UI_INK.dark : UI_INK.cream;
+    // One crown of fire across the top of the number (gel-pen outline, crayon fill); hotter
+    // momentum adds a second, yellow crown inside it.
+    // Each tongue is ~48 px wide: low momentum is a small fire, high momentum spans the number.
+    const span = Math.min(textW * 0.92, style.licks * 48);
+    const x0 = cx - textW * 0.02 - span / 2;
+    const x1 = x0 + span;
+    const outerFill = m > 0.6 ? mid : outer;
+    inkFlameCrown(g, x0, x1, baseY, style.height, style.licks, seed * 11 + 1, {
+      color: ink, fill: outerFill, width: 2.5 + m * 2, alpha: 0.6 + m * 0.4,
+    });
+    if (m > 0.45) {
+      const pad = textW * 0.08;
+      inkFlameCrown(g, x0 + pad, x1 - pad, baseY + 2, style.height * 0.55, Math.max(1, style.licks - 1), seed * 7 + 5, {
+        color: m > 0.85 ? inner : mid, fill: inner, width: 2, alpha: 0.9,
+      });
+    }
   }
 
   // Crayon underline whose length tracks speed, plus "zip" dashes trailing the number when fast.
@@ -606,7 +762,8 @@ class HudScene extends Phaser.Scene {
       for (let i = 0; i < marks; i++) {
         const y = HUD_SPEED.y - 24 + i * 22;
         const x = x0 - 18 - (i % 2) * 14;
-        uiScribbleLine(g, x - 46 + i * 6, y, x, y - 3, seed + i * 7, { width: 4, color: ink, amp: 1.2, passes: 1 });
+        // Momentum presses the zip dashes harder.
+        uiScribbleLine(g, x - 46 + i * 6 - this.momentum * 18, y, x, y - 3, seed + i * 7, { width: 4 + this.momentum * 3.5, color: ink, amp: 1.2, passes: 1 });
       }
     }
   }
@@ -619,6 +776,18 @@ class HudScene extends Phaser.Scene {
     this.setTextIfChanged('alt', this.altText, altitude + ' m');
     this.speedFrac = speedFraction(speed);
     this.targetSpeed = displaySpeed !== undefined ? displaySpeed : speed / 10;
+    // A rise shows at once; a boost (SECOND WIND, milestone, card) punches the number.
+    const snap = hudSpeedSnap(this.shownSpeed, this.targetSpeed);
+    this.shownSpeed = snap.shown;
+    if (snap.punch && this.speedSeen) {
+      this.speedPunch = Math.max(this.speedPunch, snap.punch);
+      if (snap.jump >= HUD_SNAP.burstAt && this.statsLayer && this.statsLayer.alpha > 0.5) {
+        const ink = this.lightPage ? UI_INK.dark : UI_INK.cream;
+        cardDoodleBurst(this, this.speedText.x, this.speedText.y, [UI_CRAYON.yellow, UI_CRAYON.orange, ink],
+          { count: 6, reach: 120, squashY: 0.5, ink: this.lightPage ? UI_INK.dark : undefined });
+      }
+    }
+    this.speedSeen = true;
     const level = speedMultiplier(speed);
     if (level !== this.lastMultiplier) {
       const previousLevel = this.lastMultiplier;
@@ -907,6 +1076,7 @@ class HudScene extends Phaser.Scene {
   clearPops() {
     this.popQueue.length = 0;
     this.popWait = [];
+    this.setBonusWait = [];
     if (this.milestone) { this.milestone.destroy(); this.milestone = null; }
     if (this.popLine) this.removePop(this.popLine);
   }
@@ -993,8 +1163,22 @@ class HudScene extends Phaser.Scene {
     };
   }
 
-  // opts.duration: ms fully visible before the fade (default 1400).
+  // opts.duration: ms fully visible before the fade (default 1400). A set bonus on screen is
+  // hurried off first, so the two never overlap (the zone banner keeps its timing for the pick).
   showBanner(title, subtitle, opts) {
+    if (this.pendingBanner) { this.pendingBanner.remove(false); this.pendingBanner = null; }
+    const layer = this.setBonusLayer;
+    if (layer && layer.active && layer.alpha > 0.05) {
+      this.tweens.killTweensOf(layer);
+      this.tweens.add({ targets: layer, alpha: 0, duration: 140, ease: 'Quad.Out',
+        onComplete: () => { if (this.setBonusLayer === layer) this.setBonusLayer = null; layer.destroy(); } });
+      this.pendingBanner = this.time.delayedCall(170, () => { this.pendingBanner = null; this.playBanner(title, subtitle, opts); });
+      return;
+    }
+    this.playBanner(title, subtitle, opts);
+  }
+
+  playBanner(title, subtitle, opts) {
     const hold = opts && opts.duration !== undefined ? opts.duration : 1400;
     const parts = this.bannerParts();
     this.tweens.killTweensOf(parts);
@@ -1027,6 +1211,8 @@ class HudScene extends Phaser.Scene {
 
   // The card pick is opening: the banner clears out fast so the card header never overlaps it.
   hideBanner() {
+    // A banner still waiting for a set bonus to clear is superseded by the card header.
+    if (this.pendingBanner) { this.pendingBanner.remove(false); this.pendingBanner = null; }
     const parts = this.bannerParts();
     this.tweens.killTweensOf(parts);
     const visible = parts.filter(p => p.alpha > 0);
