@@ -1,7 +1,8 @@
 // Upgrade pick overlay, launched by GameScene on zone entry:
 //   this.scene.launch('Cards', { choices: [ids], owned: [ids], timeout: 6 })
 // Shows up to 3 cards over the slowed game; a tap (or the auto-pick of the middle card when the
-// countdown runs out) plays the exit, then emits game.events 'cards:picked' (id) once and stops.
+// countdown runs out) plays the exit. Taps count only once every card has landed (+ armDelay), and
+// the countdown starts then too (see the pure pick rules below), then emits game.events 'cards:picked' (id) once and stops.
 // The exit runs BEFORE the emit because GameScene stops this scene as soon as it hears the pick.
 // Card data comes from src/cards.js (CARDS, CARD_FAMILIES, SET_BONUSES, activeSetBonuses).
 //
@@ -22,7 +23,40 @@ const CARD_UI = {
   headerY: 548,
   hitSlop: 18,          // px of forgiveness round a card for a tap
   autoWarn: 2,          // seconds left when the middle card starts nudging
+  armDelay: 0.35,       // s after the last card lands before a press may pick
+  // The countdown only starts once armed, so it is shorter than GameScene's timeout by this much:
+  // GameScene's safety net auto-picks at timeout + 1.5 s after opening, and deal-in + arm + the
+  // tap grace + the exit animation must all fit inside that.
+  countdownTrim: 1,
+  tapGrace: 0.6,        // s the auto-pick waits for a finger that is already down on the page
 };
+
+// ---- pure pick rules (unit tested in tests/cards-ui.test.js) ----
+
+// Seconds left on the countdown. It does not run until the cards are armed (armAt = null).
+function cardCountdownLeft(elapsed, armAt, seconds) {
+  if (armAt === null || armAt === undefined) return seconds;
+  return Math.max(0, seconds - Math.max(0, elapsed - armAt));
+}
+
+// A press counts only if it went down after the cards were armed: a finger already on the
+// glass from gameplay, or a press landing on cards still being dealt, never picks.
+function cardPressCounts(downAt, armAt) {
+  return armAt !== null && armAt !== undefined && downAt >= armAt;
+}
+
+// Card picked by a release: the pressed card, only if the finger is still on that same card.
+function cardReleasePick(pressedIndex, upIndex) {
+  return pressedIndex >= 0 && upIndex === pressedIndex ? pressedIndex : -1;
+}
+
+// Time up: auto-pick now, unless a counted finger is still down (it gets `grace` s to lift,
+// so the auto-pick never steals a tap in progress). timeUpAt = elapsed when left first hit 0.
+function cardAutoPickDue(left, fingerDown, elapsed, timeUpAt, grace) {
+  if (left > 0) return false;
+  if (!fingerDown) return true;
+  return elapsed - timeUpAt >= grace;
+}
 
 // Card center x that keeps a card scaled by `scale` (plus its border marks) inside the screen.
 function cardSafeX(x, scale) {
@@ -183,6 +217,11 @@ class CardScene extends Phaser.Scene {
     this.scene.bringToTop();
     this.picked = false;
     this.pressed = null;
+    this.pressedPointer = -1;  // id of the pointer holding this.pressed
+    this.livePresses = {};     // pointer id -> true for counted presses still down
+    this.armAt = null;         // this.elapsed when presses start counting (all cards landed + armDelay)
+    this.timeUpAt = null;
+    this.countdown = Math.max(2, this.timeout - CARD_UI.countdownTrim);
     // Seconds since opening, summed from update deltas: this.time.now is still 0 inside create()
     // of a freshly launched scene, so a timestamp taken here would expire the countdown at once.
     this.elapsed = 0;
@@ -230,21 +269,23 @@ class CardScene extends Phaser.Scene {
     this.ringAnchor = this.cards[this.autoIndex]
       ? { x: this.cards[this.autoIndex].baseX, y: CARD_UI.centerY + CARD_UI.height * CARD_UI.rowScale / 2 + 96 }
       : { x: GAME_WIDTH / 2, y: CARD_UI.centerY };
-    this.ringText.setPosition(this.ringAnchor.x, this.ringAnchor.y + 1).setAlpha(0);
+    // The ring (and its clock) only appears once the cards are armed, so every number it shows
+    // lasts a real second.
+    this.ringText.setPosition(this.ringAnchor.x, this.ringAnchor.y + 1).setAlpha(0).setText(String(this.countdown));
     this.ringGfx.setAlpha(0);
-    this.tweens.add({ targets: [this.ringText, this.ringGfx], alpha: 1, delay: 300, duration: 200 });
     uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawCountdown(); });
 
-    // A tap picks on release. Only a press that started in this scene counts (a finger already
-    // holding the comet when the pick opened never picks); no time guard beyond that.
+    // A tap picks on release, and only the card it went down on and came up on. Presses that went
+    // down before the cards were armed (a finger held from gameplay, or a tap meant for the game that
+    // lands on the dealing cards) are ignored for their whole life.
     this.input.on('pointerdown', (p) => this.onPointerDown(p));
-    this.input.on('pointerup', () => this.onPointerUp());
-    this.input.on('pointerupoutside', () => this.onPointerUp());
+    this.input.on('pointerup', (p) => this.onPointerUp(p));
+    this.input.on('pointerupoutside', (p) => this.onPointerUp(p));
 
     if (this.input.keyboard) {
       this.input.keyboard.on('keydown', (e) => {
         const k = parseInt(e.key, 10);
-        if (k >= 1 && k <= this.cards.length) this.pick(k - 1);
+        if (k >= 1 && k <= this.cards.length && this.armAt !== null) this.pick(k - 1);
       });
     }
 
@@ -322,8 +363,7 @@ class CardScene extends Phaser.Scene {
     const restAngle = ((uiHash(id) % 100) / 100 - 0.5) * 5;
     const box = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT + h, [inner]);
     box.setSize((w + 14) * CARD_UI.rowScale, (h + 30) * CARD_UI.rowScale);
-    // Only for the hand cursor: taps are hit-tested by the scene (see onPointerDown), so a card
-    // still dealing in (moving under the finger) takes the very first tap.
+    // Only for the hand cursor: taps are hit-tested by the scene (see onPointerDown).
     box.setInteractive({ useHandCursor: true });
     const entry = { id, card, box, inner, rarity: card.rarity, color: crayon, baseX: x, baseY: y, restAngle, index, landed: false };
 
@@ -384,13 +424,15 @@ class CardScene extends Phaser.Scene {
   }
 
   onPointerDown(p) {
-    if (!this.canPick()) return;
+    if (!this.canPick() || !cardPressCounts(this.elapsed, this.armAt)) return;
+    this.livePresses[p.id] = true;
     const index = this.cardAtPoint(p.x, p.y);
     if (index < 0) return;
     const entry = this.cards[index];
     if (this.pressed && this.pressed !== entry) this.release(this.pressed);
     this.pressed = entry;
-    // Pressed: the card snaps to its spot (ending the deal-in) and squashes under the finger.
+    this.pressedPointer = p.id;
+    // Pressed: the card snaps to its spot and squashes under the finger.
     // The squash widens it, so an edge card steps inward to keep its labels on screen.
     this.tweens.killTweensOf(entry.box);
     entry.landed = true;
@@ -406,11 +448,17 @@ class CardScene extends Phaser.Scene {
     this.tweens.add({ targets: entry.box, x: entry.baseX, scaleX: 1, scaleY: 1, duration: 160, ease: 'Back.Out' });
   }
 
-  // Release anywhere commits the pressed card: the deal-in moves cards under the finger, so a
-  // drift off the card between press and release must not cost the pick.
-  onPointerUp() {
-    if (!this.pressed || this.picked) return;
-    this.pick(this.pressed.index);
+  // Only a counted press (see onPointerDown) can pick, and only the card it is still on: a finger
+  // that slid off its card cancels (the card springs back) instead of picking something else.
+  onPointerUp(p) {
+    if (!this.livePresses[p.id]) return;
+    delete this.livePresses[p.id];
+    if (this.picked || !this.pressed || p.id !== this.pressedPointer) return;
+    const entry = this.pressed;
+    this.pressed = null;
+    this.pressedPointer = -1;
+    const index = cardReleasePick(entry.index, this.cardAtPoint(p.x, p.y));
+    if (index >= 0) this.pick(index); else this.release(entry);
   }
 
   pick(index) {
@@ -454,12 +502,16 @@ class CardScene extends Phaser.Scene {
   update(time, delta) {
     const t = time / 1000;
     this.elapsed += Math.min(delta, 100) / 1000;   // a stalled tab must not eat the countdown
-    const left = Math.max(0, this.timeout - this.elapsed);
     for (const c of this.cards) {
       // Gentle idle float once landed (on the inner layer, so it never fights the box tweens).
       c.inner.y = c.landed && !this.picked ? Math.sin(t * 2.6 + c.index * 1.3) * 4 : 0;
     }
     if (this.picked) return;
+    if (this.armAt === null && this.cards.length && this.cards.every((c) => c.landed)) {
+      this.armAt = this.elapsed + CARD_UI.armDelay;
+      this.tweens.add({ targets: [this.ringText, this.ringGfx], alpha: 1, delay: CARD_UI.armDelay * 1000, duration: 150 });
+    }
+    const left = cardCountdownLeft(this.elapsed, this.armAt, this.countdown);
     const label = String(Math.ceil(left));
     if (this.ringText.text !== label) {
       this.ringText.setText(label);
@@ -473,8 +525,13 @@ class CardScene extends Phaser.Scene {
     if (auto && auto.landed && left < CARD_UI.autoWarn && this.pressed !== auto) {
       auto.box.setAngle(auto.restAngle + Math.sin(t * 22) * 2.2 * (1 - left / CARD_UI.autoWarn));
     }
-    // Time up: a card under the finger wins over the default pick.
-    if (left <= 0) this.pick(this.pressed ? this.pressed.index : this.autoIndex);
+    // Time up: a finger still down gets tapGrace to lift (its release picks); after that the
+    // card under it wins over the default pick.
+    if (left <= 0 && this.timeUpAt === null) this.timeUpAt = this.elapsed;
+    const fingerDown = Object.keys(this.livePresses).length > 0;
+    if (cardAutoPickDue(left, fingerDown, this.elapsed, this.timeUpAt, CARD_UI.tapGrace)) {
+      this.pick(this.pressed ? this.pressed.index : this.autoIndex);
+    }
   }
 
   // Pencil ring: a faint full sketch circle plus a darker arc for the time left, both wobbling
@@ -483,8 +540,8 @@ class CardScene extends Phaser.Scene {
     if (this.picked || !this.ringGfx) return;
     const g = this.ringGfx;
     const { x, y } = this.ringAnchor;
-    const left = Math.max(0, this.timeout - this.elapsed);
-    const frac = left / this.timeout;
+    const left = cardCountdownLeft(this.elapsed, this.armAt, this.countdown);
+    const frac = left / this.countdown;
     const urgent = left < CARD_UI.autoWarn;
     const seed = this.boilTick || 0;
     const r = 34;
@@ -510,4 +567,8 @@ class CardScene extends Phaser.Scene {
       stroke(-Math.PI / 2 + 0.1, -Math.PI / 2 + UI_TAU * frac * 0.85, 3, color, 0.6, 7);
     }
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { CARD_UI, cardCountdownLeft, cardPressCounts, cardReleasePick, cardAutoPickDue };
 }
