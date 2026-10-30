@@ -68,6 +68,7 @@ class GameScene extends Phaser.Scene {
     this.autoCatchTarget = null;
     this.initFeel();
     this.initCards();
+    this.initProgress();
 
     this.comet = { x: GAME_WIDTH / 2, y: this.startY, vx: 0, vy: -this.speed };
 
@@ -92,9 +93,11 @@ class GameScene extends Phaser.Scene {
     this.speedGfx = this.add.graphics().setScrollFactor(0);
     this.catchGfx = this.add.graphics();   // teaching ring around the planet to catch next
     this.cardFxGfx = this.add.graphics();  // card effects: wind lines, shockwave line, card doodles
+    this.ghostGfx = this.add.graphics();   // best-run ghost (pencil comet, BEST arrow, end X)
     this.cometGfx = this.add.graphics();
     this.introGfx = this.add.graphics();
     this.createBestMarker();
+    this.createGhostLabels();
     this.scene.launch('Hud');
     this.hud = this.scene.get('Hud');
     this.learnedCatch = hasLearnedCatch();
@@ -163,6 +166,186 @@ class GameScene extends Phaser.Scene {
     this.isHolding = true;
   }
 
+  // ---------- meta progression (src/progress.js): missions, skins, journal, ghost ----------
+
+  initProgress() {
+    const P = !this.headless && typeof PROGRESS !== 'undefined' ? PROGRESS : null;
+    let skin = null;
+    let ghost = null;
+    try {
+      if (P) skin = P.equippedSkin();
+      if (P) ghost = P.loadGhost();
+    } catch (e) { /* broken save: classic comet, no ghost */ }
+    this.skin = skin;
+    this.ghost = ghost && ghost.length >= 2 ? ghost : null;
+    this.ghostRec = [];          // this run's path, [{t, x, y}] every GHOST_STEP s of run time
+    this.ghostNextT = 0;
+    this.reportedKms = 0;        // last km/s integer reported as 'speed'
+    this.reportedAlt = 0;
+    this.machStamped = 0;        // highest MACH tier already stamped this run
+    this.bigPromptText = '';     // first-run 'HOLD!' / 'LET GO!' currently asked of the HUD
+  }
+
+  // One run event for missions / coins / journal. The headless sim never reports (no saves at all).
+  reportProgress(event, value) {
+    if (this.headless || typeof PROGRESS === 'undefined') return;
+    try { PROGRESS.report(event, value); } catch (e) { /* progress must never break a run */ }
+  }
+
+  // Run stats that only ever grow: top km/s, best altitude, and the MACH tier stamps.
+  reportRunStats() {
+    if (this.headless) return;
+    const kms = Math.floor(this.speed / 10);
+    if (kms > this.reportedKms) {
+      this.reportedKms = kms;
+      this.reportProgress('speed', kms);
+      const tier = nextMachTier(this.machStamped, machNumber(this.speed / 10));
+      if (tier) this.machTier(tier);
+    }
+    if (this.bestAltitude > this.reportedAlt) {
+      this.reportedAlt = this.bestAltitude;
+      this.reportProgress('altitude', this.bestAltitude);
+    }
+  }
+
+  // First pass of a MACH tier this run: the HUD stamps it (it waits behind banners, the card pick
+  // and other stamps itself); a small ink burst marks the moment on the comet right away.
+  machTier(tier) {
+    this.machStamped = tier;
+    if (this.hud && typeof this.hud.showMachTier === 'function') this.hud.showMachTier(tier);
+    this.burst(this.comet.x, this.comet.y, 0xff9a2e, 8, 150);
+    this.zoomKick = Math.max(this.zoomKick, 0.03);
+  }
+
+  // Samples the comet path for the best-run ghost (~10 per second of run time).
+  recordGhost() {
+    if (this.headless || !this.launched) return;
+    if (this.elapsed < this.ghostNextT) return;
+    this.ghostNextT = this.elapsed + GameScene.GHOST_STEP;
+    this.ghostRec.push({ t: this.elapsed, x: this.comet.x, y: this.comet.y });
+  }
+
+  // First-run timing cues in big lettering: 'HOLD!' as a planet comes into reach, 'LET GO!' once
+  // the aim is green/gold. Only until the catch loop is learned (same flag as the auto catch).
+  updateBigPrompt() {
+    if (this.headless || !this.hud || typeof this.hud.bigPrompt !== 'function') return;
+    let want = '';
+    if (!this.learnedCatch && !this.isOver && !this.cardPick && !this.introActive) {
+      if (this.orbit) {
+        if (this.isHolding && this.currentAssist()) want = 'LET GO!';
+      } else if (!this.scrape && !this.isHolding && this.planetComingIntoReach()) {
+        want = 'HOLD!';
+      }
+    }
+    if (want === this.bigPromptText) return;
+    this.bigPromptText = want;
+    if (want) this.hud.bigPrompt(want);
+    else if (typeof this.hud.clearBigPrompt === 'function') this.hud.clearBigPrompt();
+  }
+
+  // A grabbable planet the comet is about to reach (a little before the grab zone, so the
+  // prompt can be read before the hold has to happen).
+  planetComingIntoReach() {
+    const c = this.comet;
+    const range = this.grabRange() + GameScene.HOLD_PROMPT_LEAD;
+    for (const p of this.planets) {
+      if (p === this.noGrabPlanet || !canGrabPlanet(c.x, c.y, c.vx, c.vy, p)) continue;
+      if (Phaser.Math.Distance.Between(c.x, c.y, p.x, p.y) < p.radius + range) return p;
+    }
+    return null;
+  }
+
+  // World-space pencil labels for the ghost ('BEST' tag) and where the best run ended.
+  createGhostLabels() {
+    const style = { fontFamily: FONT, fontSize: '26px', color: '#f4ead0', stroke: '#14121c', strokeThickness: 6 };
+    this.ghostTag = this.add.text(0, 0, 'BEST', style).setOrigin(0.5, 1).setVisible(false);
+    this.ghostEndLabel = this.add.text(0, 0, 'your best ended here', Object.assign({}, style, { fontSize: '22px' }))
+      .setOrigin(0.5, 0).setVisible(false);
+  }
+
+  // The best run replayed as a faint dashed pencil comet (by run time), purely visual: no collision,
+  // no input. Off screen it becomes a small BEST arrow at the top/bottom edge; an ink X marks where
+  // that run ended. It fades out when it overlaps the real comet.
+  drawGhost(view) {
+    const g = this.ghostGfx;
+    g.clear();
+    this.ghostTag.setVisible(false);
+    this.ghostEndLabel.setVisible(false);
+    if (!this.ghost || this.headless) return;
+    const cam = this.cameras.main;
+    const inv = 1 / cam.zoom;
+    const t = this.time.now / 1000;
+    const rnd = artRandom(ART.boilFrame(t) * 29 + 3);
+    const ink = ART.ink;
+    const light = ART.inkMode === 'd';
+    const tagColor = light ? '#2a2018' : '#f4ead0';
+    const tagStroke = light ? '#fff6dc' : '#14121c';
+    // Ink X where the ghost run ended.
+    const last = this.ghost[this.ghost.length - 1];
+    // An orbit can swing the comet past a wall: keep the mark on the page.
+    const end = { x: Phaser.Math.Clamp(last.x, 40, GAME_WIDTH - 40), y: last.y };
+    if (end.y > view.top - 80 && end.y < view.bottom + 80) {
+      const s = 22;
+      for (const k of [-1, 1]) {
+        const a = { x: end.x - s + (rnd() - 0.5) * 4, y: end.y - k * s + (rnd() - 0.5) * 4 };
+        const b = { x: end.x + s + (rnd() - 0.5) * 4, y: end.y + k * s + (rnd() - 0.5) * 4 };
+        g.lineStyle(12, ART.backing, 0.45);
+        g.lineBetween(a.x, a.y, b.x, b.y);
+        g.lineStyle(6 + rnd() * 2, ink, 0.75);
+        g.lineBetween(a.x, a.y, b.x, b.y);
+      }
+      this.ghostEndLabel.setPosition(Phaser.Math.Clamp(end.x, 150, GAME_WIDTH - 150), end.y + s + 8)
+        .setScale(inv).setAlpha(0.75).setColor(tagColor).setStroke(tagStroke, 6).setVisible(!this.isOver);
+    }
+    if (this.introActive || this.isOver) return;
+    const pos = ghostPositionAt(this.ghost, this.elapsed);
+    if (!pos || pos.done) return;
+    const r = TUNING.cometRadius;
+    const margin = 90 * inv;
+    // Off screen: a small pencil arrow at the edge pointing at it, with the BEST tag.
+    if (pos.y < view.top + margin || pos.y > view.bottom - margin) {
+      const above = pos.y < view.top + margin;
+      const x = Phaser.Math.Clamp(pos.x, view.left + 70 * inv, view.right - 70 * inv);
+      const y = above ? view.top + GameScene.GHOST_ARROW_TOP * inv : view.bottom - GameScene.GHOST_ARROW_BOTTOM * inv;
+      const dirY = above ? -1 : 1;
+      const len = 26 * inv;
+      const tip = { x, y: y + dirY * len };
+      const wings = [{ x: x - 18 * inv, y: y + dirY * (len - 18 * inv) }, tip, { x: x + 18 * inv, y: y + dirY * (len - 18 * inv) }];
+      g.lineStyle(10 * inv, ART.backing, 0.4);
+      g.lineBetween(x, y - dirY * len * 0.6, tip.x, tip.y);
+      g.strokePoints(wings, false);
+      g.lineStyle(5 * inv, ink, 0.7);
+      g.lineBetween(x + (rnd() - 0.5) * 2, y - dirY * len * 0.6, tip.x, tip.y);
+      g.strokePoints(wings.map((p) => ({ x: p.x + (rnd() - 0.5) * 2, y: p.y + (rnd() - 0.5) * 2 })), false);
+      this.ghostTag.setOrigin(0.5, above ? 0 : 1).setPosition(x, y - dirY * len * 0.7)
+        .setScale(inv * 0.9).setAlpha(0.7).setColor(tagColor).setStroke(tagStroke, 6).setVisible(true);
+      return;
+    }
+    // On screen: faint dashed pencil comet + a short dashed trail, fading near the real comet.
+    const dist = Phaser.Math.Distance.Between(pos.x, pos.y, this.comet.x, this.comet.y);
+    const fade = Phaser.Math.Clamp((dist - r) / 140, 0, 1);
+    if (fade <= 0.02) return;
+    const alpha = 0.65 * fade;
+    const trail = [pos];
+    for (let k = 1; k <= 6; k++) {
+      const q = ghostPositionAt(this.ghost, this.elapsed - k * 0.06);
+      if (q) trail.push(q);
+    }
+    for (let k = 0; k + 1 < trail.length; k += 2) {
+      const a = trail[k];
+      const b = trail[k + 1];
+      g.lineStyle(Math.max(2, 6 - k), ink, alpha * (1 - k / 8));
+      g.lineBetween(a.x + (rnd() - 0.5) * 3, a.y + (rnd() - 0.5) * 3, b.x, b.y);
+    }
+    ART.dashedRing(g, pos.x, pos.y, r * 1.05, 10, rnd() * 6, 5, ink, alpha, rnd);
+    // Two pencil dots for eyes, so it reads as the comet's past self rather than a ring.
+    g.fillStyle(ink, alpha);
+    g.fillCircle(pos.x - r * 0.32, pos.y - r * 0.1, 3.5);
+    g.fillCircle(pos.x + r * 0.32, pos.y - r * 0.1, 3.5);
+    this.ghostTag.setOrigin(0.5, 1).setPosition(pos.x, pos.y - r * 1.3).setScale(inv * 0.8)
+      .setAlpha(0.7 * fade).setColor(tagColor).setStroke(tagStroke, 6).setVisible(true);
+  }
+
   // ---------- upgrade cards (rules in src/cards.js, UI in CardScene) ----------
 
   initCards() {
@@ -199,6 +382,8 @@ class GameScene extends Phaser.Scene {
     // The simulator has no UI: it picks a random card at once.
     if (this.headless) return this.pickCard(choices[Math.floor(Math.random() * choices.length)]);
     this.cardPick = { choices, realT: 0 };
+    this.reportProgress('cardOffered', choices.slice());
+    this.updateBigPrompt();   // the cards own the screen: no HOLD! / LET GO! over them
     // Gameplay input is ignored while choosing; an orbit just keeps spinning (orbits are stable).
     this.isHolding = false;
     this.sfx('cardopen', {});
@@ -240,11 +425,13 @@ class GameScene extends Phaser.Scene {
     const newSets = activeSetBonuses(this.ownedCards).filter((f) => setsBefore.indexOf(f) < 0);
     if (newSets.indexOf('shield') >= 0) this.rescuesLeft = this.mods.rescues;
     const color = CARD_FAMILIES[card.family].color;
+    this.reportProgress('card', id);
     this.sfx('cardpick', { id });
     this.popText(card.name.toUpperCase() + '!', GameScene.hex(color), { size: 40, duration: 900 });
     this.burst(this.comet.x, this.comet.y, color, 14, 150);
     if (this.hud.setCards) this.hud.setCards(this.ownedCards.slice());
     for (const family of newSets) {
+      this.reportProgress('setbonus', family);
       if (this.hud.showSetBonus) this.hud.showSetBonus(family);
       this.sfx('setbonus', { family });
       this.burst(this.comet.x, this.comet.y, CARD_FAMILIES[family].color, 22, 220);
@@ -311,6 +498,7 @@ class GameScene extends Phaser.Scene {
     // Priority 3 = the HUD's high priority: it goes below the comet, never queued behind a banner.
     this.windGraceT = GameScene.WIND_GRACE;
     this.popText('SECOND WIND!', '#5eff8f', { size: 60, duration: 1100, priority: 3 });
+    this.reportProgress('secondwind');
     this.sfx('secondwind');
     if (this.hud.flash) this.hud.flash(0x5eff8f, 0.14, 240, 0.14);
     this.cameras.main.shake(220, 0.012);
@@ -559,6 +747,7 @@ class GameScene extends Phaser.Scene {
     this.perfectPulseAt = this.time.now;
     this.perfectFlashAt = this.time.now;   // art: ink ring burst + comet flash on EVERY PERFECT
     const chain = this.perfectChain;
+    this.reportProgress('perfect', chain);
     this.score += perfectChainBonus(chain) * this.mods.chainScoreMul;
     if (this.mods.afterburnerSeconds > 0) this.afterburnerT = this.mods.afterburnerSeconds;
     if (this.mods.chainSpeed > 0 && chain > 1) {
@@ -585,6 +774,7 @@ class GameScene extends Phaser.Scene {
   // NICE! / BLAZING! / UNSTOPPABLE!: a speed bonus scaled by level plus a HUD stamp.
   // The speed bonus lands at once; the stamp waits while a zone banner / card pick owns the screen.
   chainMilestone(level) {
+    this.reportProgress('milestone', level);
     this.addMomentumSpeed(milestoneSpeedBonus(level));
     if (this.cardPickPending()) {
       this.queuedMilestone = { level: Math.max(level, this.queuedMilestone ? this.queuedMilestone.level : 0), chain: this.perfectChain };
@@ -779,6 +969,9 @@ class GameScene extends Phaser.Scene {
     this.checkZone();
     this.fillPlanets();
     this.recordTrail();
+    this.recordGhost();
+    this.reportRunStats();
+    this.updateBigPrompt();
     this.draw();
   }
 
@@ -796,6 +989,7 @@ class GameScene extends Phaser.Scene {
     const index = zoneIndexForAltitude(this.bestAltitude);
     if (index <= this.zoneIndex) return;
     this.zoneIndex = index;
+    this.reportProgress('zone', index);
     this.zonePulseAt = this.time.now;
     this.hud.showBanner(ZONES[index].name, 'TOP SPEED ' + Math.round(this.speedCap() / 10) + ' km/s');
     this.sfx('zone', { index });
@@ -992,6 +1186,7 @@ class GameScene extends Phaser.Scene {
     c.vx = ux * this.speed;
     c.vy = uy * this.speed;
     this.sfx('wallkick');
+    this.reportProgress('wallkick');
     // Repeats every bounce, so it must not push PERFECT chain pops off the line (priority 1 = low).
     this.popText('WALL KICK!', GameScene.hex(CARD_FAMILIES.flight.color), { size: 40, priority: 1 });
     this.cameras.main.shake(120, 0.008);
@@ -1052,6 +1247,7 @@ class GameScene extends Phaser.Scene {
         this.comet.vx = w.vx;
         this.comet.vy = w.vy;
         h.warped = true;
+        this.reportProgress('warp');
         this.popText('WARP!', '#c77dff', { low: true });
         this.sfx('warp');
         this.cameras.main.shake(120, 0.006);
@@ -1137,6 +1333,7 @@ class GameScene extends Phaser.Scene {
     this.flightTarget = null;
     this.capTime = 0;
     this.catches++;
+    this.reportProgress('catch');
     this.addMomentumSpeed(TUNING.catchBonus);
     const closeness = orbitCloseness(this.orbit.targetRadius, planet.radius);
     const close = closeness > 0.7;
@@ -1345,6 +1542,7 @@ class GameScene extends Phaser.Scene {
     if (!step.triggered) return;
     this.score += FEEL.closeCallBonus;
     this.closeCall = 1;
+    this.reportProgress('closecall');
     if (!this.headless) this.slowMoT = 0;
     this.popText('CLOSE CALL!', '#ff9a2e', { size: 56, duration: 1000 });
     this.sfx('closecall');
@@ -1493,7 +1691,46 @@ class GameScene extends Phaser.Scene {
     // Frame the camera exactly where gameplay will put it, so there is no jump at launch.
     this.camCenter = this.startY - 0.12 * GAME_HEIGHT;
     this.cameras.main.scrollY = this.camCenter - GAME_HEIGHT / 2;
+    this.createStoryLine();
     this.sfx('intro');
+  }
+
+  // Opening story line, hand-lettered over the swelling star: 'Your star went supernova.' then
+  // 'RUN!' just before the blast; both fade out before the comet launches (gone on a skip).
+  createStoryLine() {
+    const make = (y, label, size, rot) => this.add.text(GAME_WIDTH / 2, y, label, {
+      fontFamily: FONT, fontSize: size + 'px', color: '#f4ead0', stroke: '#14121c', strokeThickness: 10,
+      align: 'center', wordWrap: { width: GAME_WIDTH - 80 },
+    }).setOrigin(0.5).setScrollFactor(0).setRotation(rot).setAlpha(0).setDepth(10);
+    this.storyLine = make(GameScene.STORY_Y, 'Your star went supernova.', 52, -0.035);
+    this.storyRun = make(GameScene.STORY_Y + 92, 'RUN!', 104, 0.05).setColor('#f5862a');
+    this.storyRun.baseRot = 0.05;
+    this.storyLine.baseRot = -0.035;
+    this.storyRunShown = false;
+  }
+
+  updateStoryLine() {
+    if (!this.storyLine) return;
+    const t = this.introT;
+    const fadeOut = Phaser.Math.Clamp((GameScene.INTRO_LAUNCH - 0.05 - t) / 0.25, 0, 1);
+    const fadeIn = Phaser.Math.Clamp((t - 0.1) / 0.25, 0, 1);
+    // Line boil: the lettering re-wobbles at the sketch rate (10/s), never every frame.
+    const rnd = artRandom(ART.boilFrame(this.time.now / 1000) * 41 + 5);
+    this.storyLine.setAlpha(fadeIn * fadeOut).setRotation(this.storyLine.baseRot + (rnd() - 0.5) * 0.012);
+    if (t >= GameScene.STORY_RUN_AT && !this.storyRunShown) {
+      this.storyRunShown = true;
+      this.storyRun.setScale(1.8);
+      this.tweens.add({ targets: this.storyRun, scale: 1, duration: 160, ease: 'Quad.In' });
+    }
+    if (this.storyRunShown) this.storyRun.setAlpha(fadeOut).setRotation(this.storyRun.baseRot + (rnd() - 0.5) * 0.02);
+  }
+
+  destroyStoryLine() {
+    if (!this.storyLine) return;
+    this.storyLine.destroy();
+    this.storyRun.destroy();
+    this.storyLine = null;
+    this.storyRun = null;
   }
 
   updateIntro(dt) {
@@ -1507,6 +1744,7 @@ class GameScene extends Phaser.Scene {
       if (this.introT >= GameScene.INTRO_LAUNCH) this.launch();
     }
     if (!this.introActive) return;
+    this.updateStoryLine();
     this.draw();
   }
 
@@ -1532,6 +1770,10 @@ class GameScene extends Phaser.Scene {
     if (!this.introActive && this.launched) return;
     this.launched = true;
     this.introActive = false;
+    this.destroyStoryLine();
+    if (!this.headless && typeof PROGRESS !== 'undefined') {
+      try { PROGRESS.startRun(); } catch (e) { /* progress must never block the launch */ }
+    }
     this.cometVisible = true;
     this.comet.x = GAME_WIDTH / 2;
     this.comet.y = this.startY;
@@ -1539,6 +1781,8 @@ class GameScene extends Phaser.Scene {
     this.comet.vy = -this.speed;
     this.trail = [];
     this.elapsed = 0;
+    this.ghostRec = [];
+    this.ghostNextT = 0;
     this.zoomKick = 0.06;
     this.jellyT = 0;
     if (!this.headless) {
@@ -1665,6 +1909,10 @@ class GameScene extends Phaser.Scene {
       shieldReady: this.shieldCharges > 0,
       grabRangeBonus: grabRangeForSpeed(this.speed) * (this.mods.grabRangeMul - 1),
       grabRange: this.grabRange(),   // the real grab reach (speed + Gravity Well), for the dashed ring
+      // Equipped skin (PROGRESS): crayon colors + the small doodle that sets it apart.
+      skin: this.skin ? this.skin.colors : null,
+      skinId: this.skin ? this.skin.id : null,
+      skinDetail: this.skin ? this.skin.detail : null,
     };
   }
 
@@ -1699,6 +1947,7 @@ class GameScene extends Phaser.Scene {
     this.updateSpeedLines(this.isOver ? 0 : frameDt);
     this.drawPageEdge();
     this.drawPageFx();
+    this.drawGhost(view);
     this.cometGfx.clear();
     if (this.cometVisible) ART.drawComet(this.cometGfx, this.comet, this.trail, ctx);
     this.drawIntro();
@@ -1793,6 +2042,21 @@ class GameScene extends Phaser.Scene {
     ART.drawDeathJaws(this.introGfx, this.deathAt.x, this.deathAt.y, this.deathT / GameScene.DEATH_CLOSE, this.time.now / 1000);
   }
 
+  // Missions / coins / journal for the finished run, and the ghost when it set a new best altitude.
+  commitProgress(summary) {
+    if (this.headless || typeof PROGRESS === 'undefined') return null;
+    try {
+      const result = PROGRESS.endRun(summary);
+      if (result && result.newBest) {
+        this.ghostRec.push({ t: this.elapsed, x: this.comet.x, y: this.comet.y });
+        PROGRESS.saveGhost(this.ghostRec, this.bestAltitude);
+      }
+      return result;
+    } catch (e) {
+      return null;
+    }
+  }
+
   updateHud() {
     if (!this.hud.scoreText) return;   // HUD scene still starting
     this.hud.setStats(Math.floor(this.score), this.bestAltitude, this.speed, this.speed / 10);
@@ -1810,6 +2074,7 @@ class GameScene extends Phaser.Scene {
     const newBestAltitude = this.bestAltitude > this.prevBestAlt;
     if (!this.headless && newBestAltitude) saveBestAltitude(this.bestAltitude);
     this.pickDelay = -1;
+    this.updateBigPrompt();
     if (this.hud && this.hud.clearPops) this.hud.clearPops();
     this.sfx('gameover', { reason });
     // The simulator must never reach GameOver: it would save the bot's score as the real best.
@@ -1823,15 +2088,18 @@ class GameScene extends Phaser.Scene {
     this.hud.hideHint();   // a 'TAP to fling!' left over the jaws would read as a second chance
     this.draw();
     this.cameras.main.shake(260, 0.012);
+    const summary = {
+      score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude,
+      bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt),
+      topSpeedKmh: Math.round(this.topSpeed / 10), maxChain: this.maxChain,
+      zoneIndex: this.zoneIndex, seconds: Math.floor(this.elapsed),
+      cards: this.ownedCards.slice(),
+      secondWind: this.secondWindUsed,
+    };
+    // Commit the run now (not after the death beat), so leaving early never loses it.
+    summary.progress = this.commitProgress(summary);
     this.time.delayedCall((GameScene.DEATH_CLOSE + GameScene.DEATH_HOLD) * 1000, () => {
-      this.scene.start('GameOver', {
-        score: Math.floor(this.score), altitude: this.bestAltitude, reason, newBestAltitude,
-        bestAltitude: Math.max(this.bestAltitude, this.prevBestAlt),
-        topSpeedKmh: Math.round(this.topSpeed / 10), maxChain: this.maxChain,
-        zoneIndex: this.zoneIndex, seconds: Math.floor(this.elapsed),
-        cards: this.ownedCards.slice(),
-        secondWind: this.secondWindUsed,
-      });
+      this.scene.start('GameOver', summary);
     });
   }
 }
@@ -1844,6 +2112,16 @@ GameScene.BEST_LABEL_MIN_Y = 260;
 // Opening scene timeline (seconds): the star swells, explodes, then the comet launches.
 GameScene.INTRO_EXPLODE = 1.7;
 GameScene.INTRO_LAUNCH = 2.1;
+// Opening story line: screen y of the first line, and when 'RUN!' slams in (intro seconds).
+GameScene.STORY_Y = 330;
+GameScene.STORY_RUN_AT = 1.15;
+// Best-run ghost: sample step (run seconds), and the BEST arrow's screen distance from the top
+// (clear of the stats block) and from the bottom (clear of the speed panel).
+GameScene.GHOST_STEP = 0.1;
+GameScene.GHOST_ARROW_TOP = 250;
+GameScene.GHOST_ARROW_BOTTOM = 330;
+// First-run HOLD! prompt: shown this many px before the planet's grab zone.
+GameScene.HOLD_PROMPT_LEAD = 170;
 
 // Upgrade card pick: world time scale while the cards are up, and seconds before the middle card is auto-picked.
 GameScene.CARD_TIME_SCALE = 0.06;

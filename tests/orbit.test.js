@@ -386,3 +386,28 @@ test('Tight Spin tighten: the orbit spirals in to the minimum orbit and gains mo
   for (let i = 0; i < 600; i++) orbit = o.orbitStep(orbit, 1000, 1 / 60, 60, 8000, { tighten: 45 }).orbit;
   assert.strictEqual(orbit.radius, 60 + o.TUNING.minOrbitGap, 'never inside the minimum orbit');
 });
+
+test('machNumber turns the km/s readout into Mach (343 m/s)', () => {
+  assert.strictEqual(o.machNumber(343), 1000);
+  assert.strictEqual(o.machNumber(537), 1566);
+  assert.strictEqual(o.machNumber(0), 0);
+  assert.strictEqual(o.machNumber(-5), 0);
+});
+
+test('nextMachTier stamps each tier once and only the highest when several are skipped', () => {
+  assert.strictEqual(o.nextMachTier(0, 499), 0);
+  assert.strictEqual(o.nextMachTier(0, 500), 500);
+  assert.strictEqual(o.nextMachTier(500, 900), 0, 'already stamped');
+  assert.strictEqual(o.nextMachTier(500, 1600), 1500, 'skipped 1000: one stamp for 1500');
+  assert.strictEqual(o.nextMachTier(2500, 9999), 0);
+});
+
+test('ghostPositionAt interpolates the path by time and reports its end', () => {
+  const pts = [{ t: 0, x: 0, y: 0 }, { t: 1, x: 10, y: -100 }, { t: 2, x: 20, y: -300 }];
+  assert.deepStrictEqual(o.ghostPositionAt(pts, 0.5), { x: 5, y: -50, done: false });
+  assert.deepStrictEqual(o.ghostPositionAt(pts, 1.5), { x: 15, y: -200, done: false });
+  assert.deepStrictEqual(o.ghostPositionAt(pts, 5), { x: 20, y: -300, done: true });
+  assert.deepStrictEqual(o.ghostPositionAt(pts, -1), { x: 0, y: 0, done: false });
+  assert.strictEqual(o.ghostPositionAt([pts[0]], 0), null);
+  assert.strictEqual(o.ghostPositionAt(null, 0), null);
+});

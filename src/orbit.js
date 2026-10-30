@@ -449,6 +449,40 @@ function cometStretch(fraction, accel) {
   return Math.min(1.6, base + kick);
 }
 
+// MACH readout: the HUD's km/s number as a Mach number (343 m/s = Mach 1). Feel only, physics never reads it.
+const MACH_TIERS = [500, 1000, 1500, 2000, 2500];
+
+function machNumber(kmPerS) {
+  return Math.round((Math.max(0, kmPerS) * 1000) / 343);
+}
+
+// Highest MACH tier reached that is above the last one already stamped this run (0 = none new).
+// Skipping straight past a tier (one big boost) stamps only the highest, never a burst of stamps.
+function nextMachTier(stampedTier, mach) {
+  let tier = 0;
+  for (const t of MACH_TIERS) if (t > stampedTier && mach >= t) tier = t;
+  return tier;
+}
+
+// Best-run ghost playback: position at time t on a path of {t, x, y} points sorted by t,
+// linearly interpolated. done = t is past the end (the ghost run ended there). null = no path.
+function ghostPositionAt(points, t) {
+  if (!points || points.length < 2) return null;
+  const last = points[points.length - 1];
+  if (t >= last.t) return { x: last.x, y: last.y, done: true };
+  if (t <= points[0].t) return { x: points[0].x, y: points[0].y, done: false };
+  let lo = 0;
+  let hi = points.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].t <= t) lo = mid; else hi = mid;
+  }
+  const a = points[lo];
+  const b = points[hi];
+  const k = b.t > a.t ? (t - a.t) / (b.t - a.t) : 0;
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, done: false };
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

@@ -1274,7 +1274,13 @@ const ART = {
     const rnd = artRandom(bf * 7919 + 13);
     const sf = ctx.speedFraction || 0;
     const speedCol = speedColor(sf);
-    const body = lerpColor(speedCol, SKETCH.yellow, 0.55);
+    // Skin (ctx.skin = crayon colors from PROGRESS): Classic keeps the original speed-tinted look.
+    const skin = ctx.skin && ctx.skinId !== 'classic' ? ctx.skin : null;
+    const body = skin ? skin.head : lerpColor(speedCol, SKETCH.yellow, 0.55);
+    const cFlame = skin ? skin.flame : SKETCH.orange;
+    const cTrail = skin ? skin.trail : SKETCH.red;
+    const cHot = skin ? lerpColor(skin.head, skin.flame, 0.35) : SKETCH.yellow;
+    const detail = skin ? ctx.skinDetail || null : null;
     const r = TUNING.cometRadius;
     const dir = ART.cometDir(comet, trail);
     const n = trail.length;
@@ -1288,13 +1294,18 @@ const ART = {
       const wide = 1 + 0.35 * burn;
       const onCream = ART.inkMode === 'd';
       const strands = [
-        { off: -0.85 * wide, c: tint(SKETCH.red, 0x3a5fd8), w: 5, reach: 0.75 },
-        { off: 0.85 * wide, c: tint(SKETCH.red, 0x3a5fd8), w: 5, reach: 0.7 },
-        { off: -0.5 * wide, c: tint(SKETCH.orange, 0x5aa8f0), w: 6, reach: 0.9 },
-        { off: 0.5 * wide, c: tint(SKETCH.orange, 0x5aa8f0), w: 6, reach: 0.88 },
+        { off: -0.85 * wide, c: tint(cTrail, 0x3a5fd8), w: 5, reach: 0.75 },
+        { off: 0.85 * wide, c: tint(cTrail, 0x3a5fd8), w: 5, reach: 0.7 },
+        { off: -0.5 * wide, c: tint(cFlame, 0x5aa8f0), w: 6, reach: 0.9 },
+        { off: 0.5 * wide, c: tint(cFlame, 0x5aa8f0), w: 6, reach: 0.88 },
         { off: -0.15, c: tint(body, 0xa9dcff), w: 7, reach: 1 },
         { off: 0.2, c: tint(lerpColor(body, 0xffffff, 0.45), 0xf4fbff), w: 5, reach: 0.95 },
       ];
+      if (skin && skin.stripes && skin.stripes.length >= 6) {
+        // Rainbow: the strands become side-by-side crayon bands, one color each across the tail.
+        const byOffset = strands.slice().sort((a, b) => a.off - b.off);
+        byOffset.forEach((st, k) => { st.c = tint(skin.stripes[k], 0x8fc8ff); st.w = 7; st.reach = 0.92 - Math.abs(st.off) * 0.15; });
+      }
       const normals = [];
       for (let i = 0; i < n; i++) {
         const a = trail[Math.max(0, i - 1)];
@@ -1331,7 +1342,7 @@ const ART = {
         g.strokePoints(pts, false);
       }
       // Diagonal crayon strokes across the tail.
-      g.lineStyle(3, tint(SKETCH.yellow, 0xdff2ff), 0.85);
+      g.lineStyle(3, tint(cHot, 0xdff2ff), 0.85);
       for (let i = 2; i < n - 2; i += 3) {
         const f = 1 - i / n;
         const w = r * (0.5 + 0.6 * f);
@@ -1357,6 +1368,8 @@ const ART = {
         }
       }
     }
+
+    if (detail) ART.drawSkinDetail(g, 'back', comet, trail, dir, r, skin, detail, rnd, t);
 
     // PERFECT / zone bursts sit behind the head so the face stays readable.
     const zonePulse = Math.max(0, Math.min(1, ctx.zonePulse || 0));
@@ -1403,15 +1416,28 @@ const ART = {
           { x: -r * 0.6 - reach + j(), y: y0 + side * r * 0.15 + j() },
           { x: -r * 0.6 - reach * 0.45, y: y0 - side * r * 0.05 },
         ];
-        g.fillStyle(i % 2 ? SKETCH.red : SKETCH.orange, 0.9);
+        g.fillStyle(i % 2 ? cTrail : cFlame, 0.9);
         g.fillPoints(tongue, true);
         ART.pen(g, tongue, true, 2.5 + mom * 1.5, ink, 0.9, rnd);
       }
     }
-    g.fillStyle(tint(SKETCH.orange, 0x4f8fe8), 1);
+    g.fillStyle(tint(cFlame, 0x4f8fe8), 1);
     g.fillPoints(crown, true);
-    g.fillStyle(tint(SKETCH.yellow, 0xd8efff), 1);
+    g.fillStyle(tint(cHot, 0xd8efff), 1);
     g.fillTriangle(r * 0.2, -r * 0.6, r * 0.2, r * 0.6, -r * 1.6 * long + j(), j() * 0.5);
+    if (detail === 'stripes' && skin.stripes) {
+      // Rainbow: crayon bands arc over the back of the crown.
+      for (let k = 0; k < 4; k++) {
+        const arc = [];
+        const rr = r * (1.05 + k * 0.2);
+        for (let a = 0; a <= 6; a++) {
+          const ang = Math.PI * (0.62 + (a / 6) * 0.76);
+          arc.push({ x: Math.cos(ang) * rr * 1.25 + (rnd() - 0.5) * 2, y: Math.sin(ang) * rr });
+        }
+        g.lineStyle(5, skin.stripes[k], 0.95);
+        g.strokePoints(arc, false);
+      }
+    }
     ART.pen(g, crown, true, 3.5, ink, 1, rnd);
     // Head: sticker backing, misregistered crayon fill, hatching, pen outline.
     const head = ART.wobblyLoop(0, 0, r, r, 12, 0.1, rnd, rnd());
@@ -1420,16 +1446,155 @@ const ART = {
     // PERFECT flash: the head fill goes pale cream for a moment (crayon, not a glow).
     g.fillStyle(flash > 0 ? lerpColor(body, 0xfffbe8, flash * 0.85) : body, 1);
     g.fillPoints(head.map((p) => ({ x: p.x + 2.5, y: p.y + 2 })), true);
-    ART.hatchCircle(g, -r * 0.15, r * 0.25, r * 0.75, -0.9, 6, 3, SKETCH.orange, 0.8, rnd);
+    ART.hatchCircle(g, -r * 0.15, r * 0.25, r * 0.75, -0.9, 6, 3, cFlame, 0.8, rnd);
     ART.pen(g, head, true, 5.5, ink, 1, rnd);
+    // Gold: a second, inner pen line in the skin's own ink (the page ink rim stays for contrast).
+    if (skin && skin.outline !== undefined) ART.pen(g, head.map((p) => ({ x: p.x * 0.86, y: p.y * 0.86 })), true, 2.5, skin.outline, 0.9, rnd);
     g.restore();
     // Cool light from above: two short pale strokes on the top of the head.
     g.lineStyle(3, 0xffffff, 0.8);
     g.lineBetween(comet.x - r * 0.55, comet.y - r * 0.3, comet.x - r * 0.25, comet.y - r * 0.62);
     g.lineBetween(comet.x - r * 0.3, comet.y - r * 0.2, comet.x - r * 0.08, comet.y - r * 0.45);
 
+    if (detail) ART.drawSkinDetail(g, 'front', comet, trail, dir, r, skin, detail, rnd, t);
     ART.drawCometFace(g, comet.x + dir.x * r * 0.2, comet.y + dir.y * r * 0.2, r, dir, ctx, rnd);
     if (ctx.shieldReady) ART.drawShieldBubble(g, comet.x, comet.y, r, t);
+  },
+
+  // Small hand-drawn doodle that tells a skin apart beyond its colors (PROGRESS skin.detail).
+  // layer 'back' draws behind the head (tail / halo bits), 'front' on the rim, never over the face.
+  // Every doodle gets a page-ink outline or backing so it reads on the navy and the cream pages.
+  drawSkinDetail(g, layer, comet, trail, dir, r, skin, detail, rnd, t) {
+    const ink = ART.ink;
+    const nx = -dir.y;
+    const ny = dir.x;
+    const behind = Math.atan2(-dir.y, -dir.x);
+    const at = (i) => trail[Math.min(trail.length - 1, i)];
+    if (detail === 'frost') {
+      if (layer === 'back') {
+        // Snowflake doodles left behind in the tail.
+        for (const i of [4, 10, 16]) {
+          if (trail.length <= i) break;
+          const p = at(i);
+          const side = i % 4 ? 1 : -1;
+          const x = p.x + nx * side * r * 0.9;
+          const y = p.y + ny * side * r * 0.9;
+          ART.asterisk(g, x, y, 10, ART.backing, 0.6, 6, rnd);
+          ART.asterisk(g, x, y, 9, ART.inkMode === 'd' ? skin.trail : 0xeaf8ff, 1, 3, rnd);
+        }
+        return;
+      }
+      // Icicle teeth hanging straight down off the bottom rim (below the face, never over it).
+      for (let k = -1; k <= 1; k++) {
+        const a = Math.PI / 2 + k * 0.62;
+        const reach = r * (k === 0 ? 1.75 : 1.45);
+        const tip = { x: comet.x + Math.cos(a) * reach + (rnd() - 0.5) * 2, y: comet.y + Math.sin(a) * reach + (rnd() - 0.5) * 2 };
+        const w = 0.24;
+        const tri = [
+          { x: comet.x + Math.cos(a - w) * r * 0.88, y: comet.y + Math.sin(a - w) * r * 0.88 },
+          tip,
+          { x: comet.x + Math.cos(a + w) * r * 0.88, y: comet.y + Math.sin(a + w) * r * 0.88 },
+        ];
+        g.fillStyle(0xdff4ff, 1);
+        g.fillPoints(tri, true);
+        ART.pen(g, tri, true, 2.5, ink === SKETCH.cream ? SKETCH.dark : ink, 1, rnd);
+        g.lineStyle(2, 0x4f8fe0, 0.9);
+        g.lineBetween(comet.x + Math.cos(a) * r * 0.95, comet.y + Math.sin(a) * r * 0.95, (comet.x + Math.cos(a) * r + tip.x) / 2, (comet.y + Math.sin(a) * r + tip.y) / 2);
+      }
+    } else if (detail === 'splat') {
+      const violet = 0x5b4f96;
+      if (layer === 'front') {
+        // An ink blot splashed over the crown behind the head (the face stays clear in front).
+        const cx = comet.x - dir.x * r * 1.25 + nx * r * 0.2;
+        const cy = comet.y - dir.y * r * 1.25 + ny * r * 0.2;
+        const blot = ART.wobblyLoop(cx, cy, r * 0.62, r * 0.52, 11, 0.7, rnd, rnd() * 6);
+        g.fillStyle(violet, 1);
+        g.fillPoints(blot, true);
+        ART.pen(g, blot, true, 3, ink, 1, rnd);
+        for (let k = 0; k < 3; k++) {
+          const a = behind + (k - 1) * 0.9 + (rnd() - 0.5) * 0.2;
+          const d = r * (1.95 + k * 0.15);
+          g.fillStyle(ink, 1);
+          g.fillCircle(comet.x + Math.cos(a) * d, comet.y + Math.sin(a) * d, 5.5);
+          g.fillStyle(violet, 1);
+          g.fillCircle(comet.x + Math.cos(a) * d, comet.y + Math.sin(a) * d, 3.5);
+        }
+        return;
+      }
+      for (const i of [3, 7, 12, 17]) {
+        if (trail.length <= i) break;
+        const p = at(i);
+        const side = i % 2 ? 1 : -1;
+        const off = r * (0.95 + (i % 3) * 0.25);
+        const dr = Math.max(3, 7 - i * 0.2);
+        g.fillStyle(ink, 1);
+        g.fillCircle(p.x + nx * side * off, p.y + ny * side * off, dr + 2);
+        g.fillStyle(violet, 1);
+        g.fillCircle(p.x + nx * side * off, p.y + ny * side * off, dr);
+      }
+    } else if (detail === 'drips') {
+      if (layer !== 'front') return;
+      // Toxic goo dripping straight down off the head (gravity, whichever way the comet flies).
+      [-0.55, 0.05, 0.6].forEach((fx, k) => {
+        const x = comet.x + fx * r;
+        const y0 = comet.y + Math.sqrt(Math.max(0, 1 - fx * fx)) * r * 0.85;
+        const len = r * (0.45 + ((t * 0.9 + k * 0.37) % 1) * 0.5 + (k === 1 ? 0.25 : 0));
+        const w = r * 0.17;
+        const drip = [
+          { x: x - w, y: y0 - 2 }, { x: x - w * 0.8, y: y0 + len * 0.7 }, { x: x - w * 1.2, y: y0 + len },
+          { x, y: y0 + len + w * 1.1 }, { x: x + w * 1.2, y: y0 + len }, { x: x + w * 0.8, y: y0 + len * 0.7 },
+          { x: x + w, y: y0 - 2 },
+        ];
+        g.fillStyle(skin.flame, 1);
+        g.fillPoints(drip, true);
+        ART.pen(g, drip, false, 2.5, ink, 1, rnd);
+        g.fillStyle(0xf2ffd0, 0.9);
+        g.fillCircle(x - w * 0.3, y0 + len * 0.85, w * 0.35);
+      });
+    } else if (detail === 'star') {
+      if (layer === 'back') {
+        // Twinkling asterisks shaken out of the tail.
+        for (const i of [5, 11]) {
+          if (trail.length <= i) break;
+          const p = at(i);
+          const side = i === 5 ? 1 : -1;
+          ART.asterisk(g, p.x + nx * side * r * 1.1, p.y + ny * side * r * 1.1, 9, ART.inkMode === 'd' ? skin.trail : 0xffe14d, 1, 3.5, rnd);
+        }
+        return;
+      }
+      // A crayon star sticker stuck on the back rim of the head.
+      const a0 = behind - 0.75;
+      const sx = comet.x + Math.cos(a0) * r * 0.95;
+      const sy = comet.y + Math.sin(a0) * r * 0.95;
+      const pts = [];
+      for (let k = 0; k < 10; k++) {
+        const ang = -Math.PI / 2 + (k / 10) * Math.PI * 2 + (rnd() - 0.5) * 0.12 + 0.2;
+        const rr = (k % 2 ? 0.45 : 1) * r * 0.66 * (0.92 + rnd() * 0.16);
+        pts.push({ x: sx + Math.cos(ang) * rr, y: sy + Math.sin(ang) * rr });
+      }
+      g.fillStyle(0xffe14d, 1);
+      g.fillPoints(pts.map((p) => ({ x: p.x + 1.5, y: p.y + 1.5 })), true);
+      g.lineStyle(2, skin.flame, 0.9);
+      g.lineBetween(sx - r * 0.15, sy + r * 0.1, sx + r * 0.1, sy - r * 0.12);
+      ART.pen(g, pts, true, 3, ink === SKETCH.cream ? (skin.outline !== undefined ? skin.outline : SKETCH.dark) : ink, 1, rnd);
+    } else if (detail === 'flare') {
+      if (layer !== 'back') return;
+      // A ring of flare rays around the head, long and short, turning a little with each boil.
+      const turn = Math.floor(t * SKETCH.boilFps) * 0.04;
+      for (let k = 0; k < 10; k++) {
+        const a = turn + (k / 10) * Math.PI * 2 + (rnd() - 0.5) * 0.12;
+        const r0 = r * 1.2;
+        const r1 = r * (k % 2 ? 1.65 : 2.15) * (0.92 + rnd() * 0.16);
+        const x0 = comet.x + Math.cos(a) * r0;
+        const y0 = comet.y + Math.sin(a) * r0;
+        const x1 = comet.x + Math.cos(a) * r1;
+        const y1 = comet.y + Math.sin(a) * r1;
+        g.lineStyle(9, ART.backing, 0.55);
+        g.lineBetween(x0, y0, x1, y1);
+        g.lineStyle(k % 2 ? 3.5 : 5, k % 2 ? skin.trail : skin.flame, 1);
+        g.lineBetween(x0, y0, x1, y1);
+      }
+    }
   },
 
   // Heat Shield charge ready: a pink bubble drawn by hand around the comet. Two pen passes that
