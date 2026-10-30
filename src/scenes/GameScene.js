@@ -1030,6 +1030,17 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  // Heat Shield bubble: shown only when a planet bump could actually happen (the shield blocks planet bumps,
+  // not the supernova, and a bubble shown all the time read as 'protects from everything').
+  planetBumpNear() {
+    const c = this.comet;
+    for (const p of this.planets) {
+      if (p === this.orbitPlanet) continue;
+      if (Math.hypot(p.x - c.x, p.y - c.y) - p.radius < GameScene.SHIELD_SHOW_GAP) return true;
+    }
+    return false;
+  }
+
   // Heat Shield: a hit that would cost speed is absorbed instead. Returns true when it was.
   useHeatShield() {
     if (this.shieldCharges <= 0) return false;
@@ -3013,7 +3024,7 @@ class GameScene extends Phaser.Scene {
       aimKind: assist ? (assist.angle < this.perfectAngle() ? 'perfect' : 'target') : 'none',
       // Card hooks for art.js.
       afterburner: this.mods.afterburnerSeconds > 0 ? this.afterburnerT / this.mods.afterburnerSeconds : 0,
-      shieldReady: this.shieldCharges > 0,
+      shieldReady: this.shieldCharges > 0 && this.planetBumpNear(),
       grabRangeBonus: grabRangeForSpeed(this.speed) * (this.mods.grabRangeMul - 1),
       grabRange: this.grabRange(),   // the real grab reach (speed + Gravity Well), for the dashed ring
       // Equipped skin (PROGRESS): crayon colors + the small doodle that sets it apart.
@@ -3283,6 +3294,8 @@ class GameScene extends Phaser.Scene {
 
 // x of a left-side black hole: clear of the km/s readout column (HudScene HUD_PANEL, right edge 320).
 GameScene.LEFT_HOLE_X = 320 + TUNING.blackHoleRadius + 26;
+// Heat Shield bubble shows when another planet's surface is this close (px): about one frame-cluster before a bump.
+GameScene.SHIELD_SHOW_GAP = 150;
 // Screen px kept free at the bottom for the speed / multiplier HUD panel.
 GameScene.COMET_BAND_BOTTOM = 300;
 // The BEST label only shows below this screen y, clear of the top-left stats block.
