@@ -206,3 +206,14 @@ test('cardProcPopAllowed: a proc pop is written the first procPopsPerRun times o
   assert.strictEqual(c.cardProcPopAllowed(2), false);
   assert.strictEqual(c.cardProcPopAllowed(50), false);
 });
+
+test('cardNovaMul: the newest card eases its supernova cost in over pickNovaEase s', () => {
+  const per = c.CARD_TUNING.novaPerCard;
+  const ease = c.CARD_TUNING.pickNovaEase;
+  assert.strictEqual(c.cardNovaMul(0, 0), 1);
+  assert.ok(Math.abs(c.cardNovaMul(1, 0) - 1) < 1e-9, 'a fresh pick costs nothing yet');
+  assert.ok(Math.abs(c.cardNovaMul(3, 0) - (1 + 2 * per)) < 1e-9);
+  assert.ok(Math.abs(c.cardNovaMul(3, ease / 2) - (1 + 2.5 * per)) < 1e-9);
+  assert.ok(Math.abs(c.cardNovaMul(3, ease) - (1 + 3 * per)) < 1e-9);
+  assert.ok(Math.abs(c.cardNovaMul(3, null) - c.cardMods(['well', 'aero', 'spin']).novaSpeedMul) < 1e-9, 'long ago = full cost');
+});

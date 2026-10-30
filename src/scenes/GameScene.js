@@ -135,7 +135,9 @@ class GameScene extends Phaser.Scene {
     // First planet straight ahead so the very first hold always works.
     this.addPlanet(GAME_WIDTH / 2 + 150, this.nextPlanetY, 85);
     this.planetSide = 1;
-    this.nextPlanetY -= TUNING.minPlanetGap;
+    // Guided tutorial: the second planet sits a little further up (still on screen at the first LET GO), so
+    // the accelerating fling between the two gets a real moment of flight before HOLD 2 stops the world.
+    this.nextPlanetY -= TUNING.minPlanetGap + (this.guided ? GameScene.GUIDED_SECOND_GAP : 0);
     this.fillPlanets();
 
     ART.setPage(0);
@@ -215,7 +217,8 @@ class GameScene extends Phaser.Scene {
     this.momentumZoom = 0;      // eased extra zoom-out from momentum (feel only)
     this.lastPopAt = -1e9;      // time.now of the last pop sent (low-priority pops wait for quiet)
     this.lastClosePopAt = -1e9; // time.now of the last CLOSE ORBIT! pop (CLOSE_POP_GAP)
-    this.lastLossPopAt = -1e9;  // time.now of the last '-X% SPEED' pop (LOSS_POP_GAP)
+    this.lastLossPopAt = -1e9;  // time.now of the last '-X% SPEED' pop (POP_GATES.lossPopGapMs)
+    this.lastPop = null;        // { at, priority } of the last pop sent (popAdmitted)
     this.procPops = {};         // card id -> proc pops written this run (cardProcPop)
     this.wallKickPopShown = false;
     this.lastWallAt = -1e9;     // run s of the last side-wall hit (wallBounceVelocity)
@@ -267,6 +270,7 @@ class GameScene extends Phaser.Scene {
     // gets it as a simulated first run (simTutorial), and never saves it.
     this.guided = (this.headless ? this.simTutorial : !guidedTutorialDone()) ? { phase: 'hold', round: 1, waiting: '' } : null;
     this.guidedLeft = null;      // the planet the last tutorial fling left (no HOLD step for it)
+    this.guidedFlightT = -1;     // real s since the last tutorial fling (-1 = none in flight; GUIDED_FLIGHT_BEAT)
     this.guidedLap = 0;          // rad the comet has gone round the planet since the tutorial latch (full lap first)
     this.tutorialWaiting = '';   // 'hold' | 'letgo' | '': the step waiting for the player (the playtest bot reads it)
     this.guidedSlow = 0;         // slow-motion progress 0..1 (guidedSlowProgress)
@@ -349,6 +353,7 @@ class GameScene extends Phaser.Scene {
     const waiting = this.guided ? this.guided.waiting : '';
     this.guidedSlow = guidedSlowProgress(this.guidedSlow, !!waiting, realDt);
     if (waiting && this.guidedSlow >= 1 && this.guidedShown !== waiting) this.showGuidedStep(waiting);
+    if (this.guidedFlightT >= 0) this.guidedFlightT += realDt;
     if (this.guidedNiceT > 0) {
       this.guidedNiceT -= realDt;
       if (this.guidedNiceT <= 0) this.hideGuidedStep();
@@ -361,7 +366,10 @@ class GameScene extends Phaser.Scene {
     const g = this.guided;
     if (!g) return null;
     const e = edges || {};
-    const reachable = g.phase === 'hold' && !g.waiting && !this.orbit && !this.scrape ? this.guidedReachPlanet() : null;
+    let reachable = g.phase === 'hold' && !g.waiting && !this.orbit && !this.scrape ? this.guidedReachPlanet() : null;
+    // After the first tutorial fling the comet flies for GUIDED_FLIGHT_BEAT s before HOLD 2 (the accelerating
+    // flight is the point), unless it is past its closest pass of the planet and leaving the grab zone.
+    if (reachable && this.guidedFlightT >= 0 && this.guidedFlightT < GameScene.GUIDED_FLIGHT_BEAT && !this.leavingGrabZone(reachable)) reachable = null;
     let target = null;
     let aimReady = false;
     const lapDone = this.guidedLap >= TUNING.guidedLap;
@@ -378,7 +386,10 @@ class GameScene extends Phaser.Scene {
     this.guided = r.st;
     this.tutorialWaiting = r.st.waiting;
     if (r.action === 'showHold' || r.action === 'showLetGo') {
-      if (r.action === 'showHold') this.guidedPlanet = reachable;
+      if (r.action === 'showHold') {
+        this.guidedPlanet = reachable;
+        this.guidedFlightT = -1;
+      }
       else this.guidedTarget = target;
       // The step owns the screen: a banner already up goes (new ones wait in hudQueue).
       if (!this.headless && this.hud && typeof this.hud.hideBanner === 'function') this.hud.hideBanner();
@@ -393,6 +404,7 @@ class GameScene extends Phaser.Scene {
       // The next HOLD is for that planet, never for the one just left (still in grab reach at the release).
       this.guidedLeft = this.orbitPlanet;
       this.guidedTarget = null;
+      this.guidedFlightT = 0;
     } else if (r.action === 'nice') {
       this.guidedNice();
     } else if (r.action === 'cancel') {
@@ -400,6 +412,13 @@ class GameScene extends Phaser.Scene {
       this.guidedTarget = null;
     }
     return r.action;
+  }
+
+  // Whether the comet is past its closest pass of planet p and about to leave its grab zone.
+  leavingGrabZone(p) {
+    const c = this.comet;
+    const receding = (p.x - c.x) * c.vx + (p.y - c.y) * c.vy <= 0;
+    return receding && this.distanceTo(p) - p.radius > this.grabRange() * GameScene.GUIDED_LEAVE_SHARE;
   }
 
   // The closest grabbable planet the comet is about to reach (the HOLD step starts a little before its grab
@@ -523,6 +542,11 @@ class GameScene extends Phaser.Scene {
     return this.guidedHolds() || this.guidedNiceT > 0;
   }
 
+  // A step is up (waiting for the player, easing in or drawn) or its NICE! stamp is: pops are dropped then.
+  guidedStepUp() {
+    return !!(this.guided && this.guided.waiting) || this.guidedNiceT > 0;
+  }
+
   // World time scale for the guided slow motion: it eases down to guidedSlowScale, and once the step is up
   // the world stands still until the player answers (the step's screen coordinates stay exact).
   guidedTimeScale() {
@@ -533,7 +557,10 @@ class GameScene extends Phaser.Scene {
   // A HUD call that waits while a guided step owns the screen (banners, milestone / MACH / set stamps).
   hudCall(name, ...args) {
     if (this.headless || !this.hud || typeof this.hud[name] !== 'function') return;
-    if (this.guidedBusy()) {
+    // Stamps of the moment (MACH, chain milestones) are dropped while a step is up, never queued; banners
+    // wait. In the flight between steps (the world easing back) everything shows at once.
+    if (this.guidedStepUp() && GameScene.MOMENT_STAMPS.indexOf(name) >= 0) return;
+    if (this.guidedStepUp() || (this.guidedBusy() && GameScene.MOMENT_STAMPS.indexOf(name) < 0)) {
       if (this.hudQueue.length < GameScene.HUD_QUEUE_MAX) this.hudQueue.push({ call: name, args });
       return;
     }
@@ -637,6 +664,8 @@ class GameScene extends Phaser.Scene {
     this.pickDelay = -1;        // real seconds until a queued card pick may open, -1 = none queued
     this.picksOwed = 0;         // zone card picks earned but not opened yet (they wait for cardPickReady)
     this.novaHoldT = 0;         // real s the supernova holds still after a card pick
+    this.orbitLeashY = null;    // the wave's leash limit when the current orbit began (updateNova; null = none)
+    this.lastCardPickAt = null; // run s of the last chosen card (its supernova cost eases in: cardNovaMul)
     this.queuedMilestone = null; // { level, chain } stamp held back while a card pick is pending
     this.milestoneWait = 0;      // real seconds after the pick closes before it plays
     this.inputGuard = false;    // swallows the release of the finger that tapped a card
@@ -708,6 +737,7 @@ class GameScene extends Phaser.Scene {
       this.inputGuard = true;
       this.isHolding = false;
       this.novaHoldT = FEEL.slowMoEase + CARD_TUNING.pickNovaHold;
+      this.lastCardPickAt = this.elapsed;
       this.resumeAfterPick();
     }
     const setsBefore = activeSetBonuses(this.ownedCards);
@@ -720,6 +750,8 @@ class GameScene extends Phaser.Scene {
     this.reportProgress('card', id);
     this.sfx('cardpick', { id });
     this.popText(card.name.toUpperCase() + '!', GameScene.hex(color), { size: 40, duration: 900 });
+    // The card's name at the pick counts as the first of its written proc pops (SLINGSHOT! 3x in 6 s).
+    this.procPops[id] = Math.max(1, this.procPops[id] || 0);
     this.burst(this.comet.x, this.comet.y, color, 14, 150);
     if (this.hud.setCards) this.hud.setCards(this.ownedCards.slice());
     for (const family of newSets) {
@@ -774,19 +806,40 @@ class GameScene extends Phaser.Scene {
     return best;
   }
 
-  // Crawl rescue / card pick: the next planet above slides to where the flight will pass it at grab distance
-  // (ahead of the comet, offset to one side so it is caught, not hit). Returns that planet (null = none).
+  // Crawl rescue / card pick: a planet above slides to where the flight will pass it at grab distance (ahead
+  // of the comet, offset to one side so it is caught, not hit). Tries the next planet above first, on the
+  // inner side and then the other, then the other planets above (a spot next to another planet is skipped).
+  // The drift keeps that spot relative to the comet while it slides, so a moving comet still meets it.
+  // Returns that planet (null = none).
   slidePlanetIntoReach() {
     const c = this.comet;
-    const p = nextPlanetAboveY(this.planets, this.lastFlungFrom || this.noGrabPlanet, c.y);
-    if (!p) return null;
+    const exclude = this.lastFlungFrom || this.noGrabPlanet;
+    const first = nextPlanetAboveY(this.planets, exclude, c.y);
+    const others = this.planets
+      .filter((q) => q !== first && q !== exclude && q !== this.lastFlungFrom && q.y < c.y - 40)
+      .sort((p1, p2) => this.distanceTo(p1) - this.distanceTo(p2));
+    const inner = c.x < GAME_WIDTH / 2 ? 1 : -1;
+    for (const p of (first ? [first] : []).concat(others).slice(0, 4)) {
+      for (const side of [inner, -inner]) {
+        const spot = this.slideSpot(p, side);
+        if (!spot) continue;
+        p.drift = { side };
+        return p;
+      }
+    }
+    return null;
+  }
+
+  // Where slidePlanetIntoReach puts planet p for the comet's current flight (side: +1 / -1 of the path),
+  // or null when that spot is next to another planet.
+  slideSpot(p, side) {
+    const c = this.comet;
     const len = Math.hypot(c.vx, c.vy) || 1;
     let ux = c.vx / len;
     let uy = c.vy / len;
     // Falling: the planet comes in above instead (a planet down the screen would only lead into the wave).
     if (uy > -0.2) { ux = 0; uy = -1; }
     const ahead = p.radius + this.grabRange() * 0.5 + this.speed * GameScene.SLIDE_LEAD_SECONDS;
-    const side = c.x < GAME_WIDTH / 2 ? 1 : -1;
     const off = p.radius + this.grabRange() * 0.45;
     const m = 90 + p.radius;
     const x = Phaser.Math.Clamp(c.x + ux * ahead - uy * off * side, m, GAME_WIDTH - m);
@@ -795,21 +848,23 @@ class GameScene extends Phaser.Scene {
     for (const q of this.planets) {
       if (q !== p && Math.hypot(q.x - x, q.y - y) < q.radius + p.radius + GameScene.SLIDE_CLEARANCE) return null;
     }
-    p.drift = { x, y };
-    return p;
+    return { x, y };
   }
 
-  // Slides planets with a drift target toward it (crawl rescue), at planetDriftSpeed.
+  // Slides planets with a drift toward their slide spot (crawl rescue / card pick), at planetDriftSpeed.
   updatePlanetDrift(dt) {
     for (const p of this.planets) {
       if (!p.drift) continue;
       // Caught (or already passed: it must not keep sliding down behind the comet toward the wave).
       if (p === this.orbitPlanet || p.y > this.comet.y + 40) { p.drift = null; continue; }
-      const dx = p.drift.x - p.x;
-      const dy = p.drift.y - p.y;
+      // The spot follows the comet; if it is blocked now, the planet stops where it is.
+      const spot = this.slideSpot(p, p.drift.side);
+      if (!spot) { p.drift = null; continue; }
+      const dx = spot.x - p.x;
+      const dy = spot.y - p.y;
       const d = Math.hypot(dx, dy);
       const step = TUNING.planetDriftSpeed * dt;
-      if (d <= step) { p.x = p.drift.x; p.y = p.drift.y; p.drift = null; continue; }
+      if (d <= step) { p.x = spot.x; p.y = spot.y; p.drift = null; continue; }
       p.x += (dx / d) * step;
       p.y += (dy / d) * step;
     }
@@ -1378,7 +1433,7 @@ class GameScene extends Phaser.Scene {
     } else {
       // Aerodynamic cuts the decay; Afterburner (after a PERFECT) and Slipstream (climbing) stop it.
       const noDecay = this.afterburnerT > 0 || (this.mods.climbNoDecay && this.comet.vy < 0);
-      if (!noDecay) this.speed -= flightDecay(altitude) * this.mods.flightDecayMul * dt;
+      if (!noDecay) this.speed -= flightDecay(altitude, this.speed) * this.mods.flightDecayMul * dt;
       // High-speed drag: an unearned 800 km/s bleeds away (Afterburner / Slipstream only shield it below 600).
       this.speed -= highSpeedDrag(this.speed, this.mods.flightDecayMul, noDecay) * dt;
       // Keep direction, apply the decayed speed.
@@ -1450,7 +1505,16 @@ class GameScene extends Phaser.Scene {
       const climb = this.novaSpeedNow * orbitNovaMul(this.bestAltitude, this.orbitHeldT, !!this.orbit, this.perfectChain > 0);
       this.novaY -= climb * dt;
       // Never let it fall far behind, so the threat is always close (late: ~0.8 s of travel below the screen).
-      this.novaY = Math.min(this.novaY, this.leashBottom() + novaLeashFor(this.bestAltitude, this.novaSpeedNow));
+      let leash = this.leashBottom() + novaLeashFor(this.bestAltitude, this.novaSpeedNow);
+      // Before ESCAPE VELOCITY the leash does not tighten during an orbit: after a fast climb the camera is
+      // still catching up when the comet latches, and that catch-up dragged the wave ~400 px up at 2000+ px/s
+      // into the orbit's down swing (fast early runs died 0.9 s into an orbit). In an orbit the wave closes
+      // at its own speed; the leash takes over again in flight.
+      if (this.orbit && pagesPastEscape(this.bestAltitude) <= 0) {
+        if (this.orbitLeashY === null) this.orbitLeashY = leash;
+        leash = Math.max(leash, this.orbitLeashY);
+      } else this.orbitLeashY = null;
+      this.novaY = Math.min(this.novaY, leash);
     }
     const gap = this.novaY - this.comet.y;
     if (this.hud.setDanger) this.hud.setDanger(1 - (gap - 150) / 450);
@@ -1461,7 +1525,8 @@ class GameScene extends Phaser.Scene {
   currentNovaSpeed() {
     let calm = novaCalmFactor(this.elapsed, this.learning, this.tutorialOn);
     if (this.learnEndT !== null && !this.learning) calm = learnExitFactor(calm, this.elapsed - this.learnEndT);
-    return novaSpeedFor(this.elapsed, this.bestAltitude, this.mods.novaSpeedMul, calm);
+    const sincePick = this.lastCardPickAt === null ? null : this.elapsed - this.lastCardPickAt;
+    return novaSpeedFor(this.elapsed, this.bestAltitude, cardNovaMul(this.ownedCards.length, sincePick), calm, !!this.tutorialOn);
   }
 
   // Seconds until the wave reaches the comet: the HUD's off-screen warning (see novaEtaSeconds).
@@ -1674,12 +1739,11 @@ class GameScene extends Phaser.Scene {
       // A steer still pulling toward the wall would turn the comet straight back into it every few frames
       // (each bounce costing speed: the 3600 -> 250 px/s collapse): a wall hit ends any steer.
       this.homing = null;
-      const since = this.elapsed - this.lastWallAt;
       this.lastWallAt = this.elapsed;
-      const w = wallBounceVelocity(c.vx, c.vy, this.speed, since);
+      const w = wallBounceVelocity(c.vx, c.vy, this.speed);
       c.vx = w.vx;
       c.vy = w.vy;
-      // Wall Kick only works a couple of times per flight; after that it is a normal, costly bounce.
+      // Wall Kick only works a couple of times per flight; after that it is a plain deflection.
       if (this.mods.wallKick && wallKickAllowed(this.wallKicksUsed)) return this.wallKick();
       this.sfx('wall');
       this.speed *= wallBounceKeepAt(this.speed);
@@ -1701,7 +1765,7 @@ class GameScene extends Phaser.Scene {
     }
     // Same sideways cap as a plain bounce (no wall-to-wall pinball at speed).
     this.addSpeed(wallKickGain(this.speed, this.speedCap(), CARD_TUNING.wallKickBonus));
-    const capped = wallBounceVelocity(-ux, uy, this.speed, Infinity);
+    const capped = wallBounceVelocity(-ux, uy, this.speed);
     ux = capped.vx / this.speed;
     uy = capped.vy / this.speed;
     this.homing = null;
@@ -1974,11 +2038,8 @@ class GameScene extends Phaser.Scene {
     this.cameras.main.shake(160, 0.012);
     if (this.hud.flash) this.hud.flash(0xff4d6d, 0.12, 120);
     this.burst(this.comet.x, this.comet.y, 0xff4d6d, 10);
-    // Bumps can come in bursts (planet, rock, planet): one '-X% SPEED' per LOSS_POP_GAP.
-    if (popGapOk(this.lastLossPopAt, this.time.now, GameScene.LOSS_POP_GAP)) {
-      this.lastLossPopAt = this.time.now;
-      this.popText('-' + Math.round((1 - keep) * 100) + '% SPEED', '#ff4d6d');
-    }
+    // Bumps can come in bursts (planet, rock, planet): popText lets one '-X% SPEED' out per lossPopGapMs.
+    this.popText('-' + Math.round((1 - keep) * 100) + '% SPEED', '#ff4d6d');
   }
 
   // A card's proc pop: written the first CARD_TUNING.procPopsPerRun times of a run (cardProcPopAllowed),
@@ -2011,13 +2072,19 @@ class GameScene extends Phaser.Scene {
     opts = opts || {};
     // Learning window: no '-X% SPEED' pops.
     if (this.learning && label.charAt(0) === '-') return;
-    // A guided tutorial step owns the screen: the pop waits for it (routine ones are just dropped).
-    if (this.guidedBusy()) {
-      if (!opts.low && this.hudQueue.length < GameScene.HUD_QUEUE_MAX) this.hudQueue.push({ pop: [label, color, opts] });
-      return;
-    }
+    // A guided tutorial step (or its NICE! stamp) owns the screen: the pop is dropped, never queued (a queued
+    // PERFECT! came out ~8 s later, out of context). A pop from the flight between steps still shows.
+    if (this.guidedStepUp()) return;
     const now = this.time.now;
     if (opts.low && now - this.lastPopAt < GameScene.LOW_POP_QUIET) return;
+    // Loss pops are one family ('-30% SPEED', '-15% SPEED'...): one per lossPopGapMs whatever the number.
+    const loss = isLossPop(label);
+    if (loss && !popGapOk(this.lastLossPopAt, now, POP_GATES.lossPopGapMs)) return;
+    // At most one new pop per popMinGapMs; inside that a pop only goes out when it outranks the last one.
+    const priority = opts.priority || (typeof popPriority === 'function' ? popPriority(label) : 1);
+    if (!popAdmitted(this.lastPop, now, priority)) return;
+    this.lastPop = { at: now, priority };
+    if (loss) this.lastLossPopAt = now;
     this.lastPopAt = now;
     const f = speedFraction(this.speed);
     // Spawn ahead of the comet along its flight direction, where the player is looking.
@@ -2779,7 +2846,10 @@ GameScene.AIM_MARGIN = TUNING.cometRadius + 20;   // px a steer's point stays in
 GameScene.SLIDE_MAX_SPEED = 1200;   // px/s: a card pick slides a planet in only for a comet slower than this
 GameScene.SLIDE_CLEARANCE = 160;    // px kept between a slid planet and any other
 GameScene.CLOSE_POP_GAP = 6000;     // ms: CLOSE ORBIT! +SPEED at most this often
-GameScene.LOSS_POP_GAP = 1500;      // ms: '-X% SPEED' never twice within this
+GameScene.MOMENT_STAMPS = ['showMachTier', 'showMilestone'];
+GameScene.GUIDED_SECOND_GAP = 220;  // extra px between the two guided tutorial planets (see create)
+GameScene.GUIDED_FLIGHT_BEAT = 0.7; // s (real) of flight after the first tutorial fling before HOLD 2 shows...
+GameScene.GUIDED_LEAVE_SHARE = 0.7; // ...unless the comet is leaving the planet's grab zone (this share of it)
 // Death beat (seconds, real time): jaws closing, then the hold before the game over page.
 GameScene.DEATH_CLOSE = 0.3;
 GameScene.DEATH_HOLD = 0.55;

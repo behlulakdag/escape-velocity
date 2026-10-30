@@ -465,7 +465,7 @@ test('orbit gain tapers off near the top speed', () => {
 test('wall bounces cost more at high speed; Wall Kick is limited and never pushes to the cap', () => {
   assert.ok(Math.abs(o.wallBounceKeepAt(0) - o.TUNING.wallBounceKeep) < 1e-9);
   assert.ok(o.wallBounceKeepAt(8000) < o.wallBounceKeepAt(3000));
-  assert.ok(o.wallBounceKeepAt(8000) <= 0.8);
+  assert.ok(o.wallBounceKeepAt(8000) <= 0.9);
   assert.strictEqual(o.wallBounceKeepAt(4500), o.TUNING.wallBounceKeep, 'early game unchanged');
   assert.strictEqual(o.wallKickAllowed(0), true);
   assert.strictEqual(o.wallKickAllowed(1), true);
@@ -793,38 +793,55 @@ test('aimAtPlanet: optional passGap puts the pass point that far off the surface
   assert.ok(o.TUNING.guidedPassGap < o.TUNING.grabRange * 0.5);
 });
 
-test('wallBounceVelocity: flips vx, keeps speed, caps the sideways share, keeps a climb climbing', () => {
+test('wallBounceVelocity: a deflection that flips vx, keeps speed, turns it up and inward', () => {
   const sp = 3600;
+  const vxCap = o.TUNING.wallCrossWidth / o.TUNING.wallCrossSeconds;
   // Nearly sideways climb into the right wall: comes back mostly upward, still climbing.
-  let w = o.wallBounceVelocity(sp * 0.98, -sp * Math.sqrt(1 - 0.98 * 0.98), sp, Infinity);
+  let w = o.wallBounceVelocity(sp * 0.98, -sp * Math.sqrt(1 - 0.98 * 0.98), sp);
   assert.ok(w.vx < 0);
-  assert.ok(Math.abs(w.vx) <= Math.min(o.TUNING.wallVxShare * sp, o.TUNING.wallVxMax) + 1e-6);
+  assert.ok(Math.abs(w.vx) <= Math.min(o.TUNING.wallVxShare * sp, vxCap) + 1e-6);
   assert.ok(w.vy < 0, 'still climbing');
   assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - sp) < 1e-6);
   // Exactly sideways (vy 0) counts as a climb.
-  w = o.wallBounceVelocity(-sp, 0, sp, Infinity);
+  w = o.wallBounceVelocity(-sp, 0, sp);
   assert.ok(w.vx > 0 && w.vy < 0);
   // A flat flight drifting slightly down comes off the wall climbing, not diving...
-  w = o.wallBounceVelocity(sp, sp * 0.1, sp, Infinity);
-  assert.ok(w.vy < 0 && Math.abs(w.vx) <= o.TUNING.wallVxMax + 1e-6);
-  // ...a comet already falling steeply keeps falling (no free lift), capped too.
-  w = o.wallBounceVelocity(sp * 0.75, sp * Math.sqrt(1 - 0.75 * 0.75), sp, Infinity);
-  assert.ok(w.vy > 0 && Math.abs(w.vx) <= o.TUNING.wallVxMax + 1e-6);
+  w = o.wallBounceVelocity(sp, sp * 0.1, sp);
+  assert.ok(w.vy < 0 && Math.abs(w.vx) <= vxCap + 1e-6);
+  // ...so does a slow, shallow fall...
+  w = o.wallBounceVelocity(300, 150, Math.hypot(300, 150));
+  assert.ok(w.vx < 0 && w.vy < 0 && Math.abs(Math.hypot(w.vx, w.vy) - Math.hypot(300, 150)) < 1e-6);
+  // ...and so does a steep fall: never a dive off a wall (capped too).
+  w = o.wallBounceVelocity(sp * 0.75, sp * Math.sqrt(1 - 0.75 * 0.75), sp);
+  assert.ok(w.vy < 0 && Math.abs(w.vx) <= vxCap + 1e-6);
+  w = o.wallBounceVelocity(-300, 1000, Math.hypot(300, 1000));
+  assert.ok(Math.abs(w.vx - 300) < 1e-6 && Math.abs(w.vy + 1000) < 1e-6, 'a slow steep fall is mirrored up');
   // A steep bounce is only mirrored.
-  w = o.wallBounceVelocity(300, -1000, Math.hypot(300, 1000), Infinity);
+  w = o.wallBounceVelocity(300, -1000, Math.hypot(300, 1000));
   assert.ok(Math.abs(w.vx + 300) < 1e-6 && Math.abs(w.vy + 1000) < 1e-6);
-  // A grazing hit leaves the wall with at least wallMinVxShare of the speed sideways, still climbing.
-  w = o.wallBounceVelocity(-2, -sp, sp, Infinity);
-  assert.ok(w.vx >= o.TUNING.wallMinVxShare * sp - 1e-6 && w.vy < 0);
-  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - sp) < 1e-6);
-  // A repeat hit within wallRepeatWindow gets the tighter cap.
-  w = o.wallBounceVelocity(sp, -10, sp, o.TUNING.wallRepeatWindow / 2);
-  assert.ok(Math.abs(w.vx) <= o.TUNING.wallVxMaxRepeat + 1e-6);
-  // At any speed the crossing between walls (720 - 2 x comet radius) after a repeat hit takes >= 0.6 s,
-  // so 3 wall hits can never come within 1 s at full speed.
-  const cross = (720 - 2 * o.TUNING.cometRadius) / o.TUNING.wallVxMaxRepeat;
-  const first = (720 - 2 * o.TUNING.cometRadius) / o.TUNING.wallVxMax;
-  assert.ok(first + cross > 1, String(first + cross));
+  // A grazing hit leaves the wall with at least wallMinVxShare of the speed sideways (up to the cap), climbing.
+  w = o.wallBounceVelocity(-2, -1000, 1000);
+  assert.ok(w.vx >= o.TUNING.wallMinVxShare * 1000 - 1e-6 && w.vy < 0);
+  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - 1000) < 1e-6);
+});
+
+test('wallBounceVelocity: after a wall hit the opposite wall is >= wallCrossSeconds away at any speed', () => {
+  for (const sp of [800, 1500, 2918, 4500, 8000]) {
+    for (const a of [0, 0.3, 0.8, 1.2]) {
+      const w = o.wallBounceVelocity(sp * Math.cos(a), -sp * Math.sin(a), sp);
+      const crossing = o.TUNING.wallCrossWidth / Math.max(1e-9, Math.abs(w.vx));
+      assert.ok(crossing >= o.TUNING.wallCrossSeconds - 1e-9, sp + ' ' + a + ': ' + crossing);
+      assert.ok(w.vy < 0, 'the rest of the speed climbs');
+      assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - sp) < 1e-6);
+    }
+  }
+});
+
+test('wall hits keep a big fling alive: 4 hits from 2918 px/s keep > 80% of it', () => {
+  let v = 2918;
+  for (let i = 0; i < 4; i++) v *= o.wallBounceKeepAt(v);
+  assert.ok(v > 2918 * 0.8, String(v));
+  assert.ok(o.wallBounceKeepAt(2000) >= 0.95 - 1e-9);
 });
 
 test('crawlRescueStep: 1 s crawling with nothing in reach calls one rescue, then cools down', () => {
@@ -918,4 +935,51 @@ test('passPointInField: a pass point past a side wall swaps to the planet\'s oth
   assert.deepStrictEqual(o.passPointInField(-50, -700, planet, 720, 48, true), { x: 350, y: -700 });
   // Both sides out (cannot happen on the real field): clamped.
   assert.deepStrictEqual(o.passPointInField(-500, -600, { x: 360, y: -600 }, 720, 48), { x: 48, y: -600 });
+});
+
+test('flightDecay with a speed: cruise decay shrinks with speed, a real crawl gets the full decay', () => {
+  const alt = 9000;
+  assert.strictEqual(o.flightDecay(alt, 3000), o.flightDecay(alt));
+  assert.strictEqual(o.flightDecay(alt, o.TUNING.decayFullFrom), o.flightDecay(alt));
+  assert.ok(Math.abs(o.flightDecay(alt, 1050) - o.flightDecay(alt) * 0.7) < 1e-9);
+  assert.ok(Math.abs(o.flightDecayShare(601) - o.TUNING.decayMinShare) < 0.002);
+  assert.ok(o.flightDecay(alt, 1000) < o.flightDecay(alt, 1400));
+  assert.strictEqual(o.flightDecay(alt, 300), o.flightDecay(alt), 'crawl: full decay');
+  assert.strictEqual(o.flightDecayShare(-5), 1);
+  // A mid cruise at 120 km/s keeps above 60 km/s for > 7 s even at the top decay (was ~4.3 s).
+  let v = 1200;
+  let t = 0;
+  while (v > 600 && t < 60) { v -= o.TUNING.maxFlightDecay * o.flightDecayShare(v) / 60; t += 1 / 60; }
+  assert.ok(t > 7, String(t));
+});
+
+test('isLossPop: one family for every -N% SPEED', () => {
+  assert.ok(o.isLossPop('-30% SPEED'));
+  assert.ok(o.isLossPop('-15% SPEED'));
+  assert.ok(!o.isLossPop('+SPEED'));
+  assert.ok(!o.isLossPop('SHATTER! +SPEED'));
+  assert.ok(!o.isLossPop(undefined));
+});
+
+test('popAdmitted: one new pop per popMinGapMs unless it outranks the last', () => {
+  const g = o.POP_GATES.popMinGapMs;
+  assert.ok(o.popAdmitted(null, 0, 1));
+  assert.ok(!o.popAdmitted({ at: 1000, priority: 2 }, 1000 + g - 1, 2));
+  assert.ok(!o.popAdmitted({ at: 1000, priority: 2 }, 1070, 1));
+  assert.ok(o.popAdmitted({ at: 1000, priority: 1 }, 1070, 3));
+  assert.ok(o.popAdmitted({ at: 1000, priority: 3 }, 1000 + g, 1));
+  assert.ok(o.POP_GATES.lossPopGapMs >= 2000);
+});
+
+test('novaSpeed: first (tutorial) runs keep the gentler time ramp', () => {
+  assert.strictEqual(o.novaSpeed(0, 0, true), o.novaSpeed(0, 0));
+  assert.ok(o.novaSpeed(30, 0, true) < o.novaSpeed(30, 0));
+  assert.strictEqual(o.novaSpeed(30, 0, true), o.TUNING.novaBaseSpeed + o.TUNING.novaRamp * 30);
+  // The early extra ramp stops growing after novaRampEarlySeconds.
+  const T = o.TUNING.novaRampEarlySeconds;
+  const extra = (t) => o.novaSpeed(t, 0) - o.novaSpeed(t, 0, true);
+  assert.ok(Math.abs(extra(T / 2) - o.TUNING.novaRampEarly * T / 2) < 1e-9);
+  assert.ok(Math.abs(extra(T + 20) - o.TUNING.novaRampEarly * T) < 1e-9);
+  assert.strictEqual(o.novaSpeedFor(30, 0, 1, 1, true), o.novaSpeed(30, 0, true));
+  assert.strictEqual(o.novaSpeed(1e6, 0, true), o.novaSpeed(1e6, 0), 'same top speed');
 });

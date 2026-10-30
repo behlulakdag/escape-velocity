@@ -56,7 +56,9 @@ const CARD_TUNING = {
   shockwavePush: 250,         // px the supernova is pushed down on a CLOSE CALL
   catchBurst: 110,            // Orbit Master: px/s burst on every catch
   rescues: 1,                 // Unbreakable: per run
-  novaPerCard: 0.05,          // every card picked makes the supernova 5% faster
+  novaPerCard: 0.05,          // every card picked makes the supernova 5% faster...
+  pickNovaEase: 10,           // ...the newest card's share easing in over this many s after its pick (the
+                              // full +5% at once made the wave feel like the pick's fault: deaths 5-10 s later)
   // When a pick may open (see cardPickReady) and what it costs the player.
   pickNovaHold: 1.5,          // real s the supernova holds still after a pick (on top of the slow-motion ease)
   firstRunPickMeters: 1500,   // tutorial run 1: the first pick waits for HYPERSONIC...
@@ -155,6 +157,16 @@ function cardMods(ownedIds) {
   };
 }
 
+// Supernova speed multiplier from cards: ownedCount cards, the newest picked secondsSincePick s ago
+// (its novaPerCard eases in linearly over pickNovaEase s; null / undefined = long ago).
+function cardNovaMul(ownedCount, secondsSincePick) {
+  const n = Math.max(0, ownedCount || 0);
+  if (n === 0) return 1;
+  const t = secondsSincePick === undefined || secondsSincePick === null ? Infinity : Math.max(0, secondsSincePick);
+  const newest = Math.min(1, t / CARD_TUNING.pickNovaEase);
+  return 1 + CARD_TUNING.novaPerCard * (n - 1 + newest);
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { cardProcPopAllowed, CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardPickReady, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
+  module.exports = { cardNovaMul, cardProcPopAllowed, CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardPickReady, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
 }

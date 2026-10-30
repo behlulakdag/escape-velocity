@@ -34,10 +34,21 @@
 //   camera, planets, page, supernova just below the screen, cards picked via pickCard; seconds = run time,
 //   default altitude / 120) so late-game balance is measured fast. delete window.simStart to go back.
 // Speed readout: every run reports minKms / medKms / maxKms (km/s, sampled after the first second).
+// Crawl / walls / HUD: slowShare (median share of time below 60 km/s), cruiseKms (median free-flight km/s),
+// wallHitsPerMin, wallLossPct (median share of all speed lost that went to side walls), crawlRescue
+// (crawl rescues called / with a planet in reach within 1.2 s / caught within 2 s), hudShare (median share of
+// frames with a planet or its orbit ring under the bottom-corner HUD blocks). Date.now follows the step clock.
 // playtestSummary(styles, runsEach, maxSeconds) - maxSeconds defaults to 600 for expert, 240 otherwise.
 (() => {
   let clock = performance.now();
-  const step = () => { clock += 16.67; game.scene.update(clock, 16.67); };
+  // Date.now follows the step clock while stepping, so anything timed by it matches the simulated time.
+  const realDateNow = Date.now.bind(Date);
+  const dateOffset = realDateNow() - clock;
+  const step = () => {
+    clock += 16.67;
+    Date.now = () => Math.round(clock + dateOffset);
+    try { game.scene.update(clock, 16.67); } finally { Date.now = realDateNow; }
+  };
 
   window.simRun = (style, maxSeconds) => {
     ['Menu', 'GameOver', 'Game'].forEach((k) => game.scene.stop(k));
@@ -92,10 +103,32 @@
     let pinballsAny = 0;
     let pinballUntil = -1;
     let pinballAnyUntil = -1;
-    s.latch = function (planet, auto) { freeHits = []; return proto.latch.call(this, planet, auto); };
+    // Crawl rescue: each call (a planet slid toward a crawling comet), and whether it worked: a grabbable
+    // planet in reach within 1.2 s (crawlReach) and a catch within 2 s (crawlCatch).
+    let crawlCalls = 0;
+    let crawlReach = 0;
+    let crawlCatch = 0;
+    let crawlAt = -1;         // run s of the last rescue still being watched (-1 = none)
+    let crawlReached = false;
+    s.updateCrawlRescue = function (dt) {
+      const before = this.crawlT;
+      const r = proto.updateCrawlRescue.call(this, dt);
+      if (before >= 0 && this.crawlT === -TUNING.crawlCooldown) { crawlCalls++; crawlAt = this.elapsed; crawlReached = false; }
+      if (crawlAt >= 0 && !crawlReached && this.elapsed - crawlAt <= 1.2 && this.reachablePlanetAhead()) { crawlReached = true; crawlReach++; }
+      return r;
+    };
+    s.latch = function (planet, auto) {
+      freeHits = [];
+      if (crawlAt >= 0 && this.elapsed - crawlAt <= 2) { crawlCatch++; crawlAt = -1; }
+      return proto.latch.call(this, planet, auto);
+    };
+    let wallLoss = 0;         // px/s lost at side-wall hits
+    let totalLoss = 0;        // px/s lost in all (decay, drag, bumps, walls), frame by frame
     s.bounceWalls = function () {
       const before = this.comet.vx;
+      const speedBefore = this.speed;
       const r = proto.bounceWalls.call(this);
+      if (this.speed < speedBefore) wallLoss += speedBefore - this.speed;
       if (before !== 0 && Math.sign(before) !== Math.sign(this.comet.vx)) {
         wallHits.push(this.elapsed);
         freeHits.push(this.elapsed);
@@ -151,6 +184,11 @@
     let lateSeen = 0;
     let lateEta08 = 0;
     let deathOrbiting = false;
+    let hudFrames = 0;        // frames with a planet / orbit ring under a bottom HUD block
+    const hudRects = typeof HUD_PANEL !== 'undefined' ? [HUD_PANEL, HUD_BADGE_PANEL] : [];
+    let flightFrames = 0;     // frames after the first second (speed metrics)
+    let slowFrames = 0;       // ...of them below 60 km/s (600 px/s)
+    const cruise = [];        // free-flight speeds (no orbit), for the median cruise km/s
     const etaOf = () => (typeof s.novaEta === 'function' ? s.novaEta() : (s.novaY - s.comet.y) / Math.max(1, novaSpeed(s.elapsed, s.bestAltitude)));
     while (!s.isOver && frames < maxSeconds * 60) {
       frames++;
@@ -253,7 +291,24 @@
           : held > releaseAfter;
         if (release) s.releaseHold();
       }
+      const speedBeforeStep = s.speed;
       step();
+      if (s.speed < speedBeforeStep) totalLoss += speedBeforeStep - s.speed;
+      if (frames > 60 && !s.isOver) {
+        flightFrames++;
+        if (s.speed < 600) slowFrames++;
+        if (!s.orbit && !s.scrape) cruise.push(s.speed);
+        // A planet (or the orbit ring around it) under the bottom-corner HUD blocks (km/s + MACH, xN badge).
+        if (hudRects.length) {
+          const z = s.cameras.main.zoom;
+          const under = s.planets.some((p) => {
+            const q = s.worldToScreen(p.x, p.y);
+            const r = (p.radius + (p === s.orbitPlanet && s.orbit ? Math.max(0, s.orbit.radius - p.radius) : 0)) * z;
+            return hudRects.some((b) => q.x + r > b.left && q.x - r < b.right && q.y + r > b.top && q.y - r < b.bottom);
+          });
+          if (under) hudFrames++;
+        }
+      }
       const eta = etaOf();
       if (eta < 1.2) { if (warnSince < 0) warnSince = s.elapsed; } else warnSince = -1;
       if (s.bestAltitude >= 15000) {
@@ -291,6 +346,7 @@
     delete s.loseSpeed;
     delete s.bounceWalls;
     delete s.latch;
+    delete s.updateCrawlRescue;
     speeds.sort((a, b) => a - b);
     const kms = (q) => (speeds.length ? Math.round(speeds[Math.floor(q * (speeds.length - 1))] / 10) : 0);
     const warnBeforeDeath = reason === 'SUPERNOVA!' ? (warnSince >= 0 ? Math.round((s.elapsed - warnSince) * 100) / 100 : -1) : null;
@@ -299,7 +355,12 @@
     const pickDeath10 = !!reason && lastPickAt > 0 && s.elapsed - lastPickAt <= 10;
     // ...and of those, the ones that died crawling (< 80 km/s): the 'nothing to grab after a pick' death.
     const pickCrawlDeath = pickDeath10 && s.speed < 800;
-    return { pinballsAny, pickCrawlDeath, tutorialDoneAt, collapses, pinballs, wallHits: wallHits.length, pickDeath10, pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
+    cruise.sort((a, b) => a - b);
+    const cruiseKms = cruise.length ? Math.round(cruise[Math.floor(cruise.length / 2)] / 10) : 0;
+    const slowShare = flightFrames ? slowFrames / flightFrames : 0;
+    const wallLossShare = totalLoss > 0 ? Math.min(1, wallLoss / totalLoss) : 0;
+    const hudShare = flightFrames ? hudFrames / flightFrames : 0;
+    return { hudShare, crawlCalls, crawlReach, crawlCatch, slowShare, cruiseKms, wallLossShare, pinballsAny, pickCrawlDeath, tutorialDoneAt, collapses, pinballs, wallHits: wallHits.length, pickDeath10, pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
   };
 
   window.playtestSummary = (styles, runsEach, maxSeconds) => {
@@ -351,6 +412,15 @@
         pinballsAny: runs.reduce((n, r) => n + r.pinballsAny, 0),
         wallHits: runs.reduce((n, r) => n + r.wallHits, 0),
         orbitDeaths: runs.filter((r) => r.reason && r.deathOrbiting).length + '/' + runs.filter((r) => r.reason).length,
+        // Crawl / wall metrics: median share of time below 60 km/s, median free-flight (cruise) km/s,
+        // side-wall hits per minute of play, and the median share of all speed lost that went to the walls.
+        // Crawl rescues called / with a planet in reach within 1.2 s / caught within 2 s (totals).
+        crawlRescue: ['crawlCalls', 'crawlReach', 'crawlCatch'].map((k) => runs.reduce((n, r) => n + r[k], 0)).join('/'),
+        hudShare: Math.round(median(runs.map((r) => r.hudShare)) * 100) / 100,
+        slowShare: Math.round(median(runs.map((r) => r.slowShare)) * 100) / 100,
+        cruiseKms: median(runs.map((r) => r.cruiseKms)),
+        wallHitsPerMin: Math.round((runs.reduce((n, r) => n + r.wallHits, 0) / Math.max(1 / 60, runs.reduce((n, r) => n + r.seconds, 0) / 60)) * 10) / 10,
+        wallLossPct: Math.round(median(runs.map((r) => r.wallLossShare)) * 100),
         alts: runs.map((r) => r.alt).sort((a, b) => a - b).join(','),
       };
     }
