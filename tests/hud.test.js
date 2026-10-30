@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, hudPromptCrayon, HUD_PROMPT, HUD_SPEED })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, hudPromptCrayon, HUD_PROMPT, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_TUTORIAL, hudTutorialBox, hudTutorialHoldCandidates, hudTutorialReleaseCandidates, hudTutorialPlace })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -268,8 +268,14 @@ test('MACH readout: km/s * 1000 / 343, rounded, safe on junk', () => {
   assert.strictEqual(hud.hudMachNumber(-5), 0);
   assert.strictEqual(hud.hudMachNumber(NaN), 0);
   assert.strictEqual(hud.hudMachNumber(undefined), 0);
-  // The readout sits under the speed underline and above the bottom edge.
-  assert.ok(hud.HUD_SPEED.lineY + hud.HUD_MACH.dy + hud.HUD_MACH.size / 2 <= 1280 - 50);
+  // The readout sits under the speed underline, out of the phone browser-bar zone at the bottom.
+  const machBottom = hud.HUD_SPEED.lineY + hud.HUD_MACH.dy + hud.HUD_MACH.size / 2 + 5;
+  assert.ok(machBottom <= 1280 - hud.HUD_SAFE_BOTTOM, 'MACH bottom ' + machBottom);
+  assert.ok(hud.HUD_SAFE_BOTTOM >= 100);
+  // ...and clear of the underline it hangs from (the line is ~7 px thick).
+  assert.ok(hud.HUD_MACH.dy - hud.HUD_MACH.size / 2 >= 8);
+  // The speed number stays below the pop area and the hint line.
+  assert.ok(hud.HUD_SPEED.y - 40 > 1280 - hud.POP.bottomMargin);
 });
 
 test('MACH tier stamps escalate like the chain milestones', () => {
@@ -315,4 +321,144 @@ test('first-visit menu: PLAY sits under the how-to line and well above the botto
   const L = meta.MENU_LAYOUT;
   assert.ok(L.firstPlayY - 65 > L.howY + 40);
   assert.ok(L.firstPlayY + 65 <= meta.GAME_HEIGHT - 200);
+});
+
+// ---- page ink ----
+
+test('page ink: pale pages (cream, white graph paper) get dark HUD ink, dark pages keep cream', () => {
+  assert.ok(hud.hudColorBrightness(0xffffff) > 0.99);
+  assert.ok(hud.hudColorBrightness(0x000000) < 0.01);
+  const page = (paper, ink) => ({ paper, sky: paper, ink });
+  assert.strictEqual(hud.hudPageIsLight(page(0xefdcae, 0x2a2018)), true);    // ESCAPE VELOCITY
+  assert.strictEqual(hud.hudPageIsLight(page(0xf1eee4, 0x1d2747)), true);    // BIG BANG
+  for (const paper of [0x1d2747, 0x123f45, 0x4a1a22, 0x121116, 0x2e1d4f, 0x5a3b22, 0x1f3b2c, 0x1b3f6b, 0x2a1f1a]) {
+    assert.strictEqual(hud.hudPageIsLight(page(paper, 0xf4ead0)), false, paper.toString(16));
+  }
+  // Only a sky color, or only an ink color: still decided; nothing at all: the fallback flag.
+  assert.strictEqual(hud.hudPageIsLight({ sky: 0xf1eee4 }), true);
+  assert.strictEqual(hud.hudPageIsLight({ ink: 0x1d2747 }), true);
+  assert.strictEqual(hud.hudPageIsLight(null, true), true);
+  assert.strictEqual(hud.hudPageIsLight(undefined, false), false);
+});
+
+function hudContext(extra) {
+  const ctx = vm.createContext({ Phaser: { Scene: class {} }, console });
+  for (const file of ['src/config.js', 'src/cards.js', 'src/cardart.js', 'src/scenes/HudScene.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), ctx, { filename: file });
+  }
+  vm.runInContext(extra, ctx);
+  return ctx;
+}
+
+test('page ink: the zone comes from zoneAt() when orbit.js provides it (endless pages too)', () => {
+  // The default test context loads no orbit.js: no zone, so the HUD falls back to UI_PAPERS.
+  assert.strictEqual(hud.hudZoneForPage(3), null);
+  const ctx = hudContext('var zoneAt = (i) => ({ name: "P" + i, paper: i % 2 ? 0xf1eee4 : 0x1d2747 });');
+  assert.strictEqual(vm.runInContext('hudZoneForPage(41).name', ctx), 'P41');
+  assert.strictEqual(vm.runInContext('hudPageIsLight(hudZoneForPage(41))', ctx), true);
+  assert.strictEqual(vm.runInContext('hudPageIsLight(hudZoneForPage(40))', ctx), false);
+  // Junk index: page 0, never a throw.
+  assert.strictEqual(vm.runInContext('hudZoneForPage(undefined).name', ctx), 'P0');
+  // Only the fixed list: clamped to its last page.
+  const ctx2 = hudContext('var ZONES = [{ name: "A" }, { name: "B" }];');
+  assert.strictEqual(vm.runInContext('hudZoneForPage(9).name', ctx2), 'B');
+});
+
+test('page ink: the real zones (orbit.js) - BIG BANG and ESCAPE VELOCITY are the pale pages', () => {
+  const ctx = vm.createContext({ Phaser: { Scene: class {} }, console });
+  for (const file of ['src/config.js', 'src/orbit.js', 'src/cards.js', 'src/cardart.js', 'src/scenes/HudScene.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), ctx, { filename: file });
+  }
+  const pale = vm.runInContext('(() => { const out = []; for (let i = 0; i < 16; i++) { const z = hudZoneForPage(i); if (z && hudPageIsLight(z)) out.push(z.name); } return out; })()', ctx);
+  assert.ok(pale.indexOf('ESCAPE VELOCITY') >= 0, JSON.stringify(pale));
+  if (vm.runInContext('typeof zoneAt', ctx) === 'function') assert.ok(pale.indexOf('BIG BANG') >= 0, JSON.stringify(pale));
+});
+
+// ---- finger tutorial placement ----
+
+function rect(spot) {
+  return { x0: spot.x + spot.box.l, x1: spot.x + spot.box.r, y0: spot.y + spot.box.t, y1: spot.y + spot.box.b };
+}
+const SCREEN = { left: 14, right: 706, top: 260, bottom: 1000 };
+
+test('tutorial HOLD: the hand goes beside the planet, never over it or the comet', () => {
+  const T = hud.HUD_TUTORIAL;
+  const cases = [
+    { p: { x: 494, y: 485, r: 36 }, comet: { x: 360, y: 784 } },
+    { p: { x: 266, y: 954, r: 58 }, comet: { x: 360, y: 784 } },
+    { p: { x: 360, y: 500, r: 90 }, comet: { x: 360, y: 820 } },    // big planet in the middle
+    { p: { x: 640, y: 420, r: 70 }, comet: { x: 300, y: 760 } },    // planet against the right wall
+    { p: { x: 90, y: 600, r: 60 }, comet: { x: 380, y: 900 } },     // against the left wall
+  ];
+  for (const c of cases) {
+    const obstacles = [
+      { x: c.p.x, y: c.p.y, r: c.p.r, clear: T.planetClear },
+      { x: c.comet.x, y: c.comet.y, r: 0, clear: T.cometClear },
+    ];
+    const spot = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(c.p.x, c.p.y, c.p.r, c.comet), obstacles, SCREEN, [], null);
+    const b = rect(spot);
+    assert.strictEqual(spot.hits, 0, JSON.stringify(c) + ' -> ' + spot.key);
+    assert.ok(hud.hudBoxDistance(c.p.x, c.p.y, b.x0, b.y0, b.x1, b.y1) >= c.p.r, 'planet covered ' + JSON.stringify(c));
+    assert.ok(hud.hudBoxDistance(c.comet.x, c.comet.y, b.x0, b.y0, b.x1, b.y1) >= T.cometClear - 1, 'comet covered');
+    assert.ok(b.x0 >= SCREEN.left - 0.5 && b.x1 <= SCREEN.right + 0.5 && b.y0 >= SCREEN.top - 0.5 && b.y1 <= SCREEN.bottom + 0.5, 'off screen');
+  }
+  // Against a wall the hand takes the side with room.
+  const right = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(640, 420, 70, null), [{ x: 640, y: 420, r: 70, clear: T.planetClear }], SCREEN, [], null);
+  assert.strictEqual(right.key, 'left');
+  const left = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(90, 600, 60, null), [{ x: 90, y: 600, r: 60, clear: T.planetClear }], SCREEN, [], null);
+  assert.strictEqual(left.key, 'right');
+});
+
+test('tutorial HOLD: the side away from the comet wins, and the side in use is kept (no flip-flop)', () => {
+  const T = hud.HUD_TUTORIAL;
+  const p = { x: 360, y: 500, r: 40 };
+  const obstacles = [{ x: p.x, y: p.y, r: p.r, clear: T.planetClear }];
+  const cometRight = { x: 470, y: 820 };
+  assert.strictEqual(hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, cometRight), obstacles, SCREEN, [], null).key, 'left');
+  const cometLeft = { x: 250, y: 820 };
+  assert.strictEqual(hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, cometLeft), obstacles, SCREEN, [], null).key, 'right');
+  // Comet straight below (a tie): whichever side is in use stays.
+  const below = { x: 360, y: 820 };
+  for (const prev of ['left', 'right']) {
+    assert.strictEqual(hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, below), obstacles, SCREEN, [], prev).key, prev);
+  }
+});
+
+test('tutorial HOLD: a banner band pushes the hand off it when there is room', () => {
+  const T = hud.HUD_TUTORIAL;
+  const p = { x: 360, y: 520, r: 40 };
+  const band = { top: 330, bottom: 520 };
+  const spot = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, null), [{ x: p.x, y: p.y, r: p.r, clear: T.planetClear }], SCREEN, [band], null);
+  const b = rect(spot);
+  assert.ok(b.y0 >= band.bottom || b.y1 <= band.top, spot.key);
+});
+
+test('tutorial LET GO: the lifted hand sits clear of the comet and the fling arrow', () => {
+  const T = hud.HUD_TUTORIAL;
+  const dirs = [[0, -1], [0.6, -0.8], [-0.6, -0.8], [1, 0], [-1, 0], [0.3, 0.95]];
+  const comets = [{ x: 360, y: 760 }, { x: 160, y: 640 }, { x: 560, y: 820 }];
+  for (const c of comets) {
+    for (const [dx, dy] of dirs) {
+      const obstacles = [{ x: c.x, y: c.y, r: 0, clear: T.cometClear }];
+      for (let k = 0; k <= 4; k++) {
+        const d = T.arrowFrom + ((T.arrowTo - T.arrowFrom) * k) / 4;
+        obstacles.push({ x: c.x + dx * d, y: c.y + dy * d, r: 0, clear: T.arrowClear });
+      }
+      const spot = hud.hudTutorialPlace(hud.hudTutorialReleaseCandidates(c.x, c.y, dx, dy), obstacles, SCREEN, [], null);
+      const b = rect(spot);
+      assert.ok(hud.hudBoxDistance(c.x, c.y, b.x0, b.y0, b.x1, b.y1) >= T.cometClear * 0.75, 'comet ' + JSON.stringify([c, dx, dy, spot.key]));
+      assert.strictEqual(spot.hits, 0, 'hits ' + JSON.stringify([c, dx, dy, spot.key]));
+    }
+  }
+});
+
+test('tutorial: hand boxes mirror by side, and the hand is phone-sized', () => {
+  const T = hud.HUD_TUTORIAL;
+  const r = hud.hudTutorialBox(T.holdBox, 1);
+  const l = hud.hudTutorialBox(T.holdBox, -1);
+  assert.strictEqual(l.l, -r.r);
+  assert.strictEqual(l.r, -r.l);
+  // ~190 px cuff-to-tip texture at T.scale: 110-140 px on screen.
+  const handPx = 190 * T.scale;
+  assert.ok(handPx >= 110 && handPx <= 140, String(handPx));
 });
