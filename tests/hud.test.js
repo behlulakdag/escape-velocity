@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, hudPromptCrayon, HUD_PROMPT, HUD_SPEED })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -162,7 +162,7 @@ function loadMetaUi() {
     'src/scenes/GameOverScene.js', 'src/scenes/ShopScene.js', 'src/scenes/JournalScene.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
-  return vm.runInContext('({ uiMissionProgressLabel, uiShortNumber, uiShopAction, uiProgressCall, goLayout, goMissionPlan, GO_META, GO_CARD, GO_STRIP, shopTilePositions, SHOP_LAYOUT, journalSlots, journalFoundCount, CARDS, MENU_LAYOUT, GAME_WIDTH, GAME_HEIGHT })', context);
+  return vm.runInContext('({ uiMissionUnit, uiHasFinishedRun, uiLoadMenuFlags, uiMissionProgressLabel, uiShortNumber, uiShopAction, uiProgressCall, goLayout, goMissionPlan, GO_META, GO_CARD, GO_STRIP, shopTilePositions, SHOP_LAYOUT, journalSlots, journalFoundCount, CARDS, MENU_LAYOUT, GAME_WIDTH, GAME_HEIGHT })', context);
 }
 const meta = loadMetaUi();
 
@@ -259,4 +259,60 @@ test('menu: PLAY, the missions note and SHOP / JOURNAL stack without overlapping
   assert.ok(L.playY + 65 < L.metaY - L.metaH / 2);
   assert.ok(L.metaY + L.metaH / 2 <= meta.GAME_HEIGHT - 60);
   assert.ok(L.metaH >= 100);
+});
+
+test('MACH readout: km/s * 1000 / 343, rounded, safe on junk', () => {
+  assert.strictEqual(hud.hudMachNumber(343), 1000);
+  assert.strictEqual(hud.hudMachNumber(538), Math.round(538000 / 343));
+  assert.strictEqual(hud.hudMachNumber(0), 0);
+  assert.strictEqual(hud.hudMachNumber(-5), 0);
+  assert.strictEqual(hud.hudMachNumber(NaN), 0);
+  assert.strictEqual(hud.hudMachNumber(undefined), 0);
+  // The readout sits under the speed underline and above the bottom edge.
+  assert.ok(hud.HUD_SPEED.lineY + hud.HUD_MACH.dy + hud.HUD_MACH.size / 2 <= 1280 - 50);
+});
+
+test('MACH tier stamps escalate like the chain milestones', () => {
+  const levels = hud.HUD_MACH.tiers.map((t) => hud.hudMachTierLevel(t));
+  for (let i = 1; i < levels.length; i++) assert.ok(levels[i] >= levels[i - 1]);
+  assert.strictEqual(levels[0], 1);
+  assert.strictEqual(levels[levels.length - 1], hud.HUD_MILESTONE.levels.length);
+});
+
+test('big prompts: HOLD waits in yellow, LET GO goes in green, and they are big', () => {
+  assert.strictEqual(hud.hudPromptCrayon('HOLD!'), 'yellow');
+  assert.strictEqual(hud.hudPromptCrayon('LET GO!'), 'green');
+  assert.ok(hud.HUD_PROMPT.size >= 100);
+  assert.ok(hud.HUD_PROMPT.cometClear >= 120);
+});
+
+test('mission progress has units for altitude and speed goals', () => {
+  assert.strictEqual(meta.uiMissionProgressLabel({ stat: 'altitude', progress: 312, goal: 500 }), '312/500 m');
+  assert.strictEqual(meta.uiMissionProgressLabel({ stat: 'topSpeed', progress: 271, goal: 300 }), '271/300 km/s');
+  assert.strictEqual(meta.uiMissionProgressLabel({ stat: 'catches', progress: 3, goal: 5 }), '3/5');
+  assert.strictEqual(meta.uiMissionProgressLabel({ stat: 'altitude', progress: 12345, goal: 50000 }), '12.3k/50k m');
+  assert.strictEqual(meta.uiMissionUnit(null), '');
+});
+
+test('mission units come from the real pool by id', () => {
+  const ctx = vm.createContext({ Phaser: { Scene: class {} }, console });
+  for (const file of ['src/config.js', 'src/utils.js', 'src/progress.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), ctx, { filename: file });
+  }
+  const label = vm.runInContext('(m) => uiMissionProgressLabel(m)', ctx);
+  assert.strictEqual(label({ id: 'orbit', progress: 312, goal: 500 }), '312/500 m');
+  assert.strictEqual(label({ id: 'speed300', progress: 271, goal: 300 }), '271/300 km/s');
+  assert.strictEqual(label({ id: 'catch5', progress: 2, goal: 5 }), '2/5');
+});
+
+test('first visit: no storage and no best means no finished run yet', () => {
+  // localStorage is missing in this context: every read falls back without throwing.
+  assert.strictEqual(meta.uiHasFinishedRun(), false);
+  assert.deepStrictEqual(Object.assign({}, meta.uiLoadMenuFlags()), { runDone: false, metaSeen: false });
+});
+
+test('first-visit menu: PLAY sits under the how-to line and well above the bottom', () => {
+  const L = meta.MENU_LAYOUT;
+  assert.ok(L.firstPlayY - 65 > L.howY + 40);
+  assert.ok(L.firstPlayY + 65 <= meta.GAME_HEIGHT - 200);
 });

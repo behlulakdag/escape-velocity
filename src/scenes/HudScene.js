@@ -14,6 +14,11 @@
 //                             low/medium pops sent while a banner is up wait until it fades
 //   flash(color, alpha, duration, maxAlpha?)  alpha capped at 0.12 (maxAlpha may raise it to 0.18)
 //   showBanner(title, subtitle, { duration }), hideBanner(), showHint(label), hideHint()
+//   bigPrompt(text), clearBigPrompt()  first-run 'HOLD!' / 'LET GO!' in big crayon lettering,
+//                             kept off the comet; the small hint line hides while one is up
+//   showMachTier(mach)        'MACH 500!' stamp (milestone style); waits for banners, the card
+//                             pick and any stamp on screen. The MACH readout under the km/s
+//                             number is computed from the shown km/s (setStats' 4th argument)
 //   setCards(ownedIds)        row of owned upgrade-card minis (under the score note, right-aligned)
 //   showSetBonus(familyKey)   family-colored SET BONUS banner (SET_BONUSES in src/cards.js)
 //   scoreText / hintText are read by GameScene, so they stay Text objects.
@@ -226,6 +231,30 @@ function hudNovaNear(novaScreenY) {
   return Math.max(0, Math.min(1, k));
 }
 
+// MACH readout and tier stamps. 343 m/s = Mach 1 (sea level); km/s * 1000 / 343.
+const HUD_MACH = { tiers: [500, 1000, 1500, 2000, 2500], size: 30, dy: 34, afterMs: 150 };
+
+// Pure helper (tested): Mach number for a km/s readout (rounded, never negative / NaN).
+function hudMachNumber(kmPerS) {
+  const v = typeof kmPerS === 'number' && isFinite(kmPerS) ? kmPerS : 0;
+  return Math.max(0, Math.round((v * 1000) / 343));
+}
+
+// Pure helper (tested): stamp level (1..3, as HUD_MILESTONE.levels) for a MACH tier.
+function hudMachTierLevel(mach) {
+  if (mach >= 2000) return 3;
+  if (mach >= 1000) return 2;
+  return 1;
+}
+
+// First-run big prompts ('HOLD!' / 'LET GO!'): lettering size, comet clearance, preferred gap.
+const HUD_PROMPT = { size: 124, cometClear: 130, above: 240, ease: 8 };
+
+// Pure helper (tested): the crayon a big prompt is lettered in (go = green, wait = yellow).
+function hudPromptCrayon(text) {
+  return /LET GO|RELEASE|NOW/i.test(String(text)) ? 'green' : 'yellow';
+}
+
 const HUD_LEVEL_TINTS = [UI_INK.cream, UI_CRAYON.yellow, UI_CRAYON.orange, UI_CRAYON.red, UI_CRAYON.pink];
 
 class HudScene extends Phaser.Scene {
@@ -276,7 +305,10 @@ class HudScene extends Phaser.Scene {
     this.comboLayer.setRotation(-0.03);
     uiBoilRotation(this, this.comboLayer, 0.012);
     this.chainText = this.comboNum;   // kept for older callers that read hud.chainText
-    this.milestone = null;    // the chain milestone stamp on screen (or null)
+    this.milestone = null;    // the chain milestone (or MACH) stamp on screen (or null)
+    this.machWait = [];       // MACH tier stamps waiting for a clear screen
+    this.machClearAt = 0;     // last time the screen was busy for a MACH stamp
+    this.prompt = null;       // the big first-run prompt on screen (or null)
     this.popWait = [];        // pops waiting for a banner to fade (see POP_WAIT)
     this.bannerClearAt = 0;   // time the last banner stopped being readable
     this.nextWaitAt = 0;      // earliest time the next waiting pop may show
@@ -296,8 +328,12 @@ class HudScene extends Phaser.Scene {
     this.speedBaseX = HUD_SPEED.x;
     this.speedBaseY = HUD_SPEED.y;
     this.speedText = uiInkText(this, this.speedBaseX, this.speedBaseY, '', { size: 54, rot: -0.03, boil: false });
+    // 'MACH 1568' in smaller lettering under the underline: the same speed, a huger number.
+    this.machText = uiInkText(this, HUD_SPEED.x + 6, HUD_SPEED.lineY + HUD_MACH.dy, '', {
+      size: HUD_MACH.size, color: uiColorHex(UI_CRAYON.yellow), strokeW: 5, rot: -0.025, boilAmount: 0.008,
+    });
     this.createMultiplierBadge();
-    this.bottomPanel = this.add.container(0, 0, [this.speedHalo, this.speedLine, this.momentumGfx, this.speedText, this.badge]);
+    this.bottomPanel = this.add.container(0, 0, [this.speedHalo, this.speedLine, this.momentumGfx, this.speedText, this.machText, this.badge]);
     // One layer for the stats, so the intro fade never fights the bump tweens on its children.
     this.statsLayer = this.add.container(0, 0, [this.note, this.bottomPanel]);
     const game = this.scene.get('Game');
@@ -580,6 +616,131 @@ class HudScene extends Phaser.Scene {
     }
   }
 
+  // MACH tier stamp ('MACH 500!') in the chain milestone's stamp style. GameScene calls it the
+  // first time a run passes each tier; it waits behind banners, the card pick, set bonuses and
+  // any stamp already on screen (never two stamps at once).
+  showMachTier(mach) {
+    const n = Math.round(Number(mach));
+    if (!(n > 0)) return;
+    if (this.machWait.indexOf(n) < 0) this.machWait.push(n);
+    this.flushMachTier(this.time.now);
+  }
+
+  flushMachTier(now) {
+    if (!this.machWait.length) return;
+    const busy = this.bigMomentBusy() || (this.milestone && this.milestone.active) || this.isOverScreen();
+    if (busy) { this.machClearAt = now; return; }
+    if (now - this.machClearAt < HUD_MACH.afterMs) return;
+    // Two tiers passed while waiting: only the highest is stamped (the lower one is old news).
+    const top = Math.max.apply(null, this.machWait);
+    this.machWait = [];
+    this.showMilestone('MACH ' + top + '!', hudMachTierLevel(top));
+    if (this.milestone) this.milestone.isMach = true;
+  }
+
+  // The run is over (a stamp would land on the death beat).
+  isOverScreen() {
+    const game = this.scene.get('Game');
+    return !!(game && game.isOver);
+  }
+
+  // First-run instruction in huge crayon lettering ('HOLD!', then 'LET GO!'). The same text again
+  // is a no-op (safe to call every frame); a new text replaces the old one with a fresh slam.
+  bigPrompt(text) {
+    const label = String(text || '');
+    if (!label) { this.clearBigPrompt(); return; }
+    if (this.prompt && this.prompt.label === label) return;
+    if (this.prompt) { this.tweens.killTweensOf(this.prompt); this.prompt.destroy(); this.prompt = null; }
+    const crayon = UI_CRAYON[hudPromptCrayon(label)];
+    const title = uiTitleText(this, 0, 0, label, {
+      size: HUD_PROMPT.size, color: uiColorHex(crayon), shadowColor: UI_INK.darkHex, shadowDx: 7, shadowDy: 9, rot: 0, boil: false,
+    });
+    // A wavy crayon underline, so it reads as written on the page, not a UI label.
+    const line = uiBoilImage(this, 8, title.main.height / 2 - 6, 'ui_underline').setTint(crayon)
+      .setScale(Math.min(1.1, (title.main.width + 30) / 540), 0.9);
+    const box = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2, [line, title]);
+    box.inkRot = -0.04;
+    box.setRotation(box.inkRot);
+    uiBoilRotation(this, box, 0.012);
+    box.label = label;
+    box.title = title;
+    box.line = line;
+    box.crayon = crayon;
+    const walls = this.wallsOnScreen();
+    box.fit = Math.min(1, (walls.right - walls.left - 50) / (title.main.width + 20));
+    box.halfW = ((title.main.width + 20) * box.fit) / 2;
+    box.halfH = ((title.main.height + 30) * box.fit) / 2;
+    this.stylePrompt(box);
+    box.setY(this.promptSpotY(box));
+    this.prompt = box;
+    box.setScale(box.fit * 1.9).setAlpha(0);
+    this.tweens.add({
+      targets: box, scale: box.fit, alpha: 1, duration: 140, ease: 'Quad.In',
+      onComplete: () => {
+        if (!box.active || this.prompt !== box) return;
+        cardDoodleBurst(this, box.x, box.y, [crayon, this.lightPage ? UI_INK.dark : UI_INK.cream],
+          { count: 8, reach: 200, squashY: 0.5, ink: this.lightPage ? UI_INK.dark : undefined });
+        // A slow breathing pulse while it waits for the player.
+        this.tweens.add({ targets: box, scale: box.fit * 1.07, yoyo: true, repeat: -1, duration: 380, ease: 'Sine.InOut' });
+      },
+    });
+    // A pop in its band makes way.
+    const live = this.popLine;
+    if (live && live.active && Math.abs(live.y - box.y) < box.halfH + 60) this.removePop(live);
+  }
+
+  clearBigPrompt() {
+    const box = this.prompt;
+    if (!box) return;
+    this.prompt = null;
+    this.tweens.killTweensOf(box);
+    this.tweens.add({ targets: box, alpha: 0, scale: box.scale * 1.15, duration: 160, ease: 'Quad.Out', onComplete: () => box.destroy() });
+  }
+
+  // Crayon on dark pages; pressed deeper (with an orange off-register copy) on the cream page.
+  stylePrompt(box) {
+    const ink = this.lightPage ? hudDeepen(box.crayon, 0.7) : box.crayon;
+    box.title.main.setColor(uiColorHex(ink));
+    box.title.shadow.setColor(this.lightPage ? uiColorHex(UI_CRAYON.orange) : UI_INK.darkHex);
+    box.line.setTint(ink);
+  }
+
+  // Prompt y: ~HUD_PROMPT.above px above the comet (below it when the comet is high), at least
+  // HUD_PROMPT.cometClear from the comet and its tail, never on a banner / set bonus / stamp.
+  promptSpotY(box) {
+    const walls = this.wallsOnScreen();
+    const mid = (walls.left + walls.right) / 2;
+    const comet = this.comet || { x: mid, y: GAME_HEIGHT * 0.7 };
+    const minY = this.popTop() + box.halfH;
+    const maxY = GAME_HEIGHT - POP.bottomMargin + 60 - box.halfH;
+    const wantY = Phaser.Math.Clamp(comet.y - HUD_PROMPT.above, minY, maxY);
+    const blocked = this.blockedBands(false, true);
+    let best = null;
+    let fallback = null;
+    for (let y = minY; y <= maxY; y += 20) {
+      const clearance = this.cometClearance(comet, mid - box.halfW, y - box.halfH, mid + box.halfW, y + box.halfH);
+      const free = blocked.every(b => y + box.halfH + 6 <= b.top || y - box.halfH - 6 >= b.bottom);
+      if (free && clearance >= HUD_PROMPT.cometClear) {
+        const cost = Math.abs(y - wantY);
+        if (!best || cost < best.cost) best = { y, cost };
+      } else {
+        const score = clearance + (free ? 1000 : 0);
+        if (!fallback || score > fallback.score) fallback = { y, score };
+      }
+    }
+    return (best || fallback || { y: wantY }).y;
+  }
+
+  // The prompt glides to stay clear of the orbiting comet (and centered between the walls).
+  updateBigPrompt(dt) {
+    const box = this.prompt;
+    if (!box || !box.active) return;
+    const walls = this.wallsOnScreen();
+    const k = Math.min(1, dt * HUD_PROMPT.ease);
+    box.x += ((walls.left + walls.right) / 2 - box.x) * k;
+    box.y += (this.promptSpotY(box) - box.y) * k;
+  }
+
   // "x3" written on the page inside a crayon circle that pulses when the multiplier rises.
   createMultiplierBadge() {
     this.badgeCircle = uiBoilImage(this, 0, 0, 'ui_circle').setScale(0.62, 0.78).setTint(HUD_LEVEL_TINTS[0]);
@@ -629,7 +790,11 @@ class HudScene extends Phaser.Scene {
     this.updatePageInk();
     this.updatePops();
     this.flushSetBonus(time);
+    this.flushMachTier(time);
     this.updateMilestone();
+    this.updateBigPrompt(dt);
+    // One instruction at a time: the small hint line steps aside for a big prompt.
+    this.hintText.setVisible(!this.prompt);
     this.fitCardRow(false);
     // Bottom band eases toward its target alpha, so it does not blink as the comet passes.
     // The card pick's countdown ring sits over the speed band, so the band steps back meanwhile.
@@ -671,6 +836,9 @@ class HudScene extends Phaser.Scene {
     const ink = light ? UI_INK.darkHex : UI_INK.creamHex;
     const edge = light ? UI_INK.creamHex : UI_INK.darkHex;
     for (const t of [this.speedText, this.badgeText, this.bannerText, this.bannerSub]) t.setColor(ink).setStroke(edge, t.style.strokeThickness);
+    this.machText.setColor(light ? uiColorHex(hudDeepen(UI_CRAYON.orange, 0.7)) : uiColorHex(UI_CRAYON.yellow))
+      .setStroke(edge, this.machText.style.strokeThickness);
+    if (this.prompt) this.stylePrompt(this.prompt);
     this.shown.speedInk = null;   // the momentum crayon is re-applied on the next frame
     this.badgeCircle.setTint(this.levelTint(this.lastMultiplier));
     // Hint: dark ink outlined in orange crayon on cream; yellow on dark pages.
@@ -713,7 +881,9 @@ class HudScene extends Phaser.Scene {
   // written bigger and in hotter crayon with momentum, and shivers near the top of the range.
   updateSpeedReadout(time, dt) {
     this.shownSpeed = hudSpeedEase(this.shownSpeed, this.targetSpeed, dt);
-    this.setTextIfChanged('speed', this.speedText, Math.round(this.shownSpeed) + ' km/s');
+    const kmPerS = Math.round(this.shownSpeed);
+    this.setTextIfChanged('speed', this.speedText, kmPerS + ' km/s');
+    this.setTextIfChanged('mach', this.machText, kmPerS > 0 ? 'MACH ' + hudMachNumber(kmPerS) : '');
     this.momentum += (this.momentumTarget - this.momentum) * Math.min(1, dt * HUD_MOMENTUM.ease);
     const style = hudMomentumStyle(this.momentum);
     const ink = this.lightPage ? (this.momentum < 0.3 ? UI_INK.dark : hudDeepen(style.ink, 0.66)) : style.ink;
@@ -1122,6 +1292,8 @@ class HudScene extends Phaser.Scene {
     this.popQueue.length = 0;
     this.popWait = [];
     this.setBonusWait = [];
+    this.machWait = [];
+    if (this.prompt) { this.prompt.destroy(); this.prompt = null; }
     if (this.milestone) { this.milestone.destroy(); this.milestone = null; }
     if (this.popLine) this.removePop(this.popLine);
   }
@@ -1171,8 +1343,10 @@ class HudScene extends Phaser.Scene {
   }
 
   // Screen bands no pop or stamp may cover: the banner, the set bonus and the milestone stamp.
-  blockedBands(skipMilestone) {
+  blockedBands(skipMilestone, skipPrompt) {
     const out = [];
+    const p = this.prompt;
+    if (!skipPrompt && p && p.active) out.push({ top: p.y - p.halfH, bottom: p.y + p.halfH });
     const band = this.bannerBand();
     if (band) out.push(band);
     if (this.setBonusLayer && this.setBonusLayer.active) out.push({ top: this.setBonusLayer.y - 140, bottom: this.setBonusLayer.y + 130 });
