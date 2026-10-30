@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, hudPromptCrayon, HUD_PROMPT, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_TUTORIAL, hudTutorialBox, hudTutorialHoldCandidates, hudTutorialReleaseCandidates, hudTutorialPlace, HUD_HAND, hudHandPoints, hudTutorialAction, hudTutorialFade, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudTutorialCovers, HUD_HINT_Y, hudNovaWarnX, hudPopAllowed, hudTutorialObstacles, hudRectGap, hudRectsOverlap, hudTutorialPick, hudTutorialScore })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -285,13 +285,6 @@ test('MACH tier stamps escalate like the chain milestones', () => {
   assert.strictEqual(levels[levels.length - 1], hud.HUD_MILESTONE.levels.length);
 });
 
-test('big prompts: HOLD waits in yellow, LET GO goes in green, and they are big', () => {
-  assert.strictEqual(hud.hudPromptCrayon('HOLD!'), 'yellow');
-  assert.strictEqual(hud.hudPromptCrayon('LET GO!'), 'green');
-  assert.ok(hud.HUD_PROMPT.size >= 100);
-  assert.ok(hud.HUD_PROMPT.cometClear >= 120);
-});
-
 test('mission progress has units for altitude and speed goals', () => {
   assert.strictEqual(meta.uiMissionProgressLabel({ stat: 'altitude', progress: 312, goal: 500 }), '312/500 m');
   assert.strictEqual(meta.uiMissionProgressLabel({ stat: 'topSpeed', progress: 271, goal: 300 }), '271/300 km/s');
@@ -374,174 +367,6 @@ test('page ink: the real zones (orbit.js) - BIG BANG and ESCAPE VELOCITY are the
   if (vm.runInContext('typeof zoneAt', ctx) === 'function') assert.ok(pale.indexOf('BIG BANG') >= 0, JSON.stringify(pale));
 });
 
-// ---- finger tutorial placement ----
-
-function rect(spot) {
-  return { x0: spot.x + spot.box.l, x1: spot.x + spot.box.r, y0: spot.y + spot.box.t, y1: spot.y + spot.box.b };
-}
-const SCREEN = { left: 14, right: 706, top: 260, bottom: 1000 };
-
-test('tutorial HOLD: the hand goes beside the planet, never over it or the comet', () => {
-  const T = hud.HUD_TUTORIAL;
-  const cases = [
-    { p: { x: 494, y: 485, r: 36 }, comet: { x: 360, y: 784 } },
-    // Cramped: big planet low on the left wall right next to the comet. The hand may come inside
-    // the soft clearance, but never over the planet's body or the comet.
-    { p: { x: 266, y: 954, r: 58 }, comet: { x: 360, y: 784 }, cramped: true },
-    { p: { x: 360, y: 500, r: 90 }, comet: { x: 360, y: 820 } },    // big planet in the middle
-    { p: { x: 640, y: 420, r: 70 }, comet: { x: 300, y: 760 } },    // planet against the right wall
-    { p: { x: 90, y: 600, r: 60 }, comet: { x: 380, y: 900 } },     // against the left wall
-  ];
-  for (const c of cases) {
-    const obstacles = [
-      { x: c.p.x, y: c.p.y, r: c.p.r, clear: T.planetClear },
-      { x: c.comet.x, y: c.comet.y, r: 0, clear: T.cometClear },
-    ];
-    const spot = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(c.p.x, c.p.y, c.p.r, c.comet), obstacles, SCREEN, [], null);
-    const b = rect(spot);
-    if (!c.cramped) assert.strictEqual(spot.hits, 0, JSON.stringify(c) + ' -> ' + spot.key);
-    assert.ok(hud.hudBoxDistance(c.p.x, c.p.y, b.x0, b.y0, b.x1, b.y1) >= c.p.r, 'planet covered ' + JSON.stringify(c));
-    assert.ok(hud.hudBoxDistance(c.comet.x, c.comet.y, b.x0, b.y0, b.x1, b.y1) >= T.cometClear - 1, 'comet covered');
-    assert.ok(b.x0 >= SCREEN.left - 0.5 && b.x1 <= SCREEN.right + 0.5 && b.y0 >= SCREEN.top - 0.5 && b.y1 <= SCREEN.bottom + 0.5, 'off screen');
-  }
-  // Against a wall the hand takes the side with room.
-  const right = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(640, 420, 70, null), [{ x: 640, y: 420, r: 70, clear: T.planetClear }], SCREEN, [], null);
-  assert.strictEqual(right.key, 'left');
-  const left = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(90, 600, 60, null), [{ x: 90, y: 600, r: 60, clear: T.planetClear }], SCREEN, [], null);
-  assert.strictEqual(left.key, 'right');
-});
-
-test('tutorial HOLD: the side away from the comet wins, and the side in use is kept (no flip-flop)', () => {
-  const T = hud.HUD_TUTORIAL;
-  const p = { x: 360, y: 500, r: 40 };
-  const obstacles = [{ x: p.x, y: p.y, r: p.r, clear: T.planetClear }];
-  const cometRight = { x: 470, y: 820 };
-  assert.strictEqual(hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, cometRight), obstacles, SCREEN, [], null).key, 'left');
-  const cometLeft = { x: 250, y: 820 };
-  assert.strictEqual(hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, cometLeft), obstacles, SCREEN, [], null).key, 'right');
-  // Comet straight below (a tie): whichever side is in use stays.
-  const below = { x: 360, y: 820 };
-  for (const prev of ['left', 'right']) {
-    assert.strictEqual(hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, below), obstacles, SCREEN, [], prev).key, prev);
-  }
-});
-
-test('tutorial HOLD: a banner band pushes the hand off it when there is room', () => {
-  const T = hud.HUD_TUTORIAL;
-  const p = { x: 360, y: 520, r: 40 };
-  const band = { top: 330, bottom: 520 };
-  const spot = hud.hudTutorialPlace(hud.hudTutorialHoldCandidates(p.x, p.y, p.r, null), [{ x: p.x, y: p.y, r: p.r, clear: T.planetClear }], SCREEN, [band], null);
-  const b = rect(spot);
-  assert.ok(b.y0 >= band.bottom || b.y1 <= band.top, spot.key);
-});
-
-test('tutorial LET GO: the lifted hand sits clear of the comet and the fling arrow', () => {
-  const T = hud.HUD_TUTORIAL;
-  const dirs = [[0, -1], [0.6, -0.8], [-0.6, -0.8], [1, 0], [-1, 0], [0.3, 0.95]];
-  const comets = [{ x: 360, y: 760 }, { x: 160, y: 640 }, { x: 560, y: 820 }];
-  for (const c of comets) {
-    for (const [dx, dy] of dirs) {
-      const obstacles = [{ x: c.x, y: c.y, r: 0, clear: T.cometClear }];
-      for (let k = 0; k <= 4; k++) {
-        const d = T.arrowFrom + ((T.arrowTo - T.arrowFrom) * k) / 4;
-        obstacles.push({ x: c.x + dx * d, y: c.y + dy * d, r: 0, clear: T.arrowClear });
-      }
-      const spot = hud.hudTutorialPlace(hud.hudTutorialReleaseCandidates(c.x, c.y, dx, dy), obstacles, SCREEN, [], null);
-      const b = rect(spot);
-      assert.ok(hud.hudBoxDistance(c.x, c.y, b.x0, b.y0, b.x1, b.y1) >= T.cometClear * 0.75, 'comet ' + JSON.stringify([c, dx, dy, spot.key]));
-      assert.strictEqual(spot.hits, 0, 'hits ' + JSON.stringify([c, dx, dy, spot.key]));
-    }
-  }
-});
-
-test('tutorial: hand boxes mirror by side, and the hand is phone-sized', () => {
-  const T = hud.HUD_TUTORIAL;
-  const r = hud.hudTutorialBox(T.holdBox, 1);
-  const l = hud.hudTutorialBox(T.holdBox, -1);
-  assert.strictEqual(l.l, -r.r);
-  assert.strictEqual(l.r, -r.l);
-  // Tip-to-cuff texture at T.scale: 130-170 px on screen (a phone thumb is ~100 px here).
-  const handPx = hud.HUD_HAND.h * T.scale;
-  assert.ok(handPx >= 130 && handPx <= 170, String(handPx));
-});
-
-test('tutorial: the drawn hand (pressing, hovering, lifted) stays inside its boxes, both sides', () => {
-  const T = hud.HUD_TUTORIAL;
-  const inside = (pts, box, what) => {
-    for (const p of pts) {
-      assert.ok(p.x >= box.l - 0.5 && p.x <= box.r + 0.5 && p.y >= box.t - 0.5 && p.y <= box.b + 0.5, what + ' ' + JSON.stringify(p) + ' ' + JSON.stringify(box));
-    }
-  };
-  for (const side of [1, -1]) {
-    // Hold: hovering 16 px up (+6 px sideways) to pressed flat.
-    inside(hud.hudHandPoints(side, -16, side * 6), hud.hudTutorialBox(T.holdBox, side), 'hover');
-    inside(hud.hudHandPoints(side, 0, 0), hud.hudTutorialBox(T.holdBox, side), 'press');
-    inside(hud.hudHandPoints(side, -T.liftPx, 0), hud.hudTutorialBox(T.releaseBox, side), 'lifted');
-    inside(hud.hudHandPoints(side, 0, 0), hud.hudTutorialBox(T.releaseBox, side), 'release reset');
-    // The tip is the anchor: the topmost hand point is the fingertip, at the anchor.
-    const pts = hud.hudHandPoints(side, 0, 0);
-    assert.ok(Math.hypot(pts[0].x, pts[0].y) < 0.01);
-    // The hand trails AWAY from the target: its cuff is on the side's side of the tip.
-    const cuff = pts[pts.length - 1];
-    assert.ok(Math.sign(cuff.x) === side && cuff.y > 100, JSON.stringify(cuff));
-  }
-  // Ripples (toward the target) and the lettering (up on the hand's side) fit the box too.
-  const box = T.holdBox;
-  assert.ok(-T.rippleMax >= box.l - 4 && -T.rippleMax * 0.92 >= box.t);
-  const hold = { x0: T.word.x - 60, x1: T.word.x + 60, y0: T.word.y - 30 };
-  assert.ok(hold.x1 <= box.r + 2 && hold.y0 >= box.t - 2, 'HOLD lettering in the box');
-});
-
-test('tutorial: the hand rides its planet / comet by a fixed offset (no gliding in screen space)', () => {
-  const a = hud.hudTutorialHoldCandidates(400, 600, 50, { x: 360, y: 900 });
-  const b = hud.hudTutorialHoldCandidates(400 + 37, 600 - 260, 50, { x: 360 + 37, y: 900 - 260 });
-  for (let i = 0; i < a.length; i++) {
-    assert.strictEqual(a[i].key, b[i].key);
-    assert.ok(Math.abs(a[i].dx - b[i].dx) < 1e-9 && Math.abs(a[i].dy - b[i].dy) < 1e-9);
-    assert.ok(Math.abs(b[i].x - a[i].x - 37) < 1e-9 && Math.abs(b[i].y - a[i].y + 260) < 1e-9);
-  }
-  const r1 = hud.hudTutorialReleaseCandidates(300, 700, 0.6, -0.8);
-  const r2 = hud.hudTutorialReleaseCandidates(350, 500, 0.6, -0.8);
-  for (let i = 0; i < r1.length; i++) assert.ok(Math.abs(r1[i].dx - r2[i].dx) < 1e-9 && Math.abs(r1[i].dy - r2[i].dy) < 1e-9);
-});
-
-test('tutorial fade rules: hidden snaps, a new mode or side swaps (fade out first), a clear spot is kept', () => {
-  const T = hud.HUD_TUTORIAL;
-  const best = { key: 'right', hits: 0 };
-  const left = { key: 'left', hits: 0 };
-  assert.strictEqual(hud.hudTutorialAction(null, best, null, 'hold', 0, 0), 'snap');
-  assert.strictEqual(hud.hudTutorialAction({ key: 'left', mode: 'hold', at: 0 }, best, left, 'hold', 0.01, 5000), 'snap');
-  // Showing: the same key just follows its anchor.
-  assert.strictEqual(hud.hudTutorialAction({ key: 'right', mode: 'hold', at: 0 }, best, best, 'hold', 1, 100), 'keep');
-  // Mode change (HOLD -> LET GO): fade out at the old spot, never glide across the planet / comet.
-  assert.strictEqual(hud.hudTutorialAction({ key: 'right', mode: 'hold', at: 0 }, { key: 'p90', hits: 0 }, null, 'release', 1, 100), 'swap');
-  // Side change: kept while young and clear (no flicker), swapped after the dwell or when blocked.
-  assert.strictEqual(hud.hudTutorialAction({ key: 'left', mode: 'hold', at: 0 }, best, left, 'hold', 1, T.dwellMs - 100), 'keep');
-  assert.strictEqual(hud.hudTutorialAction({ key: 'left', mode: 'hold', at: 0 }, best, left, 'hold', 1, T.dwellMs + 100), 'swap');
-  assert.strictEqual(hud.hudTutorialAction({ key: 'left', mode: 'hold', at: 0 }, best, { key: 'left', hits: 1 }, 'hold', 1, 50), 'swap');
-  // A new target planet: fade over to it even when the same side would win.
-  assert.strictEqual(hud.hudTutorialAction({ key: 'right', mode: 'hold', at: 0, target: 3 }, best, best, 'hold', 1, 100, 4), 'swap');
-  assert.strictEqual(hud.hudTutorialAction({ key: 'right', mode: 'hold', at: 0, target: 4 }, best, best, 'hold', 1, 100, 4), 'keep');
-  // Fades settle exactly and the swap fade-out is quick (< ~0.2 s to hidden).
-  let a = 1;
-  let t = 0;
-  while (a > T.hideAlpha && t < 1) { a = hud.hudTutorialFade(a, 0, T.swapOut, 1 / 60); t += 1 / 60; }
-  assert.ok(t <= 0.2, 'swap fade-out took ' + t);
-  assert.strictEqual(hud.hudTutorialFade(0.01, 0, 10, 1 / 60), 0);
-  assert.strictEqual(hud.hudTutorialFade(0.99, 1, 10, 1 / 60), 1);
-  assert.strictEqual(hud.hudTutorialFade(0.5, 1, 10, -1), 0.5, 'negative dt is no step');
-});
-
-test('tutorial: a spot that would sit on the planet body or the comet is refused', () => {
-  const box = { l: -48, r: 142, t: -66, b: 142 };
-  const spot = { x: 300, y: 600, box };
-  assert.strictEqual(hud.hudTutorialCovers(spot, [{ x: 500, y: 600, r: 40 }]), false);
-  assert.strictEqual(hud.hudTutorialCovers(spot, [{ x: 470, y: 600, r: 40 }]), true, 'planet body under the box');
-  assert.strictEqual(hud.hudTutorialCovers(spot, [{ x: 350, y: 700, r: 18 }]), true, 'comet inside');
-  assert.strictEqual(hud.hudTutorialCovers(null, [{ x: 0, y: 0, r: 1 }]), false);
-  assert.strictEqual(hud.hudTutorialCovers(spot, [null]), false);
-});
-
 test('off-screen supernova warning: only the last ~0.8 s with the front below the screen, faster pulse when closer', () => {
   const W = hud.HUD_NOVA_WARN;
   const below = 1280 + 300;
@@ -577,16 +402,15 @@ test('declutter: corner blocks keep the middle lane free and are see-through; th
   assert.ok(hud.HUD_NOTE.under >= 0.4 && hud.HUD_NOTE.under <= 0.6);
 });
 
-test('set bonus: short, high, clear of the card row, never in the lower third or on the hint line', () => {
+test('set bonus: short, high, clear of the card row, never in the lower third or near the bottom band', () => {
   const S = hud.HUD_SETBONUS;
-  const hintY = hud.HUD_HINT_Y;
-  assert.ok(hintY + 30 < hud.HUD_PANEL.top + 10, 'hint line clears the speed block');
+  const hintY = hud.HUD_PANEL.top - 30;   // the old hint line sat here; the band stays clear
   assert.ok(S.holdMs + S.fadeMs <= 1300 && S.holdMs <= 1000);
   const rowBottom = hud.HUD_CARDS.y + hud.HUD_CARDS.cardH / 2 + 12;
   for (const cometY of [100, 300, 450, 520, 640, 780, 900, 1200, undefined]) {
     for (const row of [0, rowBottom]) {
       const y = hud.hudSetBonusY(cometY, row);
-      assert.ok(y + S.subDy + S.subHalf < hintY - 30, 'sub clears the hint line ' + y);
+      assert.ok(y + S.subDy + S.subHalf < hintY - 30, 'sub clears the bottom band ' + y);
       assert.ok(y + S.subDy + S.subHalf < 1280 * 2 / 3 + 20, 'not in the lower third ' + y);
       assert.ok(y + S.labelDy - 24 >= row, 'label clears the card row ' + y);
     }
@@ -606,15 +430,6 @@ test("off-screen warning: the '!!' never sits over the km/s readout or the multi
   assert.strictEqual(hud.hudNovaWarnX(450, halfW), 450);
 });
 
-test('pops: PERFECT / +SPEED step aside while the finger prompt is up, high pops still show', () => {
-  assert.strictEqual(hud.hudPopAllowed(hud.POP_MEDIUM, true), false);
-  assert.strictEqual(hud.hudPopAllowed(hud.POP_LOW, true), false);
-  assert.strictEqual(hud.hudPopAllowed(hud.POP_HIGH, true), true);
-  assert.strictEqual(hud.hudPopAllowed(hud.POP_MEDIUM, false), true);
-  assert.strictEqual(hud.hudPopAllowed(hud.popPriority('PERFECT!'), true), false);
-  assert.strictEqual(hud.hudPopAllowed(hud.popPriority('+SPEED'), true), false);
-});
-
 test('rect helpers: gap and padded overlap', () => {
   const a = { left: 0, top: 0, right: 10, bottom: 10 };
   assert.strictEqual(hud.hudRectGap(a, { left: 5, top: 5, right: 20, bottom: 20 }), 0);
@@ -623,73 +438,144 @@ test('rect helpers: gap and padded overlap', () => {
   assert.strictEqual(hud.hudRectsOverlap(a, { left: 12, top: 0, right: 20, bottom: 10 }, 5), true);
 });
 
-test('tutorial obstacles from GameScene: junk is dropped, radii clamped', () => {
-  assert.strictEqual(hud.hudTutorialObstacles(null).length, 0);
-  assert.strictEqual(hud.hudTutorialObstacles('x').length, 0);
-  const out = hud.hudTutorialObstacles([{ x: 1, y: 2, r: 3 }, null, { x: NaN, y: 1, r: 1 }, { x: 5, y: 6 }, { x: 7, y: 8, r: -4 }]);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(out)), [{ x: 1, y: 2, r: 3 }, { x: 5, y: 6, r: 0 }, { x: 7, y: 8, r: 0 }]);
-});
+// ---- one-time guided tutorial (showTutorialStep) ----
 
-// Mirrors HudScene.tutorialSpots: obstacles = target + comet + passed-in bodies + HUD rects.
-function placeLikeHud(candidates, target, comet, others) {
-  const T = hud.HUD_TUTORIAL;
-  const bounds = { left: 14, right: 706, top: 260, bottom: 1280 - hud.HUD_SAFE_BOTTOM - 20, tipMargin: T.tipMargin };
-  const obstacles = [];
-  const bodies = [];
-  if (comet) {
-    bodies.push({ x: comet.x, y: comet.y, r: 18 });
-    obstacles.push({ x: comet.x, y: comet.y, r: 0, clear: T.cometClear });
-    for (const dy of T.tailAt) obstacles.push({ x: comet.x, y: comet.y + dy, r: 0, clear: T.tailClear });
+// Every placed box: inside the 60 px margin and under `top`, clear of the bodies / arrow and the
+// HUD blocks, and the word clear of the hand.
+function stepCheck(L, label) {
+  const S = hud.HUD_STEP;
+  const handR = hud.hudStepRect(S.handBox, L.hand.x, L.hand.y, L.hand.scale);
+  const wordR = hud.hudStepRect(L.wordBox, L.word.x, L.word.y, L.word.scale);
+  for (const [name, r] of [['hand', handR], ['word', wordR]]) {
+    const at = label + ' ' + name + ' ' + JSON.stringify(r);
+    assert.ok(r.left >= S.margin - 1e-6 && r.right <= 720 - S.margin + 1e-6, 'inside the side margins ' + at);
+    assert.ok(r.top >= L.screen.top - 1e-6 && r.bottom <= 1280 - S.margin + 1e-6, 'inside the top / bottom margins ' + at);
+    for (const c of L.circles) {
+      const d = hud.hudBoxDistance(c.x, c.y, r.left, r.top, r.right, r.bottom) - c.r;
+      assert.ok(d >= S.gap - 1e-6, 'covers a body / the arrow ' + JSON.stringify(c) + ' d=' + d + ' ' + at);
+    }
+    for (const rr of hud.hudStepHudRects()) assert.ok(hud.hudRectGap(rr, r) >= S.rectGap - 1e-6, 'on a HUD block ' + JSON.stringify(rr) + ' ' + at);
   }
-  if (target) { obstacles.push({ x: target.x, y: target.y, r: target.r, clear: T.planetClear }); bodies.push(target); }
-  for (const o of others) { obstacles.push({ x: o.x, y: o.y, r: o.r, clear: T.bodyClear }); bodies.push(o); }
-  const rects = [hud.HUD_PANEL, hud.HUD_BADGE_PANEL, hud.HUD_NOTE.rect];
-  for (const rect of rects) obstacles.push({ rect, clear: T.rectClear });
-  const spots = hud.hudTutorialScore(candidates, obstacles, bounds, [], null);
-  for (const s of spots) { s.covers = hud.hudTutorialCovers(s, bodies); s.coversHud = hud.hudTutorialCovers(s, null, rects); }
-  return { spot: hud.hudTutorialPick(spots), bodies, rects };
+  assert.ok(hud.hudRectGap(handR, wordR) >= S.wordGap, label + ' word on the hand');
+  assert.strictEqual(L.hand.clean && L.word.clean, true, label + ' clean');
 }
 
-test('tutorial LET GO: the hand keeps off every planet and black hole passed in, and the HUD blocks', () => {
-  const comet = { x: 360, y: 760 };
-  // A planet right where a release spot would be, a black hole up ahead.
-  for (const others of [[{ x: 560, y: 700, r: 60 }, { x: 330, y: 380, r: 80 }], [{ x: 160, y: 700, r: 60 }, { x: 600, y: 360, r: 80 }]]) {
-    for (const [dx, dy] of [[0, -1], [0.6, -0.8], [-0.6, -0.8]]) {
-      const { spot, bodies, rects } = placeLikeHud(hud.hudTutorialReleaseCandidates(comet.x, comet.y, dx, dy), null, comet, others);
-      assert.ok(spot, 'a spot was found for ' + dx);
-      assert.strictEqual(hud.hudTutorialCovers(spot, bodies), false, 'over a body ' + spot.key);
-      assert.strictEqual(hud.hudTutorialCovers(spot, null, rects), false, 'over the HUD ' + spot.key);
+test('tutorial step: spotlight radius grows with the planet, clamped; the no-cover body sits inside it', () => {
+  const S = hud.HUD_STEP;
+  assert.strictEqual(hud.hudSpotRadius('planet', 10), S.spotMin);
+  assert.strictEqual(hud.hudSpotRadius('planet', 80), 80 * S.spotScale + S.spotPad);
+  assert.ok(hud.hudSpotRadius('planet', 80) > 80 + 20, 'rings / moons fit inside');
+  assert.ok(hud.hudSpotRadius('planet', 150) <= S.spotMax, 'capped');
+  for (const junk of [NaN, undefined, null, -5, 'x']) assert.strictEqual(hud.hudSpotRadius('planet', junk), S.spotMin);
+  assert.strictEqual(hud.hudSpotRadius('comet'), S.cometSpot);
+  for (const r of [0, 20, 60, 120, 400]) {
+    assert.ok(hud.hudBodyRadius('planet', r) >= r, 'body covers the planet ' + r);
+    assert.ok(hud.hudBodyRadius('planet', r) <= hud.hudSpotRadius('planet', r), 'body inside the spotlight ' + r);
+  }
+  assert.ok(hud.hudBodyRadius('comet') < hud.hudSpotRadius('comet'));
+});
+
+test('tutorial step HOLD: finger and word never cover the planet or the comet, stay inside and off the HUD', () => {
+  const cases = [
+    { px: 360, py: 520, pr: 60, cx: 360, cy: 900 },     // the start: planet straight above the comet
+    { px: 360, py: 520, pr: 60, cx: 300, cy: 700 },     // comet closing in
+    { px: 520, py: 600, pr: 70, cx: 300, cy: 860 },
+    { px: 160, py: 480, pr: 50, cx: 420, cy: 980 },
+    { px: 600, py: 420, pr: 90, cx: 360, cy: 760 },     // big planet by the right wall
+    { px: 360, py: 700, pr: 120, cx: 360, cy: 1000 },   // huge planet in the middle
+    { px: 140, py: 900, pr: 60, cx: 480, cy: 1050 },    // low on the left (km/s block)
+    { px: 360, py: 400, pr: 80, cx: 360, cy: 620 },     // high up under the score note
+  ];
+  for (const k of cases) {
+    const L = hud.hudStepLayout('hold', k, 250);
+    stepCheck(L, JSON.stringify(k));
+    assert.strictEqual(L.spots.length, 2);
+    assert.ok(L.hand.scale >= 0.7 && L.word.scale >= 0.7);
+    assert.strictEqual(hud.hudStepLayoutClear(L, hud.hudStepLayout('hold', k, 250)), true, 'the same info keeps the layout');
+  }
+});
+
+test('tutorial step LET GO: clear of the comet, the planet and the whole fling arrow, any direction', () => {
+  const S = hud.HUD_STEP;
+  const p = { px: 360, py: 520, pr: 60 };
+  for (const c of [{ cx: 300, cy: 600 }, { cx: 430, cy: 470 }, { cx: 360, cy: 440 }, { cx: 250, cy: 560 }]) {
+    for (const [dirX, dirY] of [[0, -1], [0.7, -0.7], [-0.7, -0.7], [1, 0], [-1, 0], [0.4, 0.9]]) {
+      const info = Object.assign({ dirX, dirY }, p, c);
+      const L = hud.hudStepLayout('letgo', info, 250);
+      stepCheck(L, JSON.stringify(info));
+      assert.strictEqual(L.circles.length, 2 + S.arrowSamples + 1, 'the arrow is kept clear');
     }
   }
-  // Boxed in on both sides: never over a body (it may fade out instead).
-  const boxed = [{ x: 560, y: 700, r: 60 }, { x: 150, y: 600, r: 70 }];
-  for (const [dx, dy] of [[0, -1], [0.6, -0.8], [-0.6, -0.8]]) {
-    const { spot, bodies } = placeLikeHud(hud.hudTutorialReleaseCandidates(comet.x, comet.y, dx, dy), null, comet, boxed);
-    if (spot) assert.strictEqual(hud.hudTutorialCovers(spot, bodies), false, 'boxed: over a body ' + spot.key);
+  // The arrow runs from arrowFrom to arrowTo along the (normalised) direction.
+  const a = hud.hudStepArrowCircles(100, 100, 0, -5);
+  assert.strictEqual(a[0].y, 100 - S.arrowFrom);
+  assert.strictEqual(a[a.length - 1].y, 100 - S.arrowTo);
+  // No direction (junk): no arrow, still a layout.
+  const L = hud.hudStepLayout('letgo', { cx: 300, cy: 600, px: 360, py: 520, pr: 60, dirX: NaN }, 250);
+  assert.strictEqual(L.circles.length, 2);
+  assert.ok(L.hand.clean);
+});
+
+test('tutorial step: the layout stays put while the page drifts, and moves when something lands on it', () => {
+  const k = { px: 360, py: 520, pr: 60, cx: 300, cy: 700 };
+  const L = hud.hudStepLayout('hold', k, 250);
+  const drift = hud.hudStepLayout('hold', { px: 363, py: 523, pr: 60, cx: 303, cy: 702 }, 250);
+  assert.strictEqual(hud.hudStepLayoutClear(L, drift), true, 'a few px in slow motion: kept');
+  const hr = hud.hudStepRect(hud.HUD_STEP.handBox, L.hand.x, L.hand.y, L.hand.scale);
+  const onHand = hud.hudStepLayout('hold', { px: 360, py: 520, pr: 60, cx: (hr.left + hr.right) / 2, cy: (hr.top + hr.bottom) / 2 }, 250);
+  assert.strictEqual(hud.hudStepLayoutClear(L, onHand), false, 'the comet on the hand: re-placed');
+  assert.strictEqual(hud.hudStepLayoutClear(L, hud.hudStepLayout('letgo', Object.assign({ dirX: 0, dirY: -1 }, k), 250)), false, 'a new step re-places');
+  assert.strictEqual(hud.hudStepLayoutClear(null, L), false);
+});
+
+test('tutorial step: the drawn hand (pressing, lifted) stays inside its box', () => {
+  const S = hud.HUD_STEP;
+  const halo = 8 * S.handScale + 8;   // cream halo (7 texture px) + shadow offset
+  for (const [lift, sx, sy] of [[-18, S.handScale, S.handScale], [0, S.handScale * 1.03, S.handScale * 0.95], [-S.liftPx, S.handScale, S.handScale]]) {
+    for (const pt of hud.hudHandPoints(lift, sx, sy)) {
+      assert.ok(pt.x - halo >= S.handBox.l && pt.x + halo <= S.handBox.r, 'x ' + pt.x);
+      assert.ok(pt.y - halo >= S.handBox.t && pt.y + halo <= S.handBox.b, 'y ' + pt.y);
+    }
+  }
+  assert.ok(-S.rippleMax >= S.handBox.t && S.rippleMax <= S.handBox.r && -S.rippleMax >= S.handBox.l, 'ripples inside');
+  // Big enough to read as a finger on a phone (~200 px tall); the word is big.
+  const pts = hud.hudHandPoints(0);
+  const tall = Math.max(...pts.map(p => p.y)) - Math.min(...pts.map(p => p.y));
+  assert.ok(tall > 190 && tall < 260, 'hand height ' + tall);
+  assert.ok(S.word.holdSize >= 110 && S.word.letgoSize >= 96);
+  assert.ok(S.word.subY - S.word.subSize / 2 > S.word.lineY, 'sub line under the underline');
+});
+
+test('tutorial step: NICE! lands near the comet but never on it, inside the screen', () => {
+  const S = hud.HUD_STEP;
+  const halfW = 160;
+  const halfH = 70;
+  for (const [cx, cy] of [[360, 800], [100, 400], [650, 300], [360, 1000], [360, 600], [NaN, NaN]]) {
+    const p = hud.hudNiceSpot(cx, cy, halfW, halfH);
+    assert.ok(p.x - halfW >= S.margin - 1e-6 && p.x + halfW <= 720 - S.margin + 1e-6, 'x ' + p.x);
+    assert.ok(p.y - halfH >= hud.POP.top - 1e-6, 'below the score note ' + p.y);
+    if (isFinite(cx)) {
+      const d = hud.hudBoxDistance(cx, cy, p.x - halfW, p.y - halfH, p.x + halfW, p.y + halfH);
+      assert.ok(d >= S.niceClear - 1e-6, 'on the comet ' + [cx, cy, d]);
+      assert.ok(Math.abs(p.y - cy) <= S.niceAbove + 1, 'near the comet');
+    }
   }
 });
 
-test('tutorial HOLD: a planet low on the left never puts the hand on the km/s block', () => {
-  const target = { x: 150, y: 920, r: 50 };
-  const comet = { x: 420, y: 1060 };
-  const { spot, rects } = placeLikeHud(hud.hudTutorialHoldCandidates(target.x, target.y, target.r, comet), target, comet, []);
-  assert.ok(spot);
-  assert.strictEqual(hud.hudTutorialCovers(spot, null, rects), false, spot.key + ' ' + JSON.stringify([spot.x, spot.y]));
-});
-
-test('tutorial: the fingertip stays >= 60 px inside the screen, and a spot shoved far from its planet is refused', () => {
-  const T = hud.HUD_TUTORIAL;
-  // Planets hugging either wall: the hand goes to the open side, tip well inside the screen.
-  for (const target of [{ x: 40, y: 560, r: 40 }, { x: 690, y: 560, r: 40 }, { x: 60, y: 420, r: 90 }]) {
-    const { spot } = placeLikeHud(hud.hudTutorialHoldCandidates(target.x, target.y, target.r, null), target, null, []);
-    assert.ok(spot, JSON.stringify(target));
-    assert.ok(spot.x >= 14 + T.tipMargin && spot.x <= 706 - T.tipMargin, 'tip at ' + spot.x);
-    assert.ok(spot.shift <= T.maxShift, 'near its planet');
-  }
-  assert.strictEqual(hud.hudTutorialPick([{ cost: 1, shift: T.maxShift + 1 }]), null, 'far-shoved spot refused');
-  assert.strictEqual(hud.hudTutorialPick([{ cost: 1, shift: 0, covers: true }]), null, 'covering spot refused');
-  const hudOnly = { cost: 5, shift: 0, coversHud: true };
-  assert.strictEqual(hud.hudTutorialPick([hudOnly]), hudOnly, 'over a HUD block only as the last resort');
-  const clean = { cost: 50, shift: 0 };
-  assert.strictEqual(hud.hudTutorialPick([hudOnly, clean]), clean);
+test('tutorial step fades: in over ~0.25 s, out over ~0.2 s, settling exactly', () => {
+  const S = hud.HUD_STEP;
+  assert.ok(S.fadeIn >= 0.2 && S.fadeIn <= 0.3);
+  assert.ok(S.fadeOut >= 0.15 && S.fadeOut <= 0.25);
+  let a = 0;
+  let frames = 0;
+  while (a < 1 && frames < 100) { a = hud.hudStepFade(a, 1, S.fadeIn, 1 / 60); frames++; }
+  assert.strictEqual(a, 1);
+  assert.ok(frames >= 14 && frames <= 16, 'fade in frames ' + frames);
+  frames = 0;
+  while (a > 0 && frames < 100) { a = hud.hudStepFade(a, 0, S.fadeOut, 1 / 60); frames++; }
+  assert.strictEqual(a, 0);
+  assert.ok(frames >= 11 && frames <= 13, 'fade out frames ' + frames);
+  assert.strictEqual(hud.hudStepFade(0.5, 1, S.fadeIn, -1), 0.5, 'negative dt is ignored');
+  // The wash darkens the page ~55-65%: flat wash plus hatch strokes over it.
+  assert.ok(S.wash >= 0.4 && S.wash <= 0.6 && S.hatch > 0.3);
 });
