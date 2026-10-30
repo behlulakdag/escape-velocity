@@ -69,3 +69,13 @@
 - [x] New itch page https://behlulakdag.itch.io/escape-velocity (DRAFT): HTML, played in browser, 405x720, mobile friendly portrait, fullscreen, cover, GIF (itch/gameplay-page.gif, <3 MB limit) + 6 screenshots, description with AI disclosure (graphics/sounds/code), tags, genre Action, navy/cream theme. deploy.ps1 now targets behlulakdag/escape-velocity.
 - [ ] User reviews the page -> set Public -> user submits on the jam page (private prize-contact email!)
 
+
+## Oct 30 evening
+- [x] Progression wired: missions, coins, skins with doodles, card journal, best-run ghost, MACH readout + tier stamps, first-run simple menu, story line. QA 16/16.
+- [x] Missions note: newly drawn missions say 'next run' instead of 0/N.
+- [x] Friend bug (unkillable at 800 km/s with Wall Kick): wall kicks only after aimed flings (max 2), high-speed drag, late nova, hit/bounce cost scales with speed. Masher at 9000 m now dies in a median 2-3 s; deployed (build #2252518).
+- [x] New pages past 8000 m: LIGHTSPEED 12k, WORMHOLE 17k, EVENT HORIZON 23k, BIG BANG 30k, BEYOND 40k, then BEYOND II.. every 10k (zoneAt()).
+- [x] Finger HOLD / LET GO tutorial (first runs).
+- Playtest feedback (3 people): first 10 s unclear ('where do I press', 'goes to weird places'), 'starts a bit too fast, ramp up slowly'; style praised.
+- Strict critic: Fun 3.4 / Visual 3.9 / Theme 3.6 -> off-screen late deaths, ceiling ~38-40k, finger reads badly, HUD clutter.
+- [ ] Running: first-run/fairness round (calm start + ramp, learner assist, readable finger, nova warning, no ceiling, declutter, hand-drawn fullscreen/mute buttons).
