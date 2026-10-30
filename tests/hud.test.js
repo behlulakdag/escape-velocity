@@ -9,11 +9,11 @@ const vm = require('vm');
 // The scripts are plain browser files: load them into one context with a tiny Phaser stub.
 function loadBrowserScripts() {
   const context = vm.createContext({ Phaser: { Scene: class {} }, console });
-  for (const file of ['src/config.js', 'src/cards.js', 'src/cardart.js', 'src/scenes/HudScene.js']) {
+  for (const file of ['src/config.js', 'src/cards.js', 'src/cardart.js', 'src/scenes/HudScene.js', 'src/scenes/PauseScene.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE, HUD_PANEL_UNDER, hudCornerFade, HUD_CARD_FLASH, hudCardFlashAllowed, hudCanPause, HUD_PAUSE_BUTTON, PAUSE, pauseFullscreenSupported, pauseLayout, pauseCountdownDigit, pauseSoundLabel })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -338,7 +338,7 @@ test('page ink: pale pages (cream, white graph paper) get dark HUD ink, dark pag
 
 function hudContext(extra) {
   const ctx = vm.createContext({ Phaser: { Scene: class {} }, console });
-  for (const file of ['src/config.js', 'src/cards.js', 'src/cardart.js', 'src/scenes/HudScene.js']) {
+  for (const file of ['src/config.js', 'src/cards.js', 'src/cardart.js', 'src/scenes/HudScene.js', 'src/scenes/PauseScene.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), ctx, { filename: file });
   }
   vm.runInContext(extra, ctx);
@@ -421,15 +421,115 @@ test('set bonus: short, high, clear of the card row, never in the lower third or
   assert.ok(hud.hudSetBonusY(S.y + 40, 0) > S.y + 40 + 150, 'comet in the band: the set name moves under it');
 });
 
-test("off-screen warning: the '!!' never sits over the km/s readout or the multiplier loop", () => {
+test("off-screen warning: the '!!' sits above the km/s readout and the multiplier loop, never on them", () => {
+  const W = hud.HUD_NOVA_WARN;
+  const halfH = 96 * 1.35 / 2;
+  assert.ok(W.y + halfH <= hud.HUD_PANEL.top && W.y + halfH <= hud.HUD_BADGE_PANEL.top, 'above both corner blocks');
+  assert.ok(W.y > 1280 / 2, 'still low on the screen, near where the nova comes from');
   const halfW = 60;
   for (const cx of [-50, 0, 60, 166, 250, 360, 500, 650, 720, 900, NaN, undefined]) {
     const x = hud.hudNovaWarnX(cx, halfW);
-    assert.ok(x - halfW >= hud.HUD_PANEL.right, 'over km/s at comet x ' + cx + ' -> ' + x);
-    assert.ok(x + halfW <= hud.HUD_BADGE_PANEL.left, 'over the x-loop at comet x ' + cx + ' -> ' + x);
+    assert.ok(x - halfW >= W.sideMargin && x + halfW <= 720 - W.sideMargin, 'inside the screen at comet x ' + cx + ' -> ' + x);
   }
-  // Still follows the comet inside the middle lane.
+  // Follows the comet, over the corners too (it is above them now).
   assert.strictEqual(hud.hudNovaWarnX(450, halfW), 450);
+  assert.strictEqual(hud.hudNovaWarnX(166, halfW), 166);
+});
+
+test('corner blocks never fade below 0.85 for a planet; only the comet itself right under one dims it', () => {
+  const U = hud.HUD_PANEL_UNDER;
+  assert.strictEqual(hud.hudCornerFade(false, false), 1);
+  assert.ok(hud.hudCornerFade(false, true) >= 0.85, 'planet under');
+  assert.ok(U.floor >= 0.85 && U.planet >= 0.85);
+  assert.ok(hud.hudCornerFade(true, true) < 0.85, 'the comet behind the block stays visible');
+  // The comet only counts when it is really on the block (not merely sinking toward the bottom).
+  assert.ok(U.cometPad <= 30);
+  const P = hud.HUD_PANEL;
+  assert.strictEqual(hud.hudCirclesUnder(P, [{ x: 200, y: P.top - 24 - 40, r: 24 }], U.cometPad), false, 'comet 40 px above the block');
+});
+
+test('a card icon flashes at most once per 5 s', () => {
+  assert.ok(hud.HUD_CARD_FLASH.flashMs >= 5000);
+  const seen = {};
+  assert.strictEqual(hud.hudCardFlashAllowed(seen, 'aero', 1000), true);
+  seen.aero = 1000;
+  assert.strictEqual(hud.hudCardFlashAllowed(seen, 'aero', 1300), false);
+  assert.strictEqual(hud.hudCardFlashAllowed(seen, 'aero', 5900), false);
+  assert.strictEqual(hud.hudCardFlashAllowed(seen, 'aero', 6000), true);
+  assert.strictEqual(hud.hudCardFlashAllowed(seen, 'sling', 1300), true, 'per card');
+  assert.strictEqual(hud.hudCardFlashAllowed(null, 'aero', 0), true);
+});
+
+test('pause: the button works any time in a live run; auto-pause only in real play, never headless', () => {
+  const play = { gameActive: true, headless: false, isOver: false, launched: true, introActive: false, tutorialWaiting: false, paused: false };
+  for (const r of ['button', 'key', 'hidden', 'blur']) assert.strictEqual(hud.hudCanPause(play, r), true, r);
+  for (const r of ['button', 'hidden']) {
+    assert.strictEqual(hud.hudCanPause({ ...play, headless: true }, r), false, 'simulator ' + r);
+    assert.strictEqual(hud.hudCanPause({ ...play, isOver: true }, r), false, 'run over ' + r);
+    assert.strictEqual(hud.hudCanPause({ ...play, paused: true }, r), false, 'already paused ' + r);
+    assert.strictEqual(hud.hudCanPause({ ...play, gameActive: false }, r), false, 'no run ' + r);
+  }
+  // Tutorial wait (already frozen) and the opening scene: no auto-pause, but the button works.
+  for (const s of [{ ...play, tutorialWaiting: true }, { ...play, introActive: true }, { ...play, launched: false }]) {
+    assert.strictEqual(hud.hudCanPause(s, 'hidden'), false);
+    assert.strictEqual(hud.hudCanPause(s, 'blur'), false);
+    assert.strictEqual(hud.hudCanPause(s, 'button'), true);
+  }
+  assert.strictEqual(hud.hudCanPause(null, 'button'), false);
+  const B = hud.HUD_PAUSE_BUTTON;
+  assert.ok(B.hit >= 100, 'touch target');
+  assert.ok(B.y - B.hit / 2 >= 40 && B.x + B.hit / 2 <= 720, 'clear of the notch, on screen');
+  // Inside the top-right rect the tutorial and pops keep clear of.
+  const r = hud.hudStepHudRects()[3];
+  assert.ok(B.x - B.hit / 2 >= r.left && B.x + B.hit / 2 <= r.right && B.y - B.hit / 2 >= r.top && B.y + B.hit / 2 <= r.bottom);
+});
+
+test('pause note: FULLSCREEN only where the API works, never on iOS', () => {
+  const desk = { available: true, enabled: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/120', platform: 'Win32', maxTouchPoints: 0 };
+  assert.strictEqual(hud.pauseFullscreenSupported(desk), true);
+  assert.strictEqual(hud.pauseFullscreenSupported({ ...desk, userAgent: 'Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile', platform: 'Linux armv8l', maxTouchPoints: 5 }), true, 'Android');
+  assert.strictEqual(hud.pauseFullscreenSupported({ ...desk, enabled: undefined }), true, 'unknown enabled flag');
+  assert.strictEqual(hud.pauseFullscreenSupported({ ...desk, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5 }), false, 'iPhone');
+  assert.strictEqual(hud.pauseFullscreenSupported({ ...desk, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605', platform: 'MacIntel', maxTouchPoints: 5 }), false, 'iPadOS');
+  assert.strictEqual(hud.pauseFullscreenSupported({ ...desk, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605', platform: 'MacIntel', maxTouchPoints: 0 }), true, 'a real Mac');
+  assert.strictEqual(hud.pauseFullscreenSupported({ ...desk, available: false }), false);
+  assert.strictEqual(hud.pauseFullscreenSupported({ ...desk, enabled: false }), false, 'iframe without allowfullscreen');
+  assert.strictEqual(hud.pauseFullscreenSupported(null), false);
+});
+
+test('pause note: big buttons, none overlapping, all on the note and clear of the screen edges', () => {
+  for (const full of [true, false]) {
+    const L = hud.pauseLayout(full);
+    const ids = L.buttons.map(b => b.id);
+    assert.deepStrictEqual(Array.from(ids), full ? ['resume', 'restart', 'menu', 'sound', 'fullscreen'] : ['resume', 'restart', 'menu', 'sound']);
+    const N = L.note;
+    const noteRect = { left: N.x - N.w / 2, right: N.x + N.w / 2, top: N.y - N.h / 2, bottom: N.y + N.h / 2 };
+    assert.ok(noteRect.left >= 16 && noteRect.right <= 704, 'note inside the 16 px gutter');
+    assert.ok(noteRect.top >= 150 && noteRect.bottom <= 1280 - 150, 'note clear of the notch and browser bars');
+    assert.ok(L.title.y - 50 > noteRect.top && L.title.y + 50 < L.buttons[0].y - L.buttons[0].h / 2, 'title on the note above RESUME');
+    const rects = L.buttons.map(b => ({ id: b.id, left: b.x - b.w / 2, right: b.x + b.w / 2, top: b.y - b.h / 2, bottom: b.y + b.h / 2, h: b.h }));
+    for (const r of rects) {
+      assert.ok(r.h >= 100, r.id + ' touch target');
+      assert.ok(r.left >= noteRect.left + 10 && r.right <= noteRect.right - 10 && r.top >= noteRect.top && r.bottom <= noteRect.bottom - 20, r.id + ' on the note');
+    }
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) assert.strictEqual(hud.hudRectsOverlap(rects[i], rects[j], 8), false, rects[i].id + ' vs ' + rects[j].id);
+    }
+    assert.ok(L.buttons[0].h >= L.buttons[1].h, 'RESUME is the biggest');
+  }
+});
+
+test('pause countdown: 3, 2, 1, then play; SOUND label says the state', () => {
+  const P = hud.PAUSE;
+  assert.strictEqual(hud.pauseCountdownDigit(0), 3);
+  assert.strictEqual(hud.pauseCountdownDigit(P.countStepMs - 1), 3);
+  assert.strictEqual(hud.pauseCountdownDigit(P.countStepMs), 2);
+  assert.strictEqual(hud.pauseCountdownDigit(P.countStepMs * 2 + 5), 1);
+  assert.strictEqual(hud.pauseCountdownDigit(P.countStepMs * 3), 0);
+  assert.strictEqual(hud.pauseCountdownDigit(NaN), 3);
+  assert.ok(P.countStepMs * 3 <= 1500, 'short');
+  assert.strictEqual(hud.pauseSoundLabel(true), 'SOUND: OFF');
+  assert.strictEqual(hud.pauseSoundLabel(false), 'SOUND: ON');
 });
 
 test('rect helpers: gap and padded overlap', () => {

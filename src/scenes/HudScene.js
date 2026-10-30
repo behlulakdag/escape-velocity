@@ -35,6 +35,8 @@
 //                             banners / set bonuses wait. During its ~0.2 s fade-out they wait.
 //   showSetBonus(familyKey)   family-colored SET BONUS banner (SET_BONUSES in src/cards.js)
 //   scoreText is read by GameScene, so it stays a Text object.
+//   Pause: the top-right '||' scrap (and ESC / P, and auto on page hidden / window blur during
+//   play, hudCanPause) launches PauseScene over Game + Hud; see src/scenes/PauseScene.js.
 
 // Pop rules (see pop()): only ONE pop line is ever on screen; it never sits on the comet.
 const POP = {
@@ -173,6 +175,15 @@ function hudQueueWaitingPop(queue, item) {
 // namedMax: a card's name is written at most this often per run (the pick pop + one proc);
 // after that the card's own icon in the HUD strip flashes instead (flashCard).
 const HUD_POP_GATE = { lossMs: 2000, newMs: 250, namedMax: 2 };
+// A card's icon flashes (flashCard) at most once per flashMs: frequent procs (Aerodynamic every
+// fling) made the strip flicker all run long.
+const HUD_CARD_FLASH = { flashMs: 5000 };
+
+// Pure helper (tested): may card id flash now? seen: id -> time it last flashed.
+function hudCardFlashAllowed(seen, id, now) {
+  const last = seen && typeof seen[id] === 'number' ? seen[id] : -Infinity;
+  return now - last >= HUD_CARD_FLASH.flashMs || now < last;
+}
 
 // Pure helper (tested): a '-N% SPEED' loss pop.
 function hudIsLossPop(label) {
@@ -208,7 +219,7 @@ function hudCardIdForPop(label, cards) {
 }
 
 // Owned cards: small taped icons in the HUD's top band, right of the score note and left of the
-// fullscreen button (x 578+), so they never sit in the play field. Up to perRow cards make one
+// pause button (x 578+), so they never sit in the play field. Up to perRow cards make one
 // row; more wrap into two rows (12 cards: two rows of 6). left/right: card edges.
 const HUD_CARDS = { left: 314, right: 570, singleY: 122, rowY: [98, 150], perRow: 5, scale: 0.66, cardW: 42, cardH: 50, maxPitch: 52, under: 0.5, ease: 8 };
 
@@ -328,9 +339,18 @@ const HUD_PANEL = { left: 24, right: 320, top: HUD_SPEED.y - 56, bottom: HUD_SPE
 const HUD_BADGE = { x: GAME_WIDTH - 86, y: HUD_SPEED.y + 6, size: 40, scaleX: 0.5, scaleY: 0.62 };
 const HUD_BADGE_PANEL = { left: HUD_BADGE.x - 62, right: HUD_BADGE.x + 62, top: HUD_BADGE.y - 62, bottom: HUD_BADGE.y + 62 };
 // Corner blocks' alpha while the comet (or a planet) is under them.
-// planet: only a light step back: the blocks sit on their own paper scraps now, so the number must
-// stay readable, and GameScene keeps new planets out of these rects anyway.
-const HUD_PANEL_UNDER = { comet: 0.3, planet: 0.75, cometPad: 90, planetPad: 4 };
+// planet: only a light step back, never below floor: the km/s number, MACH and the x-loop must
+// always read (planets and the rising supernova used to grey them out). comet: the hero itself
+// right under a block (cometPad: only when it really overlaps, not merely sinking toward the
+// bottom as the nova rises) is the one case that may step back further, so it is never hidden.
+const HUD_PANEL_UNDER = { comet: 0.3, planet: 0.85, floor: 0.85, cometPad: 24, planetPad: 4 };
+
+// Pure helper (tested): a corner block's target alpha. cometUnder / planetUnder: booleans.
+function hudCornerFade(cometUnder, planetUnder) {
+  const U = HUD_PANEL_UNDER;
+  if (cometUnder) return U.comet;
+  return planetUnder ? Math.max(U.floor, U.planet) : 1;
+}
 // Torn cream-paper scraps taped behind the km/s + MACH block and the x-loop, so the numbers
 // always read (planets, orbit rings and the supernova used to show through). w x h: the paper;
 // x, y: its center; rot: its tilt. alpha ~85%: the page still shows faintly through.
@@ -414,6 +434,33 @@ function hudScrapTexture(scene, key, w, h) {
     ctx.restore();
   });
 }
+// Graphite pencil edge traced round a scrap (shown only on pale pages, where the cream paper
+// would melt into the cream page). Built with the scrap's own shape seed, so the torn outline
+// matches the scrap exactly whatever boil variant either one is on (the outline uses only the
+// shape random; the variant random only moves the tape). Two passes, a little off each other,
+// like a pencil going round twice.
+function hudScrapEdgeTexture(scene, baseKey, w, h) {
+  const P = HUD_SCRAP.pad;
+  const key = baseKey + '_edge';
+  for (let v = 0; v < UI_BOIL_VARIANTS; v++) {
+    const k = key + '_' + v;
+    if (scene.textures.exists(k)) continue;
+    const tex = scene.textures.createCanvas(k, w + P * 2, h + P * 2);
+    const ctx = tex.getContext();
+    const pts = hudTornScrapPoints(w, h, P, HUD_SCRAP.tear, uiRng(uiHash(baseKey)));
+    const jitter = uiRng(uiHash(key) + (v + 1) * 7919);
+    for (const [width, alpha, wob] of [[2.6, 0.85, 0.6], [1.3, 0.55, 1.6]]) {
+      uiTracePath(ctx, pts.map((p) => ({ x: p.x + (jitter() - 0.5) * wob, y: p.y + (jitter() - 0.5) * wob })), true);
+      ctx.strokeStyle = 'rgba(52,48,66,' + alpha + ')';
+      ctx.lineWidth = width;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+    tex.refresh();
+  }
+  return key;
+}
+
 // Multiplier circle tint by level (x1..x5): the same warm ramp as the comet.
 // Supernova front (screen y) near the bottom band: its orange flames sit right behind the speed
 // readout and the momentum crown. 0 while the front is below farY, 1 once it is up at nearY.
@@ -488,7 +535,7 @@ function hudPageIsLight(zone, fallbackLight) {
 // beside a planet): the hand first, near what it is about, then the word near the hand.
 // Hand coords: the fingertip is (0, 0), the hand trails down below it. Word coords: the word's
 // center is (0, 0), the small sub line under it.
-const HUD_STEP_DEPTH = 900;   // over the stats, under the fullscreen / mute buttons (1000)
+const HUD_STEP_DEPTH = 900;   // over the stats, under the pause button (1000)
 const HUD_STEP = {
   fadeIn: 0.25,          // s
   fadeOut: 0.2,          // s
@@ -572,7 +619,7 @@ function hudStepRect(box, x, y, scale) {
 }
 
 // Pure helper (tested): the HUD rects the group keeps off (score note, km/s block, x-loop,
-// fullscreen / mute buttons in the top-right corner).
+// pause button in the top-right corner).
 function hudStepHudRects() {
   return [HUD_NOTE.rect, HUD_PANEL, HUD_BADGE_PANEL, { left: GAME_WIDTH - 170, right: GAME_WIDTH - 14, top: 40, bottom: 196 }];
 }
@@ -824,7 +871,11 @@ function hudStepFade(alpha, target, seconds, dt) {
 // still below the screen, an orange crayon heat band grows along the bottom edge and a
 // scribbled '!!' pulses, faster as eta shrinks.
 // Only the last ~0.8 s: earlier it was up most of the late game and read as decoration.
-const HUD_NOVA_WARN = { eta: 0.8, full: 0.2, minLevel: 0.35, hzMin: 3, hzMax: 11, staleMs: 400, belowMargin: 40, ease: 14, panelPad: 14 };
+// y: the '!!' sits ABOVE the bottom corner blocks (never level with the km/s readout), x follows
+// the comet inside sideMargin.
+const HUD_NOVA_WARN = { eta: 0.8, full: 0.2, minLevel: 0.35, hzMin: 3, hzMax: 11, staleMs: 400, belowMargin: 40, ease: 14, panelPad: 14, sideMargin: 24, y: 0 };
+// Center y: half the '!!' at its biggest pulse (96 px font x 1.35) plus a gap over the blocks' top.
+HUD_NOVA_WARN.y = Math.min(HUD_PANEL.top, HUD_BADGE_PANEL.top) - 96 * 1.35 / 2 - HUD_NOVA_WARN.panelPad;
 
 // Pure helper (tested): warning level 0..1. 0 when far (or bad input) or when the front is
 // already up on screen (the player can see it).
@@ -836,12 +887,13 @@ function hudNovaWarnLevel(eta, novaScreenY) {
   return W.minLevel + (1 - W.minLevel) * k;
 }
 
-// Pure helper (tested): '!!' center x. Under the comet, but always between the km/s block and
-// the multiplier loop (never over the speed readout). halfW: half the '!!' width at its largest.
+// Pure helper (tested): '!!' center x. Under the comet, inside the screen; it is drawn at
+// HUD_NOVA_WARN.y, above the km/s block and the multiplier loop, so it never covers them.
+// halfW: half the '!!' width at its largest.
 function hudNovaWarnX(cometX, halfW) {
   const W = HUD_NOVA_WARN;
-  const lo = HUD_PANEL.right + W.panelPad + (halfW || 0);
-  const hi = HUD_BADGE_PANEL.left - W.panelPad - (halfW || 0);
+  const lo = W.sideMargin + (halfW || 0);
+  const hi = GAME_WIDTH - W.sideMargin - (halfW || 0);
   const want = typeof cometX === 'number' && isFinite(cometX) ? cometX : GAME_WIDTH / 2;
   return lo <= hi ? Math.max(lo, Math.min(hi, want)) : (lo + hi) / 2;
 }
@@ -886,6 +938,57 @@ function hudSetBonusY(cometY, rowBottom) {
   return Math.min(S.maxY, high);
 }
 
+// ---- Pause button (top-right corner, where the fullscreen scrap was) ----
+// x, y: center; hit: touch target side (>= 100 px); tex: icon texture side.
+const HUD_PAUSE_BUTTON = { x: GAME_WIDTH - 92, y: 116, hit: 116, tex: 120 };
+
+// Pure helper (tested): may the run be paused now? s: pauseState(); reason: 'button' / 'key'
+// (the player asked) or 'hidden' / 'blur' (auto). Never in the headless simulator, after the
+// run is over or when already paused. Auto-pause only during real play: not in the opening
+// scene and not while a tutorial step waits (the world is already frozen there), though the
+// button still works there.
+function hudCanPause(s, reason) {
+  if (!s || !s.gameActive || s.headless || s.isOver || s.paused) return false;
+  const auto = reason === 'hidden' || reason === 'blur';
+  if (auto) return !!s.launched && !s.introActive && !s.tutorialWaiting;
+  return true;
+}
+
+// Doodled '||' on a yellow crayon scrap: two thick gel-pen bars of slightly different height
+// and tilt, each traced twice, so it reads hand-drawn like the speaker / fullscreen scraps.
+function hudPauseTexture(scene) {
+  const S = HUD_PAUSE_BUTTON.tex;
+  return uiSketchTexture(scene, 'hud_pause_icon', S, S, (ctx, shape, jitter) => {
+    uiIconScrap(ctx, shape, jitter, S / 2, S / 2, 80, 78, UI_CRAYON.yellow);
+    for (const [cx, top, bottom, lean] of [[S / 2 - 13, 34, 87, -0.06], [S / 2 + 14, 37, 85, 0.05]]) {
+      const x0 = cx + (shape() - 0.5) * 3;
+      const pts = [];
+      for (let i = 0; i <= 4; i++) {
+        const t = i / 4;
+        const y = top + (bottom - top) * t + (shape() - 0.5) * 2;
+        pts.push({ x: x0 + lean * (y - S / 2) + (jitter() - 0.5) * 2, y });
+      }
+      uiIconLine(ctx, pts, jitter, { width: 11 });
+    }
+  });
+}
+
+function hudMakePauseButton(scene, onPress) {
+  const B = HUD_PAUSE_BUTTON;
+  const icon = uiBoilImage(scene, 0, 0, hudPauseTexture(scene)).setRotation(-0.04);
+  const btn = scene.add.container(B.x, B.y, [icon]).setDepth(1000);
+  btn.setSize(B.hit, B.hit);
+  btn.setInteractive({ useHandCursor: true });
+  btn.on('pointerdown', () => btn.setScale(1.06, 0.9));
+  btn.on('pointerout', () => btn.setScale(1));
+  btn.on('pointerup', () => {
+    btn.setScale(1);
+    scene.game.events.emit('sfx', 'click', {});
+    onPress();
+  });
+  return btn;
+}
+
 const HUD_LEVEL_TINTS = [UI_INK.cream, UI_CRAYON.yellow, UI_CRAYON.orange, UI_CRAYON.red, UI_CRAYON.pink];
 
 class HudScene extends Phaser.Scene {
@@ -902,7 +1005,7 @@ class HudScene extends Phaser.Scene {
     // Off-screen supernova warning (setNovaEta): orange crayon heat along the bottom edge and a
     // scribbled '!!' that pulses faster as the nova closes in.
     this.heat = uiBoilImage(this, GAME_WIDTH / 2, GAME_HEIGHT, 'hud_heat').setOrigin(0.5, 1).setTint(UI_CRAYON.orange).setAlpha(0);
-    this.warnText = uiInkText(this, GAME_WIDTH / 2, GAME_HEIGHT - 196, '!!', {
+    this.warnText = uiInkText(this, GAME_WIDTH / 2, HUD_NOVA_WARN.y, '!!', {
       size: 96, color: uiColorHex(UI_CRAYON.red), strokeW: 12, rot: -0.08, boilAmount: 0.05,
     }).setAlpha(0);
     this.novaEta = Infinity;    // last setNovaEta (seconds)
@@ -978,6 +1081,9 @@ class HudScene extends Phaser.Scene {
     this.speedScrap = uiBoilImage(this, SS.x, SS.y, 'hud_speed_scrap').setRotation(SS.rot).setAlpha(HUD_SCRAP.alpha);
     const SB = HUD_SCRAP.badge;
     this.badgeScrap = uiBoilImage(this, SB.x, SB.y, 'hud_badge_scrap').setRotation(SB.rot).setAlpha(HUD_SCRAP.alpha);
+    // Pencil edges round both scraps, only on the pale pages (updatePageInk).
+    this.speedScrapEdge = uiBoilImage(this, SS.x, SS.y, 'hud_speed_scrap_edge').setRotation(SS.rot).setVisible(false);
+    this.badgeScrapEdge = uiBoilImage(this, SB.x, SB.y, 'hud_badge_scrap_edge').setRotation(SB.rot).setVisible(false);
     this.novaNear = 0;          // eased hudNovaNear() of the supernova front (Game scene)
     this.novaDrawn = 0;         // novaNear the crown was last drawn at
     this.speedLine = this.add.graphics();
@@ -995,7 +1101,7 @@ class HudScene extends Phaser.Scene {
       size: HUD_MACH.size, color: uiColorHex(hudDeepen(UI_CRAYON.orange, 0.7)), stroke: UI_INK.creamHex, strokeW: 5, rot: -0.025, boilAmount: 0.008,
     });
     this.createMultiplierBadge();
-    this.bottomPanel = this.add.container(0, 0, [this.speedHalo, this.speedScrap, this.badgeScrap, this.speedLine, this.momentumGfx, this.speedText, this.machText, this.badge]);
+    this.bottomPanel = this.add.container(0, 0, [this.speedHalo, this.speedScrap, this.badgeScrap, this.speedScrapEdge, this.badgeScrapEdge, this.speedLine, this.momentumGfx, this.speedText, this.machText, this.badge]);
     // One layer for the stats, so the intro fade never fights the bump tweens on its children.
     this.statsLayer = this.add.container(0, 0, [this.note, this.bottomPanel]);
     const game = this.scene.get('Game');
@@ -1016,12 +1122,58 @@ class HudScene extends Phaser.Scene {
     this.setBonusWait = [];    // set bonuses waiting for the zone banner / card pick / another set
     this.pendingBanner = null; // banner waiting for a set bonus to clear out
     this.bigClearAt = 0;       // last time a banner or set bonus was on screen
-    this.fullscreenButton = addFullscreenButton(this);
+    // Top-right corner: the pause button (fullscreen and sound live on the pause note).
+    this.pauseButton = hudMakePauseButton(this, () => this.openPause('button'));
+    this.wireAutoPause();
     uiOnBoil(this, (v, tick) => { this.boilTick = tick; this.drawSpeedLine(true); this.drawMomentum(true); });
   }
 
+  // ---- Pause (PauseScene over Game + Hud) ----
+
+  // Snapshot of the Game scene for hudCanPause (missing scene = nothing to pause).
+  pauseState() {
+    const game = this.scene.get('Game');
+    const mgr = this.game.scene;
+    return {
+      gameActive: !!(game && this.scene.isActive('Game')),
+      headless: !!(game && game.headless),
+      isOver: !!(game && game.isOver),
+      launched: !!(game && game.launched),
+      introActive: !!(game && game.introActive),
+      tutorialWaiting: !!(game && game.tutorialWaiting),
+      paused: !!(mgr.keys.Pause && (this.scene.isActive('Pause') || this.scene.isPaused('Pause'))),
+    };
+  }
+
+  // reason: 'button' | 'key' (manual) | 'hidden' | 'blur' (auto). Launches PauseScene on top.
+  openPause(reason) {
+    if (!this.game.scene.keys.Pause) return false;
+    if (!hudCanPause(this.pauseState(), reason)) return false;
+    this.scene.launch('Pause', { reason });
+    this.scene.bringToTop('Pause');
+    return true;
+  }
+
+  // Auto-pause when the page is hidden or the window loses focus (itch iframe: a click on the
+  // page around the game), and ESC / P as optional desktop keys. Unhooked on shutdown, since
+  // game.events outlive the scene.
+  wireAutoPause() {
+    const onHidden = () => this.openPause('hidden');
+    const onBlur = () => this.openPause('blur');
+    this.game.events.on('hidden', onHidden);
+    this.game.events.on('blur', onBlur);
+    this.events.once('shutdown', () => {
+      this.game.events.off('hidden', onHidden);
+      this.game.events.off('blur', onBlur);
+    });
+    if (this.input.keyboard) {
+      this.input.keyboard.on('keydown-ESC', () => this.openPause('key'));
+      this.input.keyboard.on('keydown-P', () => this.openPause('key'));
+    }
+  }
+
   // Owned upgrade cards as small taped icon scraps in the HUD's top band (hudCardStripSlots):
-  // right of the score note, left of the fullscreen button, never in the play field. Each
+  // right of the score note, left of the pause button, never in the play field. Each
   // family's cards sit together; every card of a completed set gets a small gold crayon loop.
   // New cards are slapped on with an ink burst; a proc flashes its card (flashCard).
   setCards(ownedIds) {
@@ -1075,7 +1227,7 @@ class HudScene extends Phaser.Scene {
     if (!badge || !badge.gfx || !badge.gfx.active) return;
     const now = this.time.now;
     if (!this.cardFlashAt) this.cardFlashAt = {};
-    if (now - (this.cardFlashAt[id] || -1e9) < 300) return;
+    if (!hudCardFlashAllowed(this.cardFlashAt, id, now)) return;
     this.cardFlashAt[id] = now;
     const card = cardById(id);
     const crayon = card ? cardCrayon(card.family) : UI_CRAYON.yellow;
@@ -1773,10 +1925,12 @@ class HudScene extends Phaser.Scene {
     for (const t of [this.bannerText, this.bannerSub]) t.setColor(ink).setStroke(edge, t.style.strokeThickness);
     for (const t of [this.comboWord, this.comboNum]) t.setStroke(edge, t.style.strokeThickness);
     if (this.chain >= 2) this.styleCombo(this.chain);
-    // The fullscreen button is a full-colour crayon scrap (its own dark under-strokes read on any
+    // The pause button is a full-colour crayon scrap (its own dark under-strokes read on any
     // page): a tint would turn it into a black square on the pale pages, so it is never tinted.
-    const icon = this.fullscreenButton && this.fullscreenButton.list && this.fullscreenButton.list[0];
+    const icon = this.pauseButton && this.pauseButton.list && this.pauseButton.list[0];
     if (icon && icon.isTinted) icon.clearTint();
+    // The cream scraps get a pencil edge on pale pages, so they do not melt into the paper.
+    for (const e of [this.speedScrapEdge, this.badgeScrapEdge]) if (e) e.setVisible(light);
     if (this.popLine && this.popLine.active) this.stylePop(this.popLine);
     // Set loops are redrawn in the deeper gold (known cards are not slapped in again).
     if (this.cardBadges.length) this.setCards(this.cardBadges.map(b => b.id));
@@ -1976,8 +2130,7 @@ class HudScene extends Phaser.Scene {
     const c = this.comet;
     const cometCircle = c ? [{ x: c.x, y: c.y, r: 24 }] : [];
     const U = HUD_PANEL_UNDER;
-    const under = (rect) => (hudCirclesUnder(rect, cometCircle, U.cometPad) ? U.comet
-      : hudCirclesUnder(rect, bodies, U.planetPad) ? U.planet : 1);
+    const under = (rect) => hudCornerFade(hudCirclesUnder(rect, cometCircle, U.cometPad), hudCirclesUnder(rect, bodies, U.planetPad));
     this.panelFadeTarget = under(HUD_PANEL);
     this.badgeFadeTarget = under(HUD_BADGE_PANEL);
     const cores = bodies.map(b => ({ x: b.x, y: b.y, r: b.core !== undefined ? b.core : b.r }));
@@ -2019,8 +2172,8 @@ class HudScene extends Phaser.Scene {
     this.warnText.setAlpha(level > 0 ? Math.min(1, 0.35 + level) * (0.45 + 0.55 * beat) : 0)
       .setScale(0.8 + level * 0.35 + beat * 0.18);
     if (level > 0) {
-      // Under the comet, so the eye is already there; always between the km/s block and the
-      // multiplier loop (half width at the biggest pulse scale).
+      // Under the comet, so the eye is already there; above the km/s block and the multiplier
+      // loop (half width at the biggest pulse scale).
       const halfW = (this.warnText.width * 1.35) / 2;
       const cx = hudNovaWarnX(this.comet ? this.comet.x : undefined, halfW);
       this.warnText.x += (cx - this.warnText.x) * Math.min(1, dt * 8);
@@ -2908,6 +3061,8 @@ function uiMakeHudTextures(scene) {
   // Torn cream scraps behind the km/s block and the x-loop (HUD_SCRAP).
   hudScrapTexture(scene, 'hud_speed_scrap', HUD_SCRAP.speed.w, HUD_SCRAP.speed.h);
   hudScrapTexture(scene, 'hud_badge_scrap', HUD_SCRAP.badge.w, HUD_SCRAP.badge.h);
+  hudScrapEdgeTexture(scene, 'hud_speed_scrap', HUD_SCRAP.speed.w, HUD_SCRAP.speed.h);
+  hudScrapEdgeTexture(scene, 'hud_badge_scrap', HUD_SCRAP.badge.w, HUD_SCRAP.badge.h);
   // Crayon scribble that is dense at the bottom edge and thins out upward (white, tinted red).
   uiSketchTexture(scene, 'hud_danger', GAME_WIDTH, 300, (ctx, shape, jitter) => {
     ctx.lineCap = 'round';

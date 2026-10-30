@@ -19,7 +19,7 @@ const config = {
   input: {
     activePointers: 2,                    // çoklu dokunma gerekirse artır
   },
-  scene: [BootScene, MenuScene, GameScene, HudScene, GameOverScene, CardScene, ShopScene, JournalScene],
+  scene: [BootScene, MenuScene, GameScene, HudScene, GameOverScene, CardScene, ShopScene, JournalScene, PauseScene],
 };
 
 const game = new Phaser.Game(config);
