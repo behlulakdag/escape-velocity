@@ -78,4 +78,6 @@
 - [x] Finger HOLD / LET GO tutorial (first runs).
 - Playtest feedback (3 people): first 10 s unclear ('where do I press', 'goes to weird places'), 'starts a bit too fast, ramp up slowly'; style praised.
 - Strict critic: Fun 3.4 / Visual 3.9 / Theme 3.6 -> off-screen late deaths, ceiling ~38-40k, finger reads badly, HUD clutter.
-- [ ] Running: first-run/fairness round (calm start + ramp, learner assist, readable finger, nova warning, no ceiling, declutter, hand-drawn fullscreen/mute buttons).
+- [x] First-run/fairness, slow-motion guided tutorial (2 planets, full lap, owner spec), ghost removed, speed-feel pass.
+- [x] SUBMITTED to the jam (Oct 30 ~21:00 TR, 20h58m before the deadline); entry shows on the entries page. Later butler pushes update the same page until the deadline.
+- [ ] Running: close the wall-climb exploit, pause button (replaces in-game fullscreen), rescue shake, redrawn supernova jaws. Then: recapture itch screenshots from the final build; feature freeze Oct 31 ~12:00.
