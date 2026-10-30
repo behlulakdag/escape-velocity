@@ -649,8 +649,21 @@ test('late orbit fairness: slower wave only right after a PERFECT, late only, fa
   assert.strictEqual(o.lateShare(10000), 1);
 });
 
-test('late green coyote time: none early, assistCoyote late', () => {
-  assert.strictEqual(o.assistCoyoteTime(3000), 0);
+test('late-release grace: every altitude, a release <= ~120 ms after the green snaps to its tangent', () => {
+  assert.strictEqual(o.assistCoyoteTime(0), o.TUNING.lateReleaseGrace);
+  assert.strictEqual(o.assistCoyoteTime(3000), o.TUNING.lateReleaseGrace);
+  assert.ok(o.TUNING.lateReleaseGrace >= 0.1 && o.TUNING.lateReleaseGrace <= 0.15);
+  // The 0.08 s green at 200-300 km/s is shorter than the grace.
+  assert.ok(o.assistCoyoteTime(3000) > 0.08);
+  const v = o.graceReleaseVelocity(0.6, -0.8, 2500);
+  assert.ok(Math.abs(v.vx - 1500) < 1e-6 && Math.abs(v.vy + 2000) < 1e-6, 'unit green tangent at the current speed');
+  const w = o.graceReleaseVelocity(3, -4, 100);
+  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - 100) < 1e-6, 'normalised');
+  assert.strictEqual(o.graceReleaseVelocity(0, 0, 100), null);
+  assert.strictEqual(o.graceReleaseVelocity(undefined, undefined, 100), null);
+});
+
+test('late green coyote time: assistCoyote late', () => {
   assert.strictEqual(o.assistCoyoteTime(20000), o.TUNING.assistCoyote);
   assert.ok(o.TUNING.assistCoyote > 0 && o.TUNING.assistCoyote <= 0.2);
 });
@@ -1083,4 +1096,43 @@ test('novaOrbitEta: a big orbit swinging down into a far-ish wave is not reporte
   // gap / wave = 2.4 s, but the orbit's low point (radius 400 below the planet) meets the front much sooner.
   const e = o.novaOrbitEta({ novaY: 1200, cometY: 0, planetY: 400, angle: -Math.PI / 2, radius: 400, dir: 1, spin: 4, wave: 500 });
   assert.ok(e < 2, String(e));
+});
+
+// GameScene.gravityLines (tutorial HOLD gravity lines data), loaded from the scene source with a stub Phaser.
+function loadGameSceneStatics() {
+  const fs = require('fs');
+  const path = require('path');
+  const vm = require('vm');
+  const context = vm.createContext({ Phaser: { Scene: class {} }, console });
+  for (const file of ['src/config.js', 'src/orbit.js', 'src/cards.js', 'src/scenes/GameScene.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
+  }
+  return vm.runInContext('GameScene', context);
+}
+
+test('gravityLines: 3 dashed curves from the planet ring to near the comet', () => {
+  const GS = loadGameSceneStatics();
+  const px = 400, py = 500, pr = 80, cx = 360, cy = 900;
+  const lines = GS.gravityLines(px, py, pr, cx, cy);
+  assert.strictEqual(lines.length, 3);
+  const d = Math.hypot(cx - px, cy - py);
+  for (const L of lines) {
+    assert.ok(Math.abs(Math.hypot(L.x1 - px, L.y1 - py) - (pr + GS.GRAVITY_RING_PAD)) < 1e-6, 'starts on the ring');
+    const toComet = Math.hypot(L.x2 - cx, L.y2 - cy);
+    assert.ok(toComet <= GS.GRAVITY_COMET_PAD + 20, 'ends near the comet: ' + toComet);
+    assert.ok(Math.hypot(L.x2 - L.x1, L.y2 - L.y1) > d - pr - GS.GRAVITY_COMET_PAD - 30, 'spans the gap');
+    assert.strictEqual(L.points.length, GS.GRAVITY_SAMPLES + 1);
+    assert.ok(Math.abs(L.points[0].x - L.x1) < 1e-9 && Math.abs(L.points[L.points.length - 1].y - L.y2) < 1e-9);
+  }
+  // The side lines bow out to opposite sides; the middle one is straight.
+  const side = (L) => (L.mx - (L.x1 + L.x2) / 2) * (cy - py) - (L.my - (L.y1 + L.y2) / 2) * (cx - px);
+  assert.ok(side(lines[0]) * side(lines[2]) < 0);
+  assert.ok(Math.abs(side(lines[1])) < 1e-6);
+});
+
+test('a late-release grace before ESCAPE VELOCITY never scores PERFECT', () => {
+  const { releaseCanPerfect } = require('../src/orbit.js');
+  assert.strictEqual(releaseCanPerfect(false, 0), true);
+  assert.strictEqual(releaseCanPerfect(true, 0), false);
+  assert.strictEqual(releaseCanPerfect(true, 0.4), true);
 });

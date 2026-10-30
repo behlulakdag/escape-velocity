@@ -184,7 +184,7 @@ test('card picks never crash or come up empty when few or no cards are left', ()
 });
 
 test('cardPickReady: only in free flight while climbing; tutorial run 1 waits for 1500 m and 25 s', () => {
-  const ok = { orbiting: false, scraping: false, vy: -500, firstRun: false, meters: 600, seconds: 9 };
+  const ok = { orbiting: false, scraping: false, vy: -500, firstRun: false, meters: 600, seconds: 16 };
   assert.ok(c.cardPickReady(ok));
   assert.ok(!c.cardPickReady(Object.assign({}, ok, { orbiting: true })));
   assert.ok(!c.cardPickReady(Object.assign({}, ok, { scraping: true })));
@@ -196,6 +196,24 @@ test('cardPickReady: only in free flight while climbing; tutorial run 1 waits fo
   assert.ok(!c.cardPickReady(Object.assign({}, first, { meters: 1200, seconds: 30 })));
   assert.ok(c.cardPickReady(Object.assign({}, first, { meters: 1500, seconds: 25 })));
   assert.ok(c.CARD_TUNING.pickNovaHold >= 1.5);
+});
+
+test('cardPickReady: no pick before pickMinSeconds, and pickMinGap s after the last one', () => {
+  const T = c.CARD_TUNING;
+  assert.ok(T.pickMinSeconds >= 15 && T.pickMinGap >= 12);
+  const st = { orbiting: false, scraping: false, vy: -500, firstRun: false, meters: 650, seconds: 7, lastPickAt: null };
+  assert.ok(!c.cardPickReady(st), 'a pick at 7 s / 650 m waits');
+  assert.ok(c.cardPickReady(Object.assign({}, st, { seconds: T.pickMinSeconds })));
+  // The reported run: picks at 25.1, 28.8, 32.5, 39.2 s. Now the second waits until 37.1 s.
+  assert.ok(!c.cardPickReady(Object.assign({}, st, { seconds: 28.8, lastPickAt: 25.1 })));
+  assert.ok(!c.cardPickReady(Object.assign({}, st, { seconds: 37, lastPickAt: 25.1 })));
+  assert.ok(c.cardPickReady(Object.assign({}, st, { seconds: 37.2, lastPickAt: 25.1 })));
+  assert.ok(c.cardPickReady(Object.assign({}, st, { seconds: 40 })), 'no lastPickAt = no gap rule');
+});
+
+test('Wall Kick card text names the upward rule', () => {
+  const wk = c.CARDS.find((x) => x.id === 'wallkick');
+  assert.ok(/upward/i.test(wk.desc), wk.desc);
 });
 
 test('cardProcPopAllowed: a proc pop is written the first procPopsPerRun times of a run only', () => {
@@ -216,4 +234,19 @@ test('cardNovaMul: the newest card eases its supernova cost in over pickNovaEase
   assert.ok(Math.abs(c.cardNovaMul(3, ease / 2) - (1 + 2.5 * per)) < 1e-9);
   assert.ok(Math.abs(c.cardNovaMul(3, ease) - (1 + 3 * per)) < 1e-9);
   assert.ok(Math.abs(c.cardNovaMul(3, null) - c.cardMods(['well', 'aero', 'spin']).novaSpeedMul) < 1e-9, 'long ago = full cost');
+});
+
+test('procPopDue: one proc pop per card per procPopGapMs, one icon of any card per procAnyGapMs', () => {
+  const T = c.CARD_TUNING;
+  assert.ok(T.procPopGapMs >= 3000);
+  assert.ok(c.procPopDue(0, undefined, null), 'never shown');
+  assert.ok(!c.procPopDue(1000, 0, null), 'Slingshot on every release: not every time');
+  assert.ok(c.procPopDue(T.procPopGapMs, 0, null));
+  assert.ok(!c.procPopDue(5000, undefined, 4500), 'another card just popped its icon');
+  assert.ok(c.procPopDue(5000 + T.procAnyGapMs, undefined, 5000));
+  // Catches every 0.8 s for 10 s: at most 4 pops of one card.
+  let last;
+  let pops = 0;
+  for (let t = 0; t <= 10000; t += 800) if (c.procPopDue(t, last, null)) { pops++; last = t; }
+  assert.ok(pops <= 4, 'pops: ' + pops);
 });

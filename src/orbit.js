@@ -153,7 +153,8 @@ const TUNING = {
   // PERFECT release gets orbitNovaGracePerfect s instead: waiting for gold is paid back on the next orbit.
   // (The wave sits at its leash late, so pushing it back would be undone next frame: time is the reward.)
   // Past BEYOND the help fades out again over orbitFairFadeSpan m, so the endless pages keep an end.
-  assistCoyote: 0.12,      // s a late green (and its gold) stays valid after the window swept past
+  assistCoyote: 0.12,      // s a late green (and its gold) stays valid after the window swept past (late game)
+  lateReleaseGrace: 0.12,  // ...and at every altitude (assistCoyoteTime)
   orbitNovaGrace: 0,
   orbitNovaGracePerfect: 1.2,
   orbitNovaMul: 0.9,
@@ -699,9 +700,20 @@ function tutorialLetGo(assist, orbitSeconds, eta, gap) {
   return orbitSeconds > TUNING.tutorialLetGoAfter || eta < TUNING.letGoEta || gap < TUNING.letGoGap;
 }
 
-// s a late green window still counts after it swept past (0 early, assistCoyote late; see GameScene).
+// s a green window still counts after it swept past (late-release grace, see GameScene): at 200-300 km/s the
+// green can last only ~0.08 s, so a release a beat late became a flat or downward fling. Only a green seen in
+// this orbit counts (GameScene tracks it), so blind tapping gains little. Early runs get lateReleaseGrace;
+// past ESCAPE VELOCITY it eases up to assistCoyote.
 function assistCoyoteTime(meters) {
-  return TUNING.assistCoyote * lateShare(meters);
+  return Math.max(TUNING.lateReleaseGrace, TUNING.assistCoyote * lateShare(meters));
+}
+
+// Release velocity for a late release inside the grace: the tangent of the last green (unit tx, ty) at the
+// current speed, so the fling leaves where the green line pointed instead of along the swept-past tangent.
+function graceReleaseVelocity(tx, ty, speed) {
+  const len = Math.hypot(tx, ty);
+  if (!(len > 0) || !isFinite(len)) return null;
+  return { vx: (tx / len) * speed, vy: (ty / len) * speed };
 }
 
 // Late-game share (0 up to ESCAPE VELOCITY, 1 from half a page past it): the late fairness rules ease in with it.
@@ -1153,6 +1165,12 @@ function nextMachTier(stampedTier, mach) {
   return tier;
 }
 
+// Whether a release can score PERFECT: a late-release grace (coyote) before ESCAPE VELOCITY cannot,
+// so tapping just after the green ended never pays better than releasing on time.
+function releaseCanPerfect(isCoyote, late) {
+  return !isCoyote || late > 0;
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { CATCH_SLOW, catchSlowScale, earlyHelpShare, orbitDangerLevel, wallKickRecharges, wallKickClimb, routineCatchPopAllowed, wallKickVelocity, wallPlanetSlide, wallPlanetSlideActive, WALL_PLANET_SLIDE, flightDecayShare, isLossPop, popAdmitted, POP_GATES, passPointInField, guidedFlingBlocked, guidedAimLinedUp, wallBounceVelocity, crawlRescueStep, popGapOk, novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { releaseCanPerfect, graceReleaseVelocity, CATCH_SLOW, catchSlowScale, earlyHelpShare, orbitDangerLevel, wallKickRecharges, wallKickClimb, routineCatchPopAllowed, wallKickVelocity, wallPlanetSlide, wallPlanetSlideActive, WALL_PLANET_SLIDE, flightDecayShare, isLossPop, popAdmitted, POP_GATES, passPointInField, guidedFlingBlocked, guidedAimLinedUp, wallBounceVelocity, crawlRescueStep, popGapOk, novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

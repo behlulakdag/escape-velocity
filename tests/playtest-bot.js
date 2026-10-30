@@ -25,7 +25,7 @@
 // rhythmFast = blind rhythm tapping: holds 180 ms, lets go for 180 ms, forever, ignoring the screen.
 // humanLike = a returning human: holds 10-15 frames after a planet comes within ~110 px of its surface, and
 //   lets go 150-450 ms after the aim first turned green (reaction lag: it may already have swept past), or
-//   after 3 s.
+//   after 3 s (an auto-caught orbit with no finger on it gets a tap then).
 // pinball = Wall Kick exploit check: grabs like careful, lets go when the orbit tangent is flat sideways
 //   (|unit vy| < 0.12), aimed or not.
 // Orbit warning lead: every supernova death while orbiting reports orbitWarn (s a warning was up before it:
@@ -94,9 +94,11 @@
     let tutorialDoneAt = null;   // run s the guided tutorial finished (NICE!), null = not finished
     let rescues = 0;
     let lastPickAt = -1e9;
+    let minPickGap = null;       // shortest run s between two card picks (null = fewer than 2 picks)
     s.pickCard = function (id, granted) {
       if (!granted) {
         if (firstPickAt === null) firstPickAt = Math.round(this.elapsed * 10) / 10;
+        else minPickGap = Math.min(minPickGap === null ? 1e9 : minPickGap, Math.round((this.elapsed - lastPickAt) * 10) / 10);
         lastPickAt = this.elapsed;
       }
       return proto.pickCard.call(this, id, granted);
@@ -286,7 +288,11 @@
         reactFrames = -1;
         if (humanGreenMs < 0 && s.currentAssist()) { humanGreenMs = 0; humanLag = 150 + Math.random() * 300; }
         else if (humanGreenMs >= 0) humanGreenMs += 16.67;
-        if (s.isHolding && ((humanGreenMs >= 0 && humanGreenMs >= humanLag) || held > 3000)) s.releaseHold();
+        if ((humanGreenMs >= 0 && humanGreenMs >= humanLag) || held > 3000) {
+          // An auto-caught orbit (onboarding) has no finger on it: a human taps to let go.
+          if (!s.isHolding) s.pressHold();
+          s.releaseHold();
+        }
       } else if (style === 'pinball' && s.orbit) {
         left = s.orbitPlanet;
         held += 16.67;
@@ -403,7 +409,7 @@
     const slowShare = flightFrames ? slowFrames / flightFrames : 0;
     const wallLossShare = totalLoss > 0 ? Math.min(1, wallLoss / totalLoss) : 0;
     const hudShare = flightFrames ? hudFrames / flightFrames : 0;
-    return { orbitWarn, hudShare, crawlCalls, crawlReach, crawlCatch, slowShare, cruiseKms, wallLossShare, pinballsAny, pickCrawlDeath, tutorialDoneAt, collapses, pinballs, wallHits: wallHits.length, pickDeath10, pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
+    return { orbitWarn, hudShare, crawlCalls, crawlReach, crawlCatch, slowShare, cruiseKms, wallLossShare, pinballsAny, pickCrawlDeath, tutorialDoneAt, collapses, pinballs, wallHits: wallHits.length, pickDeath10, pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, minPickGap, rescues, secondWinds, milestones };
   };
 
   window.playtestSummary = (styles, runsEach, maxSeconds) => {
@@ -423,6 +429,9 @@
         rescues: runs.reduce((n, r) => n + r.rescues, 0),
         secondWinds: runs.reduce((n, r) => n + r.secondWinds, 0),
         milestones: runs.reduce((n, r) => n + r.milestones, 0),
+        // Card pick spacing: earliest first pick and the shortest gap between two picks over all runs.
+        minFirstPick: runs.some((r) => r.firstPickAt !== null) ? Math.min(...runs.filter((r) => r.firstPickAt !== null).map((r) => r.firstPickAt)) : null,
+        minPickGap: runs.some((r) => r.minPickGap !== null) ? Math.min(...runs.filter((r) => r.minPickGap !== null).map((r) => r.minPickGap)) : null,
         reachedCard: runs.filter((r) => r.firstPickAt !== null).length + '/' + runs.length,
         reached1500: runs.filter((r) => r.alt >= 1500).length + '/' + runs.length,
         medianSeconds: median(runs.map((r) => r.seconds)),
@@ -483,7 +492,7 @@
   window.playtestTargets = (runsEach, groups, only) => {
     const n = runsEach || 30;
     const out = {};
-    const keys = ['medianSeconds', 'seconds', 'reached500', 'reached40k', 'died60', 'wallHitsPerMin', 'pinballs', 'collapses', 'crawlRescue', 'medianAlt', 'orbitWarnMin', 'orbitWarnMed', 'minWarnBeforeDeath'];
+    const keys = ['medianSeconds', 'seconds', 'reached500', 'reached40k', 'died60', 'wallHitsPerMin', 'pinballs', 'collapses', 'crawlRescue', 'medianAlt', 'orbitWarnMin', 'orbitWarnMed', 'minWarnBeforeDeath', 'minFirstPick', 'minPickGap'];
     const run = (name, styles, max, start) => {
       if (groups && groups.indexOf(name) < 0) return;
       const list = only ? styles.filter((st) => only.indexOf(st) >= 0) : styles;

@@ -259,6 +259,8 @@ class GameScene extends Phaser.Scene {
     this.latchNovaFloor = null; // novaY the leash may not pull above during this orbit (latch fairness push)
     this.flightT = 0;           // s of the current free flight (Aerodynamic proc)
     this.procAt = {};           // card id -> time.now of its last proc doodle (cardProc)
+    this.procAnyAt = null;      // time.now of the last proc icon of any card
+    this.procWordAt = {};       // card id -> time.now of its last written proc pop (cardProcPop)
     this.firstNoteT = -1;       // intro: real s the first-run 'planets are friends' note has been up (-1 = not shown)
     this.deathShaken = false;
     // The scene instance is reused between runs, so this must be reset or later runs skip launch().
@@ -825,6 +827,7 @@ class GameScene extends Phaser.Scene {
     this.popText(card.name.toUpperCase() + '!', GameScene.hex(color), { size: 40, duration: 900 });
     // The card's name at the pick counts as the first of its written proc pops (SLINGSHOT! 3x in 6 s).
     this.procPops[id] = Math.max(1, this.procPops[id] || 0);
+    if (!this.headless) this.procWordAt[id] = this.time.now;
     this.burst(this.comet.x, this.comet.y, color, 14, 150);
     if (this.hud.setCards) this.hud.setCards(this.ownedCards.slice());
     for (const family of newSets) {
@@ -1271,13 +1274,22 @@ class GameScene extends Phaser.Scene {
   fling(overspeed) {
     this.lastFlungFrom = this.orbitPlanet;   // crawl rescue: the planet just left does not count as 'in reach'
     this.flightNo = (this.flightNo || 0) + 1; // black holes warp a flight once each (applyBlackHoles)
-    const v = tangentVelocity(this.orbit, this.speed);
+    let v = tangentVelocity(this.orbit, this.speed);
     // A guided tutorial LET GO: steered close past the next planet, with a speed kick on the way.
     const guidedFling = !!this.guidedForce && !overspeed;
     const assist = guidedFling ? this.guidedFlingAssist() : this.currentAssist();
     this.guidedForce = null;
+    // Late-release grace: a release just after the green swept past leaves along that green's tangent. Not past
+    // ESCAPE VELOCITY, where the late coyote keeps its sharp homing turn instead (snapping there made a clean
+    // assisted climb endless: anyAssist median 470 s instead of ~220 s).
+    if (assist && assist.coyote && !overspeed && lateShare(this.bestAltitude) <= 0) {
+      v = graceReleaseVelocity(assist.tx, assist.ty, this.speed) || v;
+    }
     this.wallKickPopShown = false;   // WALL KICK! is written at most once per flight
-    const perfect = !overspeed && assist && assist.angle < this.perfectAngle();
+    // A grace release before ESCAPE VELOCITY never scores PERFECT: otherwise tapping just after the green
+    // ended (best angle remembered) paid better than releasing on time. Late, the coyote keeps its gold.
+    const perfect = !overspeed && assist && releaseCanPerfect(!!assist.coyote, lateShare(this.bestAltitude))
+      && assist.angle < this.perfectAngle();
     if (perfect) {
       this.addMomentumSpeed(TUNING.perfectBonus);
       // Wide Perfect: a PERFECT only its wider window made.
@@ -1459,7 +1471,7 @@ class GameScene extends Phaser.Scene {
     const k = this.assistCoyote;
     if (live) {
       if (!k || k.planet !== live.planet || k.t > 0 || live.angle < k.angle) {
-        this.assistCoyote = { planet: live.planet, aimX: live.aimX, aimY: live.aimY, angle: live.angle, t: 0 };
+        this.assistCoyote = { planet: live.planet, aimX: live.aimX, aimY: live.aimY, angle: live.angle, tx: v.vx, ty: v.vy, t: 0 };
       }
     } else if (k) {
       k.t += dt;
@@ -1476,7 +1488,7 @@ class GameScene extends Phaser.Scene {
     // Late: a green that just swept past still counts for a moment (its best angle, gold included).
     const k = this.assistCoyote;
     if (k && k.t <= assistCoyoteTime(this.bestAltitude) && this.planets.indexOf(k.planet) >= 0) {
-      return { planet: k.planet, aimX: k.aimX, aimY: k.aimY, angle: k.angle, coyote: true };
+      return { planet: k.planet, aimX: k.aimX, aimY: k.aimY, angle: k.angle, tx: k.tx, ty: k.ty, coyote: true };
     }
     // Early help: in the first seconds of a run a wider cone still steers a release onto a planet above.
     const early = this.learning ? 0 : earlyHelpShare(this.elapsed);
@@ -1582,7 +1594,8 @@ class GameScene extends Phaser.Scene {
       this.speed = step.speed;
       this.orbitHeldT += dt;
       this.closeOrbitNow = orbitCloseness(this.orbit.radius, this.orbitPlanet.radius);
-      if (this.closeOrbitNow > GameScene.CLOSE_ORBIT_AT) this.closerFaster();
+      // (a CLOSER = FASTER held back by a banner or stamp shows in the next orbit that is clear of them)
+      if (this.closeOrbitNow > GameScene.CLOSE_ORBIT_AT || this.closerQueued) this.closerFaster();
       this.trackAssistCoyote(dt);
       if (this.mods.orbitGainMul > 1 && this.speed < this.speedCap() - 1) {
         // Overdrive: teal sparks spray off the comet while it spins up.
@@ -1700,7 +1713,9 @@ class GameScene extends Phaser.Scene {
     // Guided tutorial: the wave is always in sight at the bottom of the screen, like in a normal run (but never
     // closer than GUIDED_NOVA_GAP to the comet while a step or the lap holds it).
     if (this.guided) {
-      this.novaY = Math.min(this.novaY, this.anchorBottom() - GameScene.GUIDED_NOVA_SHOW);
+      // The very first HOLD shows the villain clearly (its flame lip and the top of its face), not a sliver.
+      const firstHold = this.guided.round === 1 && this.guided.phase === 'hold';
+      this.novaY = Math.min(this.novaY, this.anchorBottom() - (firstHold ? GameScene.GUIDED_NOVA_SHOW_FIRST : GameScene.GUIDED_NOVA_SHOW));
       if (this.guidedFreezesNova()) this.keepGuidedNovaGap();
     }
     const gap = this.novaY - this.comet.y;
@@ -1798,6 +1813,7 @@ class GameScene extends Phaser.Scene {
     const ready = cardPickReady({
       orbiting: !!this.orbit, scraping: !!this.scrape, vy: this.comet.vy,
       firstRun: this.tutorialOn && this.tutorialRunsBefore === 0, meters: this.bestAltitude, seconds: this.elapsed,
+      lastPickAt: this.lastCardPickAt,
     });
     if (!ready) return;
     this.picksOwed--;
@@ -2325,12 +2341,23 @@ class GameScene extends Phaser.Scene {
 
   // First close orbit of the player's life (once ever): a hand-lettered CLOSER = FASTER stamp by the comet and
   // a bright glow along the orbit. Waits while the tutorial or a card pick owns the screen.
+  closerBlocked() {
+    if (this.time.now - (this.lastStampAt || -1e9) < GameScene.CLOSER_AFTER_STAMP) return true;
+    if (this.time.now - (this.zonePulseAt || -1e9) < GameScene.CLOSER_AFTER_BANNER) return true;
+    const hud = this.hud;
+    if (!hud) return false;
+    if (typeof hud.bannerUp === 'function' && hud.bannerUp()) return true;
+    return !!(hud.milestone && hud.milestone.active !== false);
+  }
+
   closerFaster() {
     if (this.closerSeen || this.headless || this.guidedBusy() || this.cardPick || this.guided) return;
-    // Never on top of another stamp (NICE!, MACH...): it waits for the screen to clear.
-    if (this.time.now - (this.lastStampAt || -1e9) < GameScene.CLOSER_AFTER_STAMP) return;
     if (this.closerSeen === undefined) this.closerSeen = closerFasterSeen();
     if (this.closerSeen) return;
+    // Never on top of another stamp (NICE!, MACH...), a zone banner or a set bonus: it is queued
+    // (closerQueued) and shows in this or a later orbit once the screen is clear.
+    if (this.closerBlocked()) { this.closerQueued = true; return; }
+    this.closerQueued = false;
     this.closerSeen = true;
     saveCloserFasterSeen();
     this.closerGlowT = GameScene.CLOSER_GLOW_TIME;
@@ -2343,16 +2370,19 @@ class GameScene extends Phaser.Scene {
   }
 
   // A card's effect fired: a short crayon burst on the comet in its family colour, and the HUD pops the card's
-  // small icon doodle above the comet (hud.cardProc, screen coords). At most once per PROC_GAP ms per card.
+  // small icon doodle above the comet (hud.cardProc, screen coords). The burst plays every time; the HUD pop
+  // only once per PROC_GAP ms per card and PROC_ANY_GAP ms across cards (Slingshot / Overdrive / Gravity Well /
+  // Tight Spin fire on nearly every catch or release: a pop each time was noise).
   cardProc(id) {
     if (this.headless) return;
     const card = cardById(id);
     if (!card) return;
     const now = this.time.now;
-    if (now - (this.procAt[id] || -1e9) < GameScene.PROC_GAP) return;
-    this.procAt[id] = now;
     const color = CARD_FAMILIES[card.family].color;
     this.burst(this.comet.x, this.comet.y, color, 8, 90);
+    if (!procPopDue(now, this.procAt[id], this.procAnyAt)) return;
+    this.procAt[id] = now;
+    this.procAnyAt = now;
     if (this.hud && typeof this.hud.cardProc === 'function') {
       const sc = this.worldToScreen(this.comet.x, this.comet.y);
       this.hud.cardProc(id, sc.x, sc.y);
@@ -2385,10 +2415,13 @@ class GameScene extends Phaser.Scene {
   // after that only the card's icon flash in the HUD (hud.flashCard, when it has one) and a small ink burst.
   cardProcPop(cardId, label, color, opts) {
     const shown = this.procPops[cardId] || 0;
-    // The icon doodle pops every time (cardProc); the words only the first procPopsPerRun times.
+    // The burst plays every time (cardProc, its icon rate-limited); the words only the first procPopsPerRun
+    // times, and never within PROC_GAP of this card's last written pop.
     if (cardById(cardId)) this.cardProc(cardId);
-    if (cardProcPopAllowed(shown)) {
+    const now = this.headless ? 0 : this.time.now;
+    if (cardProcPopAllowed(shown) && procPopDue(now, this.procWordAt[cardId], null)) {
       this.procPops[cardId] = shown + 1;
+      this.procWordAt[cardId] = now;
       return this.popText(label, GameScene.hex(color), opts);
     }
     if (this.headless || cardById(cardId)) return;
@@ -3279,14 +3312,17 @@ GameScene.SLIDE_RUMBLE = 0.005;       // share of the screen width the camera ji
 GameScene.SLIDE_TIME = 0.5;
 GameScene.CLOSE_ORBIT_AT = 0.7;      // orbitCloseness from which the close-orbit bonus counts (CLOSE ORBIT!, CLOSER = FASTER)
 GameScene.CLOSER_AFTER_STAMP = 1400; // ms after another stamp before CLOSER = FASTER may show
+GameScene.CLOSER_AFTER_BANNER = 2600; // ms after a zone banner went up before CLOSER = FASTER may show
 GameScene.CLOSER_GLOW_TIME = 1.6;    // s the first close orbit's glow is extra bright
 GameScene.AERO_PROC_AT = 1;          // s into a free flight when Aerodynamic's proc doodle shows (once per flight)
 GameScene.STEER_WALL_SAVE = 0.2;     // s after an aimed release in which its first side wall keeps the steer...
 GameScene.STEER_WALL_FLAT = 0.3;     // ...when the release tangent climbed less steeply than this (unit vy)
-GameScene.PROC_GAP = 400;            // ms between two proc doodles of one card
+GameScene.PROC_GAP = CARD_TUNING.procPopGapMs;       // ms between two proc pops of one card
+GameScene.PROC_ANY_GAP = CARD_TUNING.procAnyGapMs;   // ms between two proc icons of any cards
 GameScene.EARLY_CURL_UNTIL = 0.35;   // early help curls a flight until it climbs at this share of its speed
 GameScene.GUIDED_NOVA_GAP = 260;     // px the tutorial wave stays below the comet / orbit low point during a step or lap
 GameScene.GUIDED_NOVA_SHOW = 70;     // px of the tutorial wave kept in sight above the screen bottom
+GameScene.GUIDED_NOVA_SHOW_FIRST = 135; // ...during the first HOLD step (~90 screen px: flame lip + top of the face)
 GameScene.FIRST_NOTE_TIME = 1.9;     // s the first-run 'planets are your friends' note holds the launch
 GameScene.FIRST_NOTE_TEXT = 'Planets are your friends: grab them, swing, let go!';          // s a rescued / card-pick planet takes to slide into reach
 GameScene.SLIDE_MAX_SPEED = 1200;   // px/s: a card pick slides a planet in only for a comet slower than this
@@ -3309,22 +3345,40 @@ GameScene.isPalePage = (zone) => {
   return 0.2126 * ((p >> 16) & 255) + 0.7152 * ((p >> 8) & 255) + 0.0722 * (p & 255) > 128;
 };
 
-// 3 dashed gravity lines from planet (px, py, radius pr) toward the comet (cx, cy), all in screen px:
-// [{ x1, y1, x2, y2 }], fanned a little round the planet-to-comet direction, stopping short of the comet.
+// 3 dashed gravity curves from the planet's ring (px, py, radius pr) to near the comet (cx, cy), all in screen px:
+// [{ x1, y1, x2, y2, mx, my, points }]: x1/y1 on the ring, x2/y2 just short of the comet, mx/my the quadratic
+// control point (the side curves bow outward, the middle one is straight) and points the curve sampled
+// (GRAVITY_SAMPLES + 1 points, ring end first) for a dashed ink pen.
+GameScene.GRAVITY_RING_PAD = 8;     // px off the planet's surface where the lines start
+GameScene.GRAVITY_COMET_PAD = 40;   // px short of the comet's center where they end
+GameScene.GRAVITY_SAMPLES = 10;
 GameScene.gravityLines = (px, py, pr, cx, cy) => {
   const dx = cx - px;
   const dy = cy - py;
   const d = Math.hypot(dx, dy) || 1;
   const base = Math.atan2(dy, dx);
+  const nx = -dy / d;
+  const ny = dx / d;
   const lines = [];
   for (const k of [-1, 0, 1]) {
     const a = base + k * 0.32;
-    const start = pr + 12;
-    const end = Math.max(start + 30, d - 46 - Math.abs(k) * 30);
-    lines.push({
-      x1: px + Math.cos(a) * start, y1: py + Math.sin(a) * start,
-      x2: px + Math.cos(base + k * 0.12) * end, y2: py + Math.sin(base + k * 0.12) * end,
-    });
+    const start = pr + GameScene.GRAVITY_RING_PAD;
+    const x1 = px + Math.cos(a) * start;
+    const y1 = py + Math.sin(a) * start;
+    // Ends fan a little round the comet so the three lines stay apart.
+    const reach = Math.max(start + 30, d - GameScene.GRAVITY_COMET_PAD);
+    const x2 = px + Math.cos(base) * reach + nx * k * 18;
+    const y2 = py + Math.sin(base) * reach + ny * k * 18;
+    const bow = k * Math.min(60, d * 0.12);
+    const mx = (x1 + x2) / 2 + nx * bow;
+    const my = (y1 + y2) / 2 + ny * bow;
+    const points = [];
+    for (let i = 0; i <= GameScene.GRAVITY_SAMPLES; i++) {
+      const t = i / GameScene.GRAVITY_SAMPLES;
+      const u = 1 - t;
+      points.push({ x: u * u * x1 + 2 * u * t * mx + t * t * x2, y: u * u * y1 + 2 * u * t * my + t * t * y2 });
+    }
+    lines.push({ x1, y1, x2, y2, mx, my, points });
   }
   return lines;
 };

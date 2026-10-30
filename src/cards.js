@@ -17,7 +17,7 @@ const CARDS = [
   { id: 'sling', family: 'fling', rarity: 'rare', name: 'Slingshot', desc: '+10% speed every release', icon: 'sling' },
   { id: 'chain', family: 'fling', rarity: 'legendary', name: 'Chain Reaction', desc: 'PERFECT chains add speed', icon: 'chain' },
   { id: 'aero', family: 'flight', rarity: 'common', name: 'Aerodynamic', desc: '30% less speed loss', icon: 'aero' },
-  { id: 'wallkick', family: 'flight', rarity: 'rare', name: 'Wall Kick', desc: 'Aimed flings: 2 wall kicks up', icon: 'wallkick' },
+  { id: 'wallkick', family: 'flight', rarity: 'rare', name: 'Wall Kick', desc: 'Upward flings: walls kick you up', icon: 'wallkick' },
   { id: 'afterburner', family: 'flight', rarity: 'legendary', name: 'Afterburner', desc: 'No speed loss after PERFECT', icon: 'afterburner' },
   { id: 'heatshield', family: 'shield', rarity: 'common', name: 'Heat Shield', desc: 'First hit each zone: free', icon: 'heatshield' },
   { id: 'armor', family: 'shield', rarity: 'rare', name: 'Tail Armor', desc: 'Smash asteroids for speed', icon: 'armor' },
@@ -63,8 +63,13 @@ const CARD_TUNING = {
   pickNovaHold: 1.5,          // real s the supernova holds still after a pick (on top of the slow-motion ease)
   firstRunPickMeters: 1500,   // tutorial run 1: the first pick waits for HYPERSONIC...
   firstRunPickSeconds: 25,    // ...and 25 s into the run, whichever is later
-  pickGap: 4,                 // real s between two queued picks
+  pickGap: 4,                 // real s between two queued picks (on top of pickMinGap below)
+  pickMinSeconds: 15,         // no pick opens before this many run s (a pick at 7 s cut the first fling chain)...
+  pickMinGap: 12,             // ...nor within this many run s of the last one (25, 29, 33, 39 s felt like constant
+                              // stops); zone picks earned meanwhile stay queued (picksOwed), none is lost
   procPopsPerRun: 2,          // a card's proc pop (SLINGSHOT!, WALL KICK!...) is written this many times per run
+  procPopGapMs: 3000,         // a card's proc icon / pop shows at most once per this many ms (the burst every time)...
+  procAnyGapMs: 1200,         // ...and at most one proc icon of any card in this many ms (one on screen at a time)
 };
 
 // Whether a card's proc pop is written out (shownBefore = times it was already written this run); after
@@ -73,13 +78,25 @@ function cardProcPopAllowed(shownBefore) {
   return (shownBefore || 0) < CARD_TUNING.procPopsPerRun;
 }
 
+// Whether a card proc's icon / pop may show at `now` (ms): lastAt = this card's last one, anyAt = the last one
+// of any card (null / undefined = never; anyAt null skips the cross-card check).
+function procPopDue(now, lastAt, anyAt) {
+  if (typeof lastAt === 'number' && now - lastAt < CARD_TUNING.procPopGapMs) return false;
+  if (typeof anyAt === 'number' && now - anyAt < CARD_TUNING.procAnyGapMs) return false;
+  return true;
+}
+
 // Whether a queued card pick may open now. A pick opened mid-orbit leaves the comet spinning with no
 // finger and no prompt, and the down swing feeds it to the wave, so picks only open in free flight while
 // climbing. firstRun (tutorial run 1): not before firstRunPickMeters AND firstRunPickSeconds.
-// st = { orbiting, scraping, vy (px/s, - = up), firstRun, meters, seconds }.
+// Every run: not before pickMinSeconds, and pickMinGap run s after the last pick (lastPickAt, null = none yet).
+// st = { orbiting, scraping, vy (px/s, - = up), firstRun, meters, seconds, lastPickAt }.
 function cardPickReady(st) {
   const s = st || {};
   if (s.orbiting || s.scraping || !(s.vy < 0)) return false;
+  const seconds = s.seconds || 0;
+  if (seconds < CARD_TUNING.pickMinSeconds) return false;
+  if (typeof s.lastPickAt === 'number' && seconds - s.lastPickAt < CARD_TUNING.pickMinGap) return false;
   if (s.firstRun && ((s.meters || 0) < CARD_TUNING.firstRunPickMeters || (s.seconds || 0) < CARD_TUNING.firstRunPickSeconds)) return false;
   return true;
 }
@@ -168,5 +185,5 @@ function cardNovaMul(ownedCount, secondsSincePick) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { cardNovaMul, cardProcPopAllowed, CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardPickReady, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
+  module.exports = { procPopDue, cardNovaMul, cardProcPopAllowed, CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardPickReady, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
 }
