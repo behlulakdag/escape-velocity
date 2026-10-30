@@ -83,4 +83,4 @@
 - [x] Wall-climb exploit closed (mirror walls), pause (PauseScene, auto-pause), rescue shake, redrawn jaws, card-pick tap fix, visible tutorial flame, planets-are-friends onboarding, light catch slow-down, CLOSER = FASTER, card procs, picks 12 s apart, grace without PERFECT. Strict judge 4.0 / 4.4 / 4.3. Deployed build #2255339 (Oct 30 ~23:55).
 - [x] itch description rewritten (no duplicates, one-line controls pitch, planets-are-friends how-to, AI disclosure as one credits line).
 - [ ] Oct 31 morning: owner phone test, recapture itch screenshots/GIF from the final build, last bug fixes only. Feature freeze 12:00, nothing after ~15:00.
-- Post-jam ideas (owner's friends): shop backgrounds, a mission/level mode, Play Store release, personal top-5 list.
+- Post-jam ideas (owner's friends): shop backgrounds, a mission/level mode, Play Store release, personal top-5 list, language support (Turkish first; auto-detect phone language). Not for the jam: judges play in English and the hand-lettered layouts are fitted to English text.
