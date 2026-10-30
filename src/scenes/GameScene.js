@@ -331,7 +331,8 @@ class GameScene extends Phaser.Scene {
     // Learning window (wide assist, soft bumps, crawling wave): see learningWindowOpen in src/orbit.js.
     this.learning = this.tutorialOn;
     this.learnGoodCycles = 0;
-    this.learnEndedIdle = false;
+    this.learnEndFull = false;   // the learning window ended by finishing the tutorial or by not pressing: the wave returns at full speed
+    this.guidedDone = false;     // the guided tutorial finished in this run (NICE!)
     this.lastPressT = 0;         // run s of the last press (learning window: no input after the tutorial ends it)
     this.holdAimed = null;       // the current hold started near a planet (null = set without pressHold)
     this.learnEndT = null;       // run s the learning window closed (the wave eases up from its crawl)
@@ -354,6 +355,13 @@ class GameScene extends Phaser.Scene {
   // Closes the learning window for the rest of the run once any of its limits is hit.
   updateLearning() {
     if (!this.learning) return;
+    // Owner: once the guided tutorial is over the supernova comes for real, no more slow wave.
+    if (!this.guided) {
+      this.learning = false;
+      this.learnEndT = this.elapsed;
+      this.learnEndFull = this.guidedDone;
+      return;
+    }
     this.learning = learningWindowOpen({
       tutorial: this.tutorialOn, seconds: this.elapsed, meters: this.bestAltitude,
       goodCycles: this.learnGoodCycles, ownCatches: this.ownCatches,
@@ -363,7 +371,7 @@ class GameScene extends Phaser.Scene {
     if (!this.learning) {
       this.learnEndT = this.elapsed;
       // Ended by not pressing: the wave skips the rest of the tutorial run's long calm start too.
-      this.learnEndedIdle = !this.guided && !this.isHolding && this.elapsed - this.lastPressT >= TUNING.learnNoInputSeconds;
+      this.learnEndFull = !this.guided && !this.isHolding && this.elapsed - this.lastPressT >= TUNING.learnNoInputSeconds;
     }
   }
 
@@ -551,6 +559,7 @@ class GameScene extends Phaser.Scene {
     this.guidedForce = this.guidedLiveTarget();
     this.guidedTarget = null;
     this.guided = null;
+    this.guidedDone = true;
     this.tutorialWaiting = '';
     if (!this.headless) saveGuidedTutorialDone();
     // The LET GO overlay goes first; the HUD stamps NICE! once (showTutorialStep('nice')).
@@ -1617,14 +1626,14 @@ class GameScene extends Phaser.Scene {
       this.comet.x = this.orbitPlanet.x + Math.cos(this.orbit.angle) * this.orbit.radius;
       this.comet.y = this.orbitPlanet.y + Math.sin(this.orbit.angle) * this.orbit.radius;
       this.capTime = this.speed >= this.speedCap() - 1 ? this.capTime + dt : 0;
-      const u = tangentVelocity(this.orbit, 1);
-      if (overspeedFling(this.capTime, u.vx, u.vy)) this.fling(true);
+      // Owner: the game never lets go for the player (the old overspeed fling at the speed cap felt like a bug).
+      // Holding forever is still no strategy: an orbit does not climb, so the supernova catches it.
     } else {
       // Aerodynamic cuts the decay; Afterburner (after a PERFECT) and Slipstream (climbing) stop it.
       const noDecay = this.afterburnerT > 0 || (this.mods.climbNoDecay && this.comet.vy < 0);
       // A first-run player who stopped pressing after the tutorial: the tutorial's fast fling must not coast
       // them up the page for 12 s; it dies down so the wave comes and asks for a press.
-      const idleCoast = this.learnEndedIdle && this.elapsed - this.lastPressT >= TUNING.learnNoInputSeconds ? TUNING.idleCoastDecayMul : 1;
+      const idleCoast = this.learnEndFull && this.elapsed - this.lastPressT >= TUNING.learnNoInputSeconds ? TUNING.idleCoastDecayMul : 1;
       if (!noDecay) this.speed -= flightDecay(altitude, this.speed) * this.mods.flightDecayMul * idleCoast * dt;
       // High-speed drag: an unearned 800 km/s bleeds away (Afterburner / Slipstream only shield it below 600).
       this.speed -= highSpeedDrag(this.speed, this.mods.flightDecayMul, noDecay) * dt;
@@ -1775,7 +1784,7 @@ class GameScene extends Phaser.Scene {
   // Wave speed right now (px/s): calm start, the learning crawl on tutorial runs, cards, hard cap.
   currentNovaSpeed() {
     let calm = novaCalmFactor(this.elapsed, this.learning, this.tutorialOn);
-    if (this.learnEndT !== null && !this.learning) calm = learnExitFactor(this.learnEndedIdle ? 1 : calm, this.elapsed - this.learnEndT);
+    if (this.learnEndT !== null && !this.learning) calm = learnExitFactor(this.learnEndFull ? 1 : calm, this.elapsed - this.learnEndT);
     const sincePick = this.lastCardPickAt === null ? null : this.elapsed - this.lastCardPickAt;
     return novaSpeedFor(this.elapsed, this.bestAltitude, cardNovaMul(this.ownedCards.length, sincePick), calm, !!this.tutorialOn);
   }
