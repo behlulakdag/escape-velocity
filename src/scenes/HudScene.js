@@ -487,7 +487,18 @@ function hudNovaNear(novaScreenY) {
 
 // MACH readout and tier stamps. 343 m/s = Mach 1 (sea level); km/s * 1000 / 343.
 // dy: MACH line under the underline; with HUD_BAND_LIFT its bottom edge stays >= HUD_SAFE_BOTTOM up.
-const HUD_MACH = { tiers: [500, 1000, 1500, 2000, 2500], size: 28, dy: 30, afterMs: 150, preemptMs: 450 };
+// holdMs / fadeMs: a MACH stamp is shorter than a chain stamp (the readout under it keeps moving);
+// staleRatio: once the readout is below tier * staleRatio the stamp is old news: a waiting one is
+// dropped and one on screen wipes off at once.
+const HUD_MACH = { tiers: [500, 1000, 1500, 2000, 2500], size: 28, dy: 30, afterMs: 150, preemptMs: 450, holdMs: 380, fadeMs: 160, staleRatio: 0.85 };
+
+// Pure helper (tested): the MACH readout (machNow) has dropped too far below a tier's stamp.
+function hudMachStampStale(tier, machNow) {
+  const t = Number(tier);
+  const m = Number(machNow);
+  if (!(t > 0) || !isFinite(m)) return false;
+  return m < t * HUD_MACH.staleRatio;
+}
 const HUD_SAFE_BOTTOM = 106;   // px at the bottom edge kept free of important text
 
 // Pure helper (tested): Mach number for a km/s readout (rounded, never negative / NaN).
@@ -564,7 +575,7 @@ const HUD_STEP = {
   feather: 0.74,         // brush: fully clear inside this fraction of its radius, soft outside
   handScale: 0.9,        // hand texture 244 px tall -> ~220 px on screen
   lean: 0.2,             // rad: the hand trails down-right of the tip
-  scales: [1, 0.85, 0.7],  // tried when the full-size box has no clean spot
+  scales: [1, 0.93, 0.85, 0.7],  // tried when the full-size box has no clean spot
   grid: 24,              // placement search step (px)
   pressMs: 1000,         // press cycle ('hold')
   liftMs: 1150,          // lift + arrow cycle ('letgo')
@@ -579,11 +590,15 @@ const HUD_STEP = {
   arrowTargetR: 50,      // target screen radius when GameScene does not pass tr
   // HOLD: 'grab the planet!' (sub) and a smaller 'hold anywhere' (sub2) under it: planets are
   // friends to grab, not obstacles (a playtester dodged them).
-  word: { holdSize: 124, letgoSize: 108, subSize: 36, subY: 102, sub2Size: 25, sub2Y: 142, lineY: 52 },
+  // The big word is cream ink with a fat dark outline (crayon yellow / green read poorly on the
+  // navy wash at phone size); the crayon stays on the underline and 'grab the planet!'.
+  word: { holdSize: 124, letgoSize: 108, outline: 20, subSize: 48, subY: 108, sub2Size: 33, sub2Y: 152, lineY: 52 },
   // Round the drawn parts at scale 1 (checked in the hud tests and measured in the browser):
   // the hand with its ripples / lift dashes and cream halo, and the lettering.
   handBox: { l: -72, r: 124, t: -78, b: 226 },
-  wordHoldBox: { l: -172, r: 172, t: -84, b: 162 },
+  // 'grab the planet!' at 48 px is ~334 px wide (measured), the widest line; 52 px (361) no longer
+  // fit beside the planet in the first HOLD and shrank the whole word group to 0.85.
+  wordHoldBox: { l: -170, r: 170, t: -84, b: 180 },
   wordLetgoBox: { l: -200, r: 200, t: -76, b: 76 },
   wordGap: 14,           // px between the word and the hand
   niceAbove: 190,        // the NICE! stamp sits this far above the comet (below it when too high)
@@ -830,7 +845,8 @@ function hudStepLayout(step, info, top) {
     // far away (or shrunk) costs as much as moving the hand further from its target.
     const wr = hudStepRect(scene.wordBox, word.x, word.y, word.scale);
     const apart = hudRectGap(grown, wr);
-    const cost = (hand.cost || 0) + apart * 1.5 + (2 - hand.scale - word.scale) * 200;
+    // A shrunk word costs more than a shrunk hand: the lettering is what has to read at phone size.
+    const cost = (hand.cost || 0) + apart * 1.5 + (1 - hand.scale) * 200 + (1 - word.scale) * 450;
     return Object.assign({}, scene, { hand: { x: hand.x, y: hand.y, scale: hand.scale, clean: hand.clean }, word, handRect: grown, cost });
   };
   // Up to 16 hand spots, each at least 48 px from the ones already tried; the cheapest pair with
@@ -942,12 +958,17 @@ function hudNovaWarnTarget(eta, orbiting, orbitDanger) {
 }
 
 // ---- Tutorial HOLD: dashed ink gravity lines from the planet to the comet ----
-// Three dashed pen lines fan from the planet's surface to just short of the comet; the dashes
-// march toward the planet (it pulls), advancing one step per boil tick, never every frame.
-const HUD_GRAVITY = { lines: 3, spread: 0.3, endSpread: 22, dash: 24, gap: 14, flowPerTick: 8, minLen: 50, surfacePad: 10, cometPad: 58 };
+// Three dashed pen curves fan from the planet's surface to just short of the comet (the outer two
+// bow outward, like field lines); the dashes march toward the planet (it pulls), advancing one
+// step per boil tick, never every frame. width / under: cream pen and its dark under-stroke.
+const HUD_GRAVITY = {
+  lines: 3, spread: 0.34, endSpread: 26, bend: 0.2, samples: 14, dash: 30, gap: 14, flowPerTick: 8,
+  minLen: 40, surfacePad: 4, cometPad: 40, width: 8.5, widthMid: 10, under: 16,
+};
 
-// Pure helper (tested): the gravity lines as segments {x1, y1, x2, y2}, x1/y1 at the comet end,
-// x2/y2 on the planet's surface (screen coords). [] when the gap is too short or input is junk.
+// Pure helper (tested): the gravity lines as curves {x1, y1, mx, my, x2, y2}: x1/y1 at the comet
+// end, x2/y2 on the planet's surface, mx/my the quadratic control point (screen coords). [] when
+// the gap is too short or input is junk.
 function hudGravityLines(px, py, pr, cx, cy) {
   const G = HUD_GRAVITY;
   const ok = (v) => typeof v === 'number' && isFinite(v);
@@ -969,7 +990,12 @@ function hudGravityLines(px, py, pr, cx, cy) {
     const ny = Math.cos(ea);
     const x1 = cx + Math.cos(ea) * G.cometPad + nx * k * 2 * G.endSpread;
     const y1 = cy + Math.sin(ea) * G.cometPad + ny * k * 2 * G.endSpread;
-    out.push({ x1, y1, x2, y2 });
+    // Control point: the chord's middle pushed out sideways (outer lines bow away from the middle one).
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+    const bx = -(y2 - y1) / len;
+    const by = (x2 - x1) / len;
+    const bow = k * 2 * G.bend * len;
+    out.push({ x1, y1, mx: (x1 + x2) / 2 + bx * bow, my: (y1 + y2) / 2 + by * bow, x2, y2 });
   }
   return out;
 }
@@ -989,6 +1015,46 @@ function hudDashSegments(x1, y1, x2, y2, dash, gap, phase) {
     const b = Math.min(len, s + dash);
     if (b - a < 2) continue;
     out.push({ x1: x1 + ux * a, y1: y1 + uy * a, x2: x1 + ux * b, y2: y1 + uy * b });
+  }
+  return out;
+}
+
+// Pure helper (tested): dashes along the quadratic curve L ({x1, y1, mx, my, x2, y2}), as straight
+// chords {x1, y1, x2, y2} between points `dash` px apart along the curve (short enough to look
+// curved together), shifted `phase` px toward the planet end. Measured on `samples` points.
+function hudDashCurve(L, dash, gap, phase, samples) {
+  const n = Math.max(2, samples || HUD_GRAVITY.samples);
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const u = 1 - t;
+    pts.push({ x: u * u * L.x1 + 2 * u * t * L.mx + t * t * L.x2, y: u * u * L.y1 + 2 * u * t * L.my + t * t * L.y2 });
+  }
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  const len = cum[cum.length - 1];
+  const at = (s) => {
+    let i = 1;
+    while (i < cum.length - 1 && cum[i] < s) i++;
+    const seg = cum[i] - cum[i - 1] || 1;
+    const f = (s - cum[i - 1]) / seg;
+    return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * f };
+  };
+  const period = dash + gap;
+  if (!(len > 0) || !(period > 0) || !(dash > 0)) return [];
+  const shift = ((phase % period) + period) % period;
+  const out = [];
+  for (let s = shift - period; s < len; s += period) {
+    const a = Math.max(0, s);
+    const b = Math.min(len, s + dash);
+    if (b - a < 2) continue;
+    // Long dashes are split in two chords so they follow the bend.
+    const m = (a + b) / 2;
+    for (const [s0, s1] of [[a, m], [m, b]]) {
+      const p0 = at(s0);
+      const p1 = at(s1);
+      out.push({ x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, dash: out.length >> 1 });
+    }
   }
   return out;
 }
@@ -1026,10 +1092,27 @@ function hudFirstNotePlace(comet, bodies, extraRects) {
 }
 
 // ---- One-time 'CLOSER = FASTER' stamp and card proc pops ----
-const HUD_CLOSER = { size: 56, holdMs: 1300, fadeMs: 320, cometDodge: 36 };
+// afterMs: a waiting stamp comes out this long after the screen is clear of banners and stamps.
+const HUD_CLOSER = { size: 56, holdMs: 1300, fadeMs: 320, cometDodge: 36, afterMs: 250 };
+
+// Pure helper (tested): a waiting CLOSER = FASTER may be stamped now: nothing big on screen
+// (busy: banner, card pick, set bonus, tutorial step, another stamp) for at least afterMs.
+function hudCloserMayStamp(busy, now, clearAt) {
+  if (busy) return false;
+  return now - (isFinite(clearAt) ? clearAt : -1e9) >= HUD_CLOSER.afterMs;
+}
 // Card proc: the card's mini index card pops above the comet for ~0.4 s over a small ink burst in
 // its family crayon. gapMs: the same card at most this often; rise: px above the comet.
-const HUD_PROC = { gapMs: 260, rise: 100, scale: 0.95, inMs: 140, holdMs: 120, outMs: 160, burst: 5, reach: 62, minY: 150 };
+// iconGapMs: the mini card itself pops at most this often per card, and never while another
+// card's icon is still on screen (the burst on the comet still plays every gapMs).
+const HUD_PROC = { gapMs: 260, iconGapMs: 3000, rise: 100, scale: 0.95, inMs: 140, holdMs: 120, outMs: 160, burst: 5, reach: 62, minY: 150 };
+
+// Pure helper (tested): a proc's mini card may pop: no icon on screen and this card's last icon
+// at least iconGapMs ago (lastIconAt undefined = never).
+function hudProcIconAllowed(now, lastIconAt, iconOnScreen) {
+  if (iconOnScreen) return false;
+  return lastIconAt === undefined || !isFinite(lastIconAt) || now - lastIconAt >= HUD_PROC.iconGapMs;
+}
 
 // Pure helper (tested): the proc icon's spot above the comet (below it when the comet is too high),
 // kept inside the side margins.
@@ -1215,8 +1298,10 @@ class HudScene extends Phaser.Scene {
     this.closerStamp = null;  // the one-time 'CLOSER = FASTER' stamp (or null)
     this.closerShown = false; // stamped (or waiting) this HUD life; GameScene keeps the lifetime flag
     this.closerPending = false;
+    this.closerClearAt = 0;   // last time the screen was busy for a waiting CLOSER = FASTER
     this.procIcon = null;     // the card proc's mini card above the comet (or null)
-    this.procAt = {};         // card id -> time of its last proc pop
+    this.procAt = {};         // card id -> time of its last proc burst
+    this.procIconAt = {};     // card id -> time of its last proc mini card (hudProcIconAllowed)
 
     // Speed written on the page, with a crayon underline (redrawn only on boil ticks / growth).
     // Crayon smudge first, so the underline, crown and number are all drawn on top of it.
@@ -1412,7 +1497,10 @@ class HudScene extends Phaser.Scene {
     cardDoodleBurst(this, cx, cy, [crayon, ink], { count: P.burst, reach: P.reach, squashY: 0.9, ink: this.lightPage ? UI_INK.dark : undefined });
     const ring = uiBoilImage(this, cx, cy, 'ui_circle').setTint(this.lightPage ? hudDeepen(crayon, 0.75) : crayon).setScale(0.2).setAlpha(0.9);
     this.tweens.add({ targets: ring, scale: 0.42, alpha: 0, duration: 300, ease: 'Quad.Out', onComplete: () => ring.destroy() });
-    if (this.procIcon) { this.tweens.killTweensOf(this.procIcon); this.procIcon.destroy(); }
+    this.flashCard(id);
+    const iconUp = !!(this.procIcon && this.procIcon.active);
+    if (!hudProcIconAllowed(now, this.procIconAt[id], iconUp)) return;
+    this.procIconAt[id] = now;
     const spot = hudProcSpot(cx, cy);
     const mini = cardMakeMini(this, spot.x, spot.from + (spot.y - spot.from) * 0.35, id, P.scale * 0.5).setAlpha(0.6);
     this.procIcon = mini;
@@ -1422,7 +1510,6 @@ class HudScene extends Phaser.Scene {
       targets: mini, alpha: 0, y: spot.y - 18, rotation: rot + 0.12, delay: P.inMs + P.holdMs, duration: P.outMs, ease: 'Quad.In',
       onComplete: () => { if (this.procIcon === mini) this.procIcon = null; mini.destroy(); },
     });
-    this.flashCard(id);
   }
 
   // First run, right after the intro story line (GameScene): a taped note with one line of advice
@@ -1487,8 +1574,14 @@ class HudScene extends Phaser.Scene {
   showCloserFaster(x, y) {
     if (this.closerShown || this.isOverScreen()) return;
     this.closerShown = true;
-    if (this.stepWaiting()) { this.closerPending = true; return; }
+    // Never on top of a banner, the card pick, a set bonus or another stamp: it waits its turn
+    // (updateCloser) and then lands by the comet's position at that time.
+    if (this.closerBusy()) { this.closerPending = true; this.closerClearAt = this.time.now; return; }
     this.stampCloser(x, y);
+  }
+
+  closerBusy() {
+    return this.bigMomentBusy() || !!(this.milestone && this.milestone.active) || this.isOverScreen();
   }
 
   stampCloser(x, y) {
@@ -1527,9 +1620,14 @@ class HudScene extends Phaser.Scene {
   }
 
   updateCloser() {
-    if (this.closerPending && !this.stepWaiting()) {
-      this.closerPending = false;
-      this.stampCloser();
+    if (this.closerPending) {
+      const now = this.time.now;
+      const busy = this.closerBusy();
+      if (busy) this.closerClearAt = now;
+      if (hudCloserMayStamp(busy, now, this.closerClearAt)) {
+        this.closerPending = false;
+        this.stampCloser();
+      }
     }
     const m = this.closerStamp;
     if (!m || !m.active || m.leaving || !this.comet) return;
@@ -1539,6 +1637,15 @@ class HudScene extends Phaser.Scene {
       this.tweens.killTweensOf(m);
       this.tweens.add({ targets: m, alpha: 0, duration: 100, onComplete: () => { if (this.closerStamp === m) this.closerStamp = null; m.destroy(); } });
     }
+  }
+
+  // A stamp or banner arriving while CLOSER = FASTER is up would land on it: the hint fades out quickly.
+  dropCloserStamp() {
+    const m = this.closerStamp;
+    if (!m || !m.active || m.leaving) return;
+    m.leaving = true;
+    this.tweens.killTweensOf(m);
+    this.tweens.add({ targets: m, alpha: 0, duration: 120, onComplete: () => { if (this.closerStamp === m) this.closerStamp = null; m.destroy(); } });
   }
 
   // Bottom of the owned-card strip on screen (0 when no card is owned).
@@ -1626,6 +1733,7 @@ class HudScene extends Phaser.Scene {
     // is gone (the newest one only).
     if (!opts.force && this.stepUp()) return;
     if (!opts.force && this.stepWaiting()) { this.stepMilestone = [name, level]; return; }
+    this.dropCloserStamp();
     const now = this.time.now;
     // The same word again within HUD_REPEAT.ms (tutorial NICE! then the chain's NICE!, a queued
     // copy) is never stamped twice.
@@ -1692,7 +1800,7 @@ class HudScene extends Phaser.Scene {
       },
     });
     this.tweens.add({
-      targets: stamp, alpha: 0, delay: 130 + HUD_MILESTONE.holdMs, duration: HUD_MILESTONE.fadeMs, ease: 'Quad.In',
+      targets: stamp, alpha: 0, delay: 130 + (opts.holdMs || HUD_MILESTONE.holdMs), duration: opts.fadeMs || HUD_MILESTONE.fadeMs, ease: 'Quad.In',
       onComplete: () => { if (this.milestone === stamp) this.milestone = null; stamp.destroy(); },
     });
     // A pop line in the stamp's band makes way (a high one moves).
@@ -1732,11 +1840,12 @@ class HudScene extends Phaser.Scene {
   }
 
   // The comet flying into the stamp: it gets out of the way at once.
+  // A MACH stamp whose readout has dropped far below its tier wipes off too.
   updateMilestone() {
     const m = this.milestone;
     if (!m || !m.active || !this.comet || m.leaving) return;
     const d = hudBoxDistance(this.comet.x, this.comet.y, m.x - m.halfW, m.y - m.halfH, m.x + m.halfW, m.y + m.halfH);
-    if (d < 40) {
+    if (d < 40 || (m.isMach && hudMachStampStale(m.machTier, this.machNow))) {
       m.leaving = true;
       this.tweens.killTweensOf(m);
       this.tweens.add({ targets: m, alpha: 0, duration: 90, onComplete: () => { if (this.milestone === m) this.milestone = null; m.destroy(); } });
@@ -1766,14 +1875,17 @@ class HudScene extends Phaser.Scene {
       this.milestone = null;
       this.machClearAt = now - HUD_MACH.afterMs;   // no extra gap: the stamp swap is the beat
     }
-    const busy = this.bigMomentBusy() || (this.milestone && this.milestone.active) || this.isOverScreen();
+    const busy = this.bigMomentBusy() || (this.milestone && this.milestone.active) || (this.closerStamp && this.closerStamp.active)
+      || this.closerPending || this.isOverScreen();
     if (busy) { this.machClearAt = now; return; }
     if (now - this.machClearAt < HUD_MACH.afterMs) return;
     // Two tiers passed while waiting: only the highest is stamped (the lower one is old news).
     const top = Math.max.apply(null, this.machWait);
     this.machWait = [];
-    this.showMilestone('MACH ' + top + '!', hudMachTierLevel(top));
-    if (this.milestone) this.milestone.isMach = true;
+    // Waited so long that the readout already fell well below the tier: old news, not stamped.
+    if (hudMachStampStale(top, this.machNow)) return;
+    this.showMilestone('MACH ' + top + '!', hudMachTierLevel(top), { holdMs: HUD_MACH.holdMs, fadeMs: HUD_MACH.fadeMs });
+    if (this.milestone) { this.milestone.isMach = true; this.milestone.machTier = top; }
   }
 
   // The run is over (a stamp would land on the death beat).
@@ -1821,11 +1933,12 @@ class HudScene extends Phaser.Scene {
     const hand = pressHand;
     const ripples = this.add.graphics();
     const word = uiTitleText(this, 0, 0, 'HOLD', {
-      size: S.word.holdSize, color: uiColorHex(UI_CRAYON.yellow), shadowColor: UI_INK.darkHex, shadowDx: 7, shadowDy: 9, rot: -0.04, boil: true,
+      size: S.word.holdSize, color: UI_INK.creamHex, shadowColor: UI_INK.darkHex, shadowDx: 7, shadowDy: 9, rot: -0.04, boil: true,
     });
+    word.main.setStroke(UI_INK.darkHex, S.word.outline);
     const line = uiBoilImage(this, 6, S.word.lineY, 'ui_underline').setTint(UI_CRAYON.yellow);
-    const sub = uiInkText(this, 0, S.word.subY, 'grab the planet!', { size: S.word.subSize, color: uiColorHex(UI_CRAYON.yellow), strokeW: 7, rot: -0.02, boilAmount: 0.01 });
-    const sub2 = uiInkText(this, 4, S.word.sub2Y, 'hold anywhere', { size: S.word.sub2Size, strokeW: 5, rot: 0.015, boilAmount: 0.01 });
+    const sub = uiInkText(this, 0, S.word.subY, 'grab the planet!', { size: S.word.subSize, color: uiColorHex(UI_CRAYON.yellow), strokeW: 11, rot: -0.02, boilAmount: 0.01 });
+    const sub2 = uiInkText(this, 4, S.word.sub2Y, 'hold anywhere', { size: S.word.sub2Size, strokeW: 8, rot: 0.015, boilAmount: 0.01 });
     const handGroup = this.add.container(0, 0, [ripples, pressHand, openHand]).setDepth(depth + 2).setAlpha(0).setVisible(false);
     const wordGroup = this.add.container(0, 0, [line, word, sub, sub2]).setDepth(depth + 2).setAlpha(0).setVisible(false);
     // HOLD only: dashed gravity lines planet -> comet, under the hand and the word.
@@ -1923,7 +2036,7 @@ class HudScene extends Phaser.Scene {
     const label = step === 'letgo' ? 'LET GO' : 'HOLD';
     const size = step === 'letgo' ? S.word.letgoSize : S.word.holdSize;
     for (const t of [s.word.main, s.word.shadow]) t.setText(label).setFontSize(size);
-    s.word.main.setColor(uiColorHex(crayon));
+    s.word.main.setColor(UI_INK.creamHex).setStroke(UI_INK.darkHex, S.word.outline);
     s.line.setTint(crayon).setScale(Math.min(1.15, (s.word.main.width + 30) / 540), 0.9);
     s.sub.setVisible(step === 'hold');
     s.sub2.setVisible(step === 'hold');
@@ -2036,11 +2149,13 @@ class HudScene extends Phaser.Scene {
     const G = HUD_GRAVITY;
     const lines = hudGravityLines(i.px, i.py, i.pr, i.cx, i.cy);
     lines.forEach((L, k) => {
-      const dashes = hudDashSegments(L.x1, L.y1, L.x2, L.y2, G.dash, G.gap, tick * G.flowPerTick + k * 9);
+      const dashes = hudDashCurve(L, G.dash, G.gap, tick * G.flowPerTick + k * 11);
+      // Dark under-strokes first (all of them), then the cream pen, so no dash's outline cuts the next.
       dashes.forEach((d, j) => {
-        // Dark under-stroke so the cream pen reads on the wash and on bright planets alike.
-        uiScribbleLine(g, d.x1, d.y1, d.x2, d.y2, tick * 7 + k * 31 + j, { width: 11, color: UI_INK.dark, alpha: 0.55, amp: 1.2, passes: 1 });
-        uiScribbleLine(g, d.x1, d.y1, d.x2, d.y2, tick * 7 + k * 31 + j + 3, { width: k === 1 ? 6.2 : 5, color: UI_INK.cream, alpha: 0.95, amp: 1.2, passes: 1 });
+        uiScribbleLine(g, d.x1, d.y1, d.x2, d.y2, tick * 7 + k * 31 + j, { width: G.under, color: UI_INK.dark, alpha: 0.6, amp: 0.8, passes: 1 });
+      });
+      dashes.forEach((d, j) => {
+        uiScribbleLine(g, d.x1, d.y1, d.x2, d.y2, tick * 7 + k * 31 + j + 3, { width: k === 1 ? G.widthMid : G.width, color: UI_INK.cream, alpha: 0.97, amp: 0.8, passes: 1 });
       });
     });
   }
@@ -2295,7 +2410,8 @@ class HudScene extends Phaser.Scene {
     this.shownSpeed = hudSpeedEase(this.shownSpeed, this.targetSpeed, dt);
     const kmPerS = Math.round(this.shownSpeed);
     this.setTextIfChanged('speed', this.speedText, kmPerS + ' km/s');
-    this.setTextIfChanged('mach', this.machText, kmPerS > 0 ? 'MACH ' + hudMachNumber(kmPerS) : '');
+    this.machNow = kmPerS > 0 ? hudMachNumber(kmPerS) : 0;
+    this.setTextIfChanged('mach', this.machText, kmPerS > 0 ? 'MACH ' + this.machNow : '');
     this.momentum += (this.momentumTarget - this.momentum) * Math.min(1, dt * HUD_MOMENTUM.ease);
     const style = hudMomentumStyle(this.momentum);
     // On its cream scrap: dark ink, heating to pressed-hard crayon with momentum.
@@ -2961,6 +3077,7 @@ class HudScene extends Phaser.Scene {
   }
 
   playBanner(title, subtitle, opts) {
+    this.dropCloserStamp();
     const hold = opts && opts.duration !== undefined ? opts.duration : 1400;
     const parts = this.bannerParts();
     this.tweens.killTweensOf(parts);
