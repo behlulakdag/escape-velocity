@@ -227,6 +227,30 @@ const SKC = {
   },
 };
 
+// Zone object for any page index (orbit.js zoneAt covers the endless pages past 40000 m);
+// falls back to the last fixed ZONES entry so nothing here can index out of range.
+function artZone(index) {
+  const i = Math.max(0, Math.floor(index) || 0);
+  if (typeof zoneAt === 'function') {
+    const z = zoneAt(i);
+    if (z) return z;
+  }
+  if (typeof ZONES === 'undefined' || !ZONES.length) return null;
+  return ZONES[Math.min(i, ZONES.length - 1)];
+}
+
+// Perceived brightness test: dark ink (cream ESCAPE VELOCITY, white BIG BANG) gets the light-page treatment.
+function artIsDark(color) {
+  const r = (color >> 16) & 255;
+  const g = (color >> 8) & 255;
+  const b = color & 255;
+  return r * 0.299 + g * 0.587 + b * 0.114 < 110;
+}
+
+function artIsLightPaper(color) {
+  return !artIsDark(color) && ((color >> 16) & 255) > 180;
+}
+
 const ART = {
   // Kept for scenes that still reference the old palette names.
   outline: SKETCH.shadowInk,
@@ -242,12 +266,42 @@ const ART = {
   backing: SKETCH.shadowInk,
 
   setPage(index) {
-    const z = (typeof ZONES !== 'undefined' && ZONES[index]) || null;
-    ART.pageIndex = z ? index : 0;
+    const z = artZone(index);
+    ART.pageIndex = z ? Math.max(0, Math.floor(index) || 0) : 0;
+    ART.zone = z;
     ART.ink = z && z.ink !== undefined ? z.ink : SKETCH.cream;
-    ART.inkMode = ART.ink === SKETCH.dark ? 'd' : 'l';
+    ART.inkMode = artIsDark(ART.ink) ? 'd' : 'l';
+    ART.inkKey = ART.inkKeyFor(ART.ink);
     ART.backing = ART.inkMode === 'd' ? 0xfff6dc : SKETCH.shadowInk;
+    const look = z && ART.pageLooks[z.fx];
+    ART.planetTint = look ? look.planetTint : 0xffffff;
+    ART.tailEdge = look ? look.tailEdge : undefined;
   },
+
+  // Texture-cache key for an ink color: 'l' (cream), 'd' (the cream page's brown-black) or 'd' +
+  // hex for any other dark ink (BIG BANG's navy), so pages with different inks never share bodies.
+  inkKeyFor(ink) {
+    if (!artIsDark(ink)) return 'l';
+    return ink === SKETCH.dark ? 'd' : 'd' + ink.toString(16);
+  },
+  inkForKey(key) {
+    if (key === 'l') return SKETCH.cream;
+    if (key === 'd') return SKETCH.dark;
+    return parseInt(key.slice(1), 16);
+  },
+
+  // Per-medium extras for the late pages (keyed by zone fx). planetTint is a light multiply tint
+  // on planet images so the crayon palette shifts a little with each new sheet of paper.
+  pageLooks: {
+    lightspeed: { planetTint: 0xffeedd, tailEdge: SKETCH.cream },
+    spiral: { planetTint: 0xe6f7df },
+    blueprint: { planetTint: 0xdfe9ff, tailEdge: SKETCH.cream },
+    graph: { planetTint: 0xffffff },
+    charcoal: { planetTint: 0xf3e2d6, tailEdge: SKETCH.cream },
+  },
+  planetTint: 0xffffff,
+  zone: null,
+  inkKey: 'l',
 
   boilFrame(t) { return Math.floor(t * SKETCH.boilFps); },
   boilVariant(t) { return Math.floor(t * SKETCH.boilFps) % SKETCH.variants; },
@@ -377,23 +431,43 @@ const ART = {
   warmQueue: [],
   warm(jobs) { for (const j of jobs) ART.warmQueue.push(j); },
   tick(scene) {
+    if (ART._aheadFor !== ART.pageIndex && !scene.headless) {
+      ART._aheadFor = ART.pageIndex;
+      ART.warmAhead(scene, ART.pageIndex);
+    }
+    if (!scene.headless) ART.drawPageMarks(scene);
     const job = ART.warmQueue.shift();
     if (job) job(scene);
   },
+  // Queues every body texture for one ink (mode 'l' / 'd' or any inkKey), plus the fixed papers
+  // on the first (cream ink) call.
   warmAll(scene, inkMode) {
-    const ink = inkMode === 'd' ? SKETCH.dark : SKETCH.cream;
+    const ik = inkMode === 'l' || inkMode === 'd' || (inkMode && inkMode[0] === 'd') ? inkMode : 'l';
+    if (ART.warmedInks[ik]) return;
+    ART.warmedInks[ik] = true;
+    const ink = ART.inkForKey(ik);
     const jobs = [];
-    if (inkMode !== 'd') {
+    if (ik === 'l') {
       for (let i = 0; i < 6; i++) jobs.push((s) => ART.paperTexture(s, i));
-      for (let d = 0; d < ASTEROID_DESIGNS; d++) for (let v = 0; v < SKETCH.variants; v++) jobs.push((s) => ART.asteroidTexture(s, d, v));
-      for (let v = 0; v < SKETCH.variants; v++) jobs.push((s) => ART.blackHoleTexture(s, v));
     }
+    for (let d = 0; d < ASTEROID_DESIGNS; d++) for (let v = 0; v < SKETCH.variants; v++) jobs.push((s) => ART.asteroidTexture(s, d, v, ik));
+    for (let v = 0; v < SKETCH.variants; v++) jobs.push((s) => ART.blackHoleTexture(s, v, ik));
     for (const R of PLANET_SIZES_FOR_WARMUP) {
       for (let d = 0; d < PLANET_DESIGNS.length; d++) {
-        for (let v = 0; v < SKETCH.variants; v++) jobs.push((s) => ART.planetTextureFor(s, R, d, inkMode, ink, v));
+        for (let v = 0; v < SKETCH.variants; v++) jobs.push((s) => ART.planetTextureFor(s, R, d, ik, ink, v));
       }
     }
     ART.warm(jobs);
+  },
+  warmedInks: {},
+
+  // Called when page `index` starts turning in: queues the NEXT page's paper and body textures, so
+  // they are ready long before that page arrives (a fresh 512 px paper costs a frame hitch).
+  warmAhead(scene, index) {
+    const next = artZone(index + 1);
+    if (!next) return;
+    ART.warm([(s) => ART.paperTexture(s, index + 1)]);
+    ART.warmAll(scene, ART.inkKeyFor(next.ink !== undefined ? next.ink : SKETCH.cream));
   },
 
   // Bodies are Images placed right above the Graphics `g` they belong to, so whatever the scene
@@ -436,9 +510,17 @@ const ART = {
 
   // Construction paper tile for a zone: grain, fibers, and the zone's own marks.
   paperTexture(scene, index) {
-    const key = 'paper_' + index;
-    const z = (typeof ZONES !== 'undefined' && ZONES[index]) || { paper: 0x1d2747, fx: 'none' };
-    return ART.paperTextureAs(scene, key, z.paper, z.fx, index);
+    const z = artZone(index) || { paper: 0x1d2747, fx: 'none' };
+    // Keyed by look, not index: the endless pages past 40000 m reuse the fixed pages' sheets.
+    // The seed is the first fixed page with that look, so a reused sheet is the same drawing.
+    let seed = Math.max(0, Math.floor(index) || 0);
+    if (typeof ZONES !== 'undefined') {
+      for (let i = 0; i < ZONES.length; i++) {
+        if (ZONES[i].paper === z.paper && ZONES[i].fx === z.fx) { seed = i; break; }
+      }
+    }
+    const key = 'paper_' + z.paper.toString(16) + '_' + z.fx;
+    return ART.paperTextureAs(scene, key, z.paper, z.fx, seed);
   },
 
   paperTextureAs(scene, key, paper, fx, seed) {
@@ -448,7 +530,7 @@ const ART = {
       const rnd = artRandom(9001 + seed * 77);
       c.fillStyle = SKC.css(paper);
       c.fillRect(0, 0, S, S);
-      const light = paper > 0x999999 && ((paper >> 16) & 255) > 180;   // the cream page
+      const light = artIsLightPaper(paper);   // the cream page and BIG BANG's graph paper
       // Soft blotches: paper is never one flat color.
       const areaK = (S * S) / (512 * 512);   // keep blotch and fiber density the same on bigger tiles
       for (let i = 0; i < 26 * areaK; i++) {
@@ -516,6 +598,7 @@ const ART = {
           });
         }
       }
+      ART.paintPaperMarks(c, S, fx, paper, rnd);
       // Grain: per-pixel noise.
       const img = c.getImageData(0, 0, S, S);
       const d = img.data;
@@ -546,8 +629,8 @@ const ART = {
           c.stroke();
         });
       }
-      if (light) {
-        // Warm gold flecks on the final page.
+      if (fx === 'rays') {
+        // Warm gold flecks on the cream page.
         for (let i = 0; i < 40; i++) {
           const x = rnd() * S;
           const y = rnd() * S;
@@ -558,6 +641,302 @@ const ART = {
         }
       }
     });
+  },
+
+  // Printed or drawn marks that make each late page read as its own medium (tileable, static:
+  // the boiling part of a page lives in drawPageMarks).
+  paintPaperMarks(c, S, fx, paper, rnd) {
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    const stroke = (col, alpha, w, fn) => {
+      c.strokeStyle = SKC.css(col, alpha);
+      c.lineWidth = w;
+      c.beginPath();
+      fn();
+      c.stroke();
+    };
+    if (fx === 'lightspeed') {
+      // Kraft paper: dark wood specks, long pale fibers, and faint dashed speed ticks pointing up.
+      for (let i = 0; i < 170; i++) {
+        const x = rnd() * S;
+        const y = rnd() * S;
+        const r = 0.6 + rnd() * 1.4;
+        const a = 0.25 + rnd() * 0.3;
+        SKC.wrapped(S, x, y, (px, py) => { c.fillStyle = SKC.css(0x24140a, a); c.fillRect(px, py, r * 1.6, r); });
+      }
+      for (let i = 0; i < 40; i++) {
+        const x = rnd() * S;
+        const y = rnd() * S;
+        const len = 14 + rnd() * 26;
+        const lean = (rnd() - 0.5) * 6;
+        const a = 0.1 + rnd() * 0.1;
+        SKC.wrapped(S, x, y, (px, py) => stroke(0xd9b07a, a, 0.9, () => {
+          c.moveTo(px, py);
+          c.quadraticCurveTo(px + lean, py + len * 0.5, px + lean * 0.4, py + len);
+        }));
+      }
+      for (let i = 0; i < 9; i++) {
+        const x = ((i * 0.317 + 0.05) % 1) * S + (rnd() - 0.5) * 30;
+        const y = (i / 9) * S + rnd() * 40;
+        const n = 3 + Math.floor(rnd() * 3);
+        const a = 0.08 + rnd() * 0.06;
+        const lean = (rnd() - 0.5) * 0.12;
+        const seed = rnd() * 1e6;
+        SKC.wrapped(S, x, y, (px, py) => {
+          const jr = artRandom(seed);
+          let yy = py;
+          for (let k = 0; k < n; k++) {
+            const len = 12 + jr() * 18;
+            const y0 = yy;
+            stroke(SKETCH.cream, a * (1 - k * 0.15), 2, () => { c.moveTo(px + (y0 - py) * lean, y0); c.lineTo(px + (y0 - len - py) * lean, y0 - len); });
+            yy -= len + 8 + jr() * 6;
+          }
+        });
+      }
+    } else if (fx === 'spiral') {
+      // Loose pencil spirals, each gone over twice (a pencil never retraces exactly).
+      for (let i = 0; i < 4; i++) {
+        const x = ((i * 0.43 + 0.2) % 1) * S + (rnd() - 0.5) * 60;
+        const y = (i / 4) * S + rnd() * 60;
+        const turns = 2.2 + rnd() * 1.3;
+        const maxR = 34 + rnd() * 42;
+        const rot = rnd() * Math.PI * 2;
+        const dir = rnd() < 0.5 ? 1 : -1;
+        const seed = rnd() * 1e6;
+        SKC.wrapped(S, x, y, (px, py) => {
+          for (let pass = 0; pass < 2; pass++) {
+            const jr = artRandom(seed + pass * 31);
+            stroke(SKETCH.cream, pass ? 0.08 : 0.15, pass ? 1.2 : 1.8, () => {
+              const steps = Math.ceil(turns * 22);
+              for (let k = 0; k <= steps; k++) {
+                const f = k / steps;
+                const a = rot + dir * f * turns * Math.PI * 2;
+                const r = maxR * f * (0.9 + jr() * 0.18) + pass * 2;
+                const xx = px + Math.cos(a) * r;
+                const yy = py + Math.sin(a) * r * 0.86;
+                if (k === 0) c.moveTo(xx, yy); else c.lineTo(xx, yy);
+              }
+            });
+          }
+        });
+      }
+    } else if (fx === 'blueprint') {
+      // Printed blueprint grid (faint), a stronger line every 4 squares, then pencil compass work.
+      const gridCol = 0xcfe2f7;
+      for (let k = 0; k < S; k += 32) {
+        const strong = k % 128 === 0;
+        c.fillStyle = SKC.css(gridCol, strong ? 0.2 : 0.1);
+        c.fillRect(k, 0, strong ? 2 : 1, S);
+        c.fillRect(0, k, S, strong ? 2 : 1);
+      }
+      for (let i = 0; i < 3; i++) {
+        const x = ((i * 0.37 + 0.15) % 1) * S;
+        const y = (i / 3) * S + rnd() * 80;
+        const r = 50 + rnd() * 70;
+        const a0 = rnd() * Math.PI * 2;
+        const span = 1.6 + rnd() * 2;
+        SKC.wrapped(S, x, y, (px, py) => {
+          stroke(SKETCH.cream, 0.16, 1.6, () => c.arc(px, py, r, a0, a0 + span));
+          // Center pin and a radius line: how a compass arc is actually drawn.
+          stroke(SKETCH.cream, 0.18, 1.4, () => { c.moveTo(px - 6, py); c.lineTo(px + 6, py); c.moveTo(px, py - 6); c.lineTo(px, py + 6); });
+          stroke(SKETCH.cream, 0.08, 1, () => { c.moveTo(px, py); c.lineTo(px + Math.cos(a0) * r, py + Math.sin(a0) * r); });
+        });
+      }
+      // A dimension line with end ticks.
+      const dx = rnd() * S;
+      const dy = rnd() * S;
+      SKC.wrapped(S, dx, dy, (px, py) => stroke(SKETCH.cream, 0.15, 1.4, () => {
+        c.moveTo(px, py); c.lineTo(px + 120, py);
+        c.moveTo(px, py - 7); c.lineTo(px, py + 7);
+        c.moveTo(px + 120, py - 7); c.lineTo(px + 120, py + 7);
+      }));
+    } else if (fx === 'graph') {
+      // White graph paper: blue printed squares, then a few navy ink starbursts doodled on it.
+      const gridCol = 0x6f9ad0;
+      for (let k = 0; k < S; k += 32) {
+        const strong = k % 128 === 0;
+        c.fillStyle = SKC.css(gridCol, strong ? 0.34 : 0.17);
+        c.fillRect(k, 0, strong ? 2 : 1, S);
+        c.fillRect(0, k, S, strong ? 2 : 1);
+      }
+      const ink = 0x1d2747;
+      for (let i = 0; i < 4; i++) {
+        const x = ((i * 0.29 + 0.1) % 1) * S + (rnd() - 0.5) * 40;
+        const y = (i / 4) * S + rnd() * 50;
+        const r = 7 + rnd() * 7;
+        const seed = rnd() * 1e6;
+        const star = i % 2 === 0;
+        SKC.wrapped(S, x, y, (px, py) => {
+          if (star) SKC.doodleStar(c, px, py, r, ink, 0.3, 1.8, artRandom(seed));
+          else SKC.asterisk(c, px, py, r, ink, 0.32, 2, artRandom(seed));
+          // Short burst ticks around it.
+          const jr = artRandom(seed + 7);
+          for (let k = 0; k < 6; k++) {
+            const a = (k / 6) * Math.PI * 2 + jr() * 0.4;
+            stroke(ink, 0.22, 1.4, () => { c.moveTo(px + Math.cos(a) * r * 1.5, py + Math.sin(a) * r * 1.5); c.lineTo(px + Math.cos(a) * r * 2.1, py + Math.sin(a) * r * 2.1); });
+          }
+        });
+      }
+    } else if (fx === 'charcoal') {
+      // Charcoal sketch paper: clusters of parallel hatches, each over a rubbed-in smudge.
+      for (let i = 0; i < 11; i++) {
+        const x = rnd() * S;
+        const y = rnd() * S;
+        const ang = -0.95 + (rnd() - 0.5) * 0.5;
+        const n = 4 + Math.floor(rnd() * 5);
+        const len = 22 + rnd() * 26;
+        const gap = 4 + rnd() * 3;
+        const dark = rnd() < 0.7;
+        const seed = rnd() * 1e6;
+        const ux = Math.cos(ang);
+        const uy = Math.sin(ang);
+        SKC.wrapped(S, x, y, (px, py) => {
+          const jr = artRandom(seed);
+          stroke(0x000000, 0.07, 20, () => { c.moveTo(px - ux * len * 0.3, py - uy * len * 0.3); c.lineTo(px + ux * len * 0.3 + n * gap, py + uy * len * 0.3); });
+          for (let k = 0; k < n; k++) {
+            const ox = px + k * gap + (jr() - 0.5) * 2;
+            const l = len * (0.75 + jr() * 0.4);
+            stroke(dark ? 0x0b0806 : 0xa3958a, dark ? 0.32 + jr() * 0.15 : 0.1, 2.2 + jr() * 1.8, () => {
+              c.moveTo(ox - ux * l * 0.5, py - uy * l * 0.5);
+              c.lineTo(ox + ux * l * 0.5, py + uy * l * 0.5);
+            });
+          }
+        });
+      }
+    }
+  },
+
+  // Screen-space marks for the late pages, redrawn at the boil rate on a layer of our own right
+  // above the Game scene's pageFxGfx. The early pages' streaks/rays stay in GameScene.drawPageFx.
+  drawPageMarks(scene) {
+    if (!scene.pageFxGfx || !scene.add) return;
+    let g = scene._artPageMarks;
+    if (!g || !g.scene) {
+      g = scene.add.graphics().setScrollFactor(0);
+      scene.children.moveTo(g, scene.children.getIndex(scene.pageFxGfx) + 1);
+      scene._artPageMarks = g;
+      g._frame = -1;
+      g._fx = '';
+    }
+    const z = ART.zone || artZone(ART.pageIndex);
+    const fx = z && ART.pageLooks[z.fx] ? z.fx : '';
+    const frame = Math.floor(scene.time.now / 100);
+    if (frame === g._frame && fx === g._fx) return;
+    g._frame = frame;
+    g._fx = fx;
+    g.clear();
+    if (!fx) return;
+    ART.paintPageMarks(g, fx, frame, z.ink !== undefined ? z.ink : SKETCH.cream);
+  },
+
+  paintPageMarks(g, fx, frame, ink) {
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    const boil = artRandom(frame * 17 + 3);
+    if (fx === 'lightspeed') {
+      // Long dashed ink streaks drawn toward a vanishing point above the page, crawling in at 10 fps.
+      const vx = cx;
+      const vy = -700;
+      for (let i = 0; i < 26; i++) {
+        const st = artRandom(i * 7919 + 13);
+        const a = Math.PI / 2 + (i / 25 - 0.5) * 1.7 + (st() - 0.5) * 0.06 + (boil() - 0.5) * 0.004;
+        // Distance from the vanishing point: shrinks a step per boil frame (the streak crawls toward
+        // it) and fades out over its last 300 px.
+        const travel = (frame * (14 + st() * 10) + st() * 1700) % 1700;
+        const d1 = 2550 - travel;
+        const len = 220 + st() * 260;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        const w = 1.8 + st() * 2.2;
+        const alpha = (0.13 + st() * 0.13) * Math.min(1, (d1 - 850) / 300);
+        if (alpha <= 0.02) continue;
+        g.lineStyle(w, ink, alpha);
+        // Three dashes, shorter toward the vanishing point.
+        let d = d1;
+        for (let k = 0; k < 3; k++) {
+          const dl = len * (0.5 - k * 0.12);
+          g.lineBetween(vx + ca * d, vy + sa * d, vx + ca * (d - dl), vy + sa * (d - dl));
+          d -= dl + len * 0.14;
+        }
+      }
+    } else if (fx === 'spiral') {
+      // One huge loose pencil spiral, the wormhole, turning a notch per boil frame.
+      const ox = cx + 60;
+      const oy = cy - 260;
+      const rot = frame * 0.015;
+      const turns = 3.2;
+      const steps = 90;
+      for (let pass = 0; pass < 2; pass++) {
+        g.lineStyle(pass ? 2 : 3.2, ink, pass ? 0.05 : 0.085);
+        g.beginPath();
+        for (let k = 0; k <= steps; k++) {
+          const f = k / steps;
+          const a = rot + f * turns * Math.PI * 2 + pass * 0.05;
+          const r = 40 + f * 900 + (boil() - 0.5) * 8;
+          const x = ox + Math.cos(a) * r;
+          const y = oy + Math.sin(a) * r * 0.82;
+          if (k === 0) g.moveTo(x, y); else g.lineTo(x, y);
+        }
+        g.strokePath();
+      }
+    } else if (fx === 'blueprint') {
+      // Two giant compass arcs with tick marks, centered off the page.
+      for (let n = 0; n < 2; n++) {
+        const ax = n ? 900 : -160;
+        const ay = n ? -260 : 1560;
+        const r = n ? 700 : 980;
+        const a0 = n ? 1.75 : -1.35;
+        const a1 = n ? 2.95 : -0.15;
+        g.lineStyle(2.2, ink, 0.13);
+        g.beginPath();
+        for (let k = 0; k <= 40; k++) {
+          const a = a0 + ((a1 - a0) * k) / 40;
+          const rr = r + (boil() - 0.5) * 3;
+          if (k === 0) g.moveTo(ax + Math.cos(a) * rr, ay + Math.sin(a) * rr); else g.lineTo(ax + Math.cos(a) * rr, ay + Math.sin(a) * rr);
+        }
+        g.strokePath();
+        g.lineStyle(1.6, ink, 0.12);
+        for (let k = 0; a0 + k * 0.06 <= a1; k++) {
+          const a = a0 + k * 0.06;
+          const t0 = r - (k % 5 === 0 ? 18 : 9);
+          g.lineBetween(ax + Math.cos(a) * t0, ay + Math.sin(a) * t0, ax + Math.cos(a) * (r + (boil() - 0.5) * 2), ay + Math.sin(a) * r);
+        }
+      }
+    } else if (fx === 'graph') {
+      // Red crayon margin (double line) down the left of the graph paper.
+      for (let k = 0; k < 2; k++) {
+        const x0 = 70 + k * 7;
+        g.lineStyle(k ? 1.8 : 2.6, 0xd8432c, k ? 0.2 : 0.3);
+        g.beginPath();
+        for (let i = 0; i <= 14; i++) {
+          const x = x0 + (boil() - 0.5) * 2.4;
+          const y = -500 + i * 160;
+          if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+        }
+        g.strokePath();
+      }
+    } else if (fx === 'charcoal') {
+      // Smudged charcoal hatching along both edges, like the margins of a sketch.
+      for (let s = 0; s < 2; s++) {
+        const side = s ? 1 : -1;
+        const edge = side < 0 ? -10 : GAME_WIDTH + 10;
+        for (let i = 0; i < 26; i++) {
+          const st = artRandom(i * 131 + (side + 2) * 977);
+          const y = -400 + i * 80 + st() * 30;
+          const len = 70 + st() * 90;
+          const x0 = edge - side * st() * 30;
+          const j = (boil() - 0.5) * 3;
+          g.lineStyle(10, 0x000000, 0.06);
+          g.lineBetween(x0, y, x0 - side * len * 0.8, y - len * 0.55);
+          g.lineStyle(2.4 + st() * 1.6, 0x0b0806, 0.38 + st() * 0.14);
+          g.lineBetween(x0 + j, y, x0 - side * len * 0.8 + j, y - len * 0.55);
+          if (st() < 0.4) {
+            g.lineStyle(1.4, ink, 0.07);
+            g.lineBetween(x0 - side * 8, y + 10, x0 - side * len * 0.6, y - len * 0.4 + 10);
+          }
+        }
+      }
+    }
   },
 
   // ---------- walls ----------
@@ -602,8 +981,8 @@ const ART = {
     return p._art;
   },
 
-  planetTextureFor(scene, R, design, inkMode, ink, variant) {
-    const key = 'pl_' + R + '_' + design + '_' + inkMode + '_' + variant;
+  planetTextureFor(scene, R, design, inkKey, ink, variant) {
+    const key = 'pl_' + R + '_' + design + '_' + inkKey + '_' + variant;
     if (scene.textures.exists(key)) return key;
     const D = PLANET_DESIGNS[design];
     const W = ((D.ring || D.moon) ? 3.4 : 2.5) * R + 48;
@@ -635,7 +1014,7 @@ const ART = {
     }
     // On the cream page (dark ink) warm bodies sit close to the paper's tone: a heavier outline
     // and a graphite drop shadow keep them standing off the page.
-    const onCream = ink === SKETCH.dark;
+    const onCream = artIsDark(ink);
     const inkW = (3 + R * 0.022) * (onCream ? 1.45 : 1);
     const tilt = -0.22;
     const ringPts = (rx, ry, from, to) => {
@@ -841,8 +1220,11 @@ const ART = {
     const s = ART.planetStyle(p);
     const t = ctx.time;
     const variant = (ART.boilFrame(t) + s.seed) % SKETCH.variants;
-    const key = ART.planetTextureFor(g.scene, s.R, s.design, ART.inkMode, ART.ink, variant);
+    const key = ART.planetTextureFor(g.scene, s.R, s.design, ART.inkKey, ART.ink, variant);
     const img = ART.bodyImage(g, p, key);
+    // The page's crayon shift is fixed per planet when it is first drawn, so nothing pops mid-turn.
+    if (s.tint === undefined) s.tint = ART.planetTint;
+    if (s.tint !== 0xffffff) img.setTint(s.tint); else if (img.isTinted) img.clearTint();
     const w = p.wobble || 0;
     const jig = w * 0.14 * Math.sin(t * 32);
     img.setPosition(p.x, p.y);
@@ -1084,9 +1466,10 @@ const ART = {
 
   // ---------- hazards ----------
 
-  asteroidTexture(scene, design, variant) {
-    const key = 'ast_' + design + '_' + ART.inkMode + '_' + variant;
-    const ink = ART.ink;
+  asteroidTexture(scene, design, variant, inkKey) {
+    const ik = inkKey || ART.inkKey;
+    const key = 'ast_' + design + '_' + ik + '_' + variant;
+    const ink = ART.inkForKey(ik);
     const R = ASTEROID_BASE_R;
     return ART.canvasTexture(scene, key, R * 2.6 + 20, R * 2.6 + 20, (c, w, h) => {
       const cx = w / 2;
@@ -1163,9 +1546,10 @@ const ART = {
     }
   },
 
-  blackHoleTexture(scene, variant) {
-    const key = 'bh_' + ART.inkMode + '_' + variant;
-    const ink = ART.ink;
+  blackHoleTexture(scene, variant, inkKey) {
+    const ik = inkKey || ART.inkKey;
+    const key = 'bh_' + ik + '_' + variant;
+    const ink = ART.inkForKey(ik);
     const R = TUNING.blackHoleRadius;
     const S = (R + 110) * 2;
     return ART.canvasTexture(scene, key, S, S, (c, w, h) => {
@@ -1292,7 +1676,10 @@ const ART = {
     // Tail: colored-pencil strands that converge toward the end, plus cross strokes.
     if (n > 2) {
       const wide = 1 + 0.35 * burn;
+      // Pages whose paper is close to the warm crayons get a pencil edge along the tail: dark ink on
+      // the light pages, a thin cream gel-pen line on the brown kraft and charcoal pages.
       const onCream = ART.inkMode === 'd';
+      const edgeCol = onCream ? ART.ink : ART.tailEdge;
       const strands = [
         { off: -0.85 * wide, c: tint(cTrail, 0x3a5fd8), w: 5, reach: 0.75 },
         { off: 0.85 * wide, c: tint(cTrail, 0x3a5fd8), w: 5, reach: 0.7 },
@@ -1315,9 +1702,9 @@ const ART = {
         const len = Math.hypot(tx, ty) || 1;
         normals.push({ x: -ty / len, y: tx / len });
       }
-      if (onCream) {
-        // Cream page: the warm strands would melt into the paper, so the tail gets a dark
-        // pencil edge on both sides first (the strands are drawn over its inner half).
+      if (edgeCol !== undefined) {
+        // The warm strands would melt into the paper, so the tail gets a pencil edge on both
+        // sides first (the strands are drawn over its inner half).
         for (const side of [-1, 1]) {
           const m = Math.max(2, Math.floor(n * 0.8));
           const pts = [];
@@ -1326,7 +1713,7 @@ const ART = {
             const spread = side * wide * r * (0.35 + 0.75 * f) * 1.08 + (rnd() - 0.5) * 3;
             pts.push({ x: trail[i].x + normals[i].x * spread, y: trail[i].y + normals[i].y * spread });
           }
-          g.lineStyle(4.5, SKETCH.dark, 0.85);
+          g.lineStyle(onCream ? 4.5 : 3, edgeCol, onCream ? 0.85 : 0.6);
           g.strokePoints(pts, false);
         }
       }
