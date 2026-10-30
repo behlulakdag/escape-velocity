@@ -11,7 +11,7 @@ function loadBrowserScripts() {
   for (const file of ['src/config.js', 'src/art.js', 'src/scenes/GameOverScene.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
-  return vm.runInContext('({ deathJawsPose, DEATH_JAWS, goStripSlots, goNewCardX, GO_STRIP, GO_NEWCARD, GAME_WIDTH })', context);
+  return vm.runInContext('({ deathJawsPose, DEATH_JAWS, goStripSlots, goNewCardX, goBuildLabelSpan, GO_STRIP, GO_NEWCARD, GAME_WIDTH })', context);
 }
 
 const m = loadBrowserScripts();
@@ -81,4 +81,16 @@ test('the NEW CARDS note stays on screen and right of a 7-digit score', () => {
   }
   // Shipped layout (PROGRESS loaded) draws the page at ~0.84: the note clears a 7-digit score (~215 px half width).
   assert.ok(m.goNewCardX(0.84) - m.GO_NEWCARD.w / 2 > 215);
+});
+
+// The rotated 'build:' was clipped by the strip's torn left edge (paper starts at game x 32).
+// Its text box is ~33 px tall at 28 px (measured in the browser); 36 leaves room for the boil.
+test("rotated 'build:' sits on the paper, left of every card name, for 1..12 cards", () => {
+  const span = m.goBuildLabelSpan(36);
+  assert.ok(span.left >= 32 + 2, 'letter tops clear the torn left edge: ' + span.left);
+  for (let n = 1; n <= 12; n++) {
+    const s = m.goStripSlots(n);
+    const firstNameLeft = s.first - s.labelMaxW / 2 + m.GAME_WIDTH / 2;
+    assert.ok(firstNameLeft >= span.right + 4, 'clear of the first card name, n=' + n);
+  }
 });

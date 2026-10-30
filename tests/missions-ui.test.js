@@ -56,3 +56,30 @@ test('without zoneAt the fixed list is clamped and strict lookups past it are un
   assert.strictEqual(typeof z.uiZone(3).name, 'string');
   assert.strictEqual(z.uiClampZoneIndex(7), 7);
 });
+
+// A 335 km/s run finishes 'Reach 150 km/s' and the pool hands in 'Reach 300 km/s' with no progress:
+// it must not read like the game missed the run's speed.
+test('a fresh run mission the run already beat says again next run', () => {
+  const speed300 = { id: 'speed300', kind: 'run', stat: 'topSpeed', progress: 0, goal: 300, done: false };
+  assert.strictEqual(ui.uiMissionRowLabel(speed300, true, { topSpeed: 335 }), 'again next run');
+  assert.strictEqual(ui.uiMissionRowLabel(speed300, true, { topSpeed: 300 }), 'again next run');
+  assert.strictEqual(ui.uiMissionRowLabel(speed300, true, { topSpeed: 212 }), 'next run');
+  assert.strictEqual(ui.uiMissionRowLabel(speed300, true), 'next run');
+  assert.strictEqual(ui.uiMissionRowLabel({ id: 'h', kind: 'run', stat: 'altitude', progress: 0, goal: 1500 }, true, { altitude: 1620 }), 'again next run');
+});
+
+test('totals and old missions ignore the run stats', () => {
+  assert.strictEqual(ui.uiMissionRowLabel({ id: 'c', kind: 'total', stat: 'catches', progress: 0, goal: 50 }, true, { catches: 60 }), 'next run');
+  assert.strictEqual(ui.uiMissionRowLabel({ id: 's', kind: 'run', stat: 'topSpeed', progress: 212, goal: 300 }, false, { topSpeed: 335 }), '212/300 km/s');
+});
+
+test('stat and kind come from the mission pool when the view leaves them out', () => {
+  const context = vm.createContext({ Phaser: { Scene: class {} }, console });
+  for (const file of ['src/config.js', 'src/progress.js', 'src/utils.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
+  }
+  const label = vm.runInContext('uiMissionRowLabel', context);
+  // PROGRESS's missionView carries kind but not stat.
+  assert.strictEqual(label({ id: 'speed300', kind: 'run', progress: 0, goal: 300 }, true, { topSpeed: 335 }), 'again next run');
+  assert.strictEqual(label({ id: 'speed300', progress: 0, goal: 300 }, true, { topSpeed: 335 }), 'again next run');
+});

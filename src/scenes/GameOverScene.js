@@ -15,10 +15,19 @@ const GO_CORNER_BUTTONS = { muteX: 206, fullX: 514, y: 100 };
 // (goNewCardX) with a 16 px gutter.
 const GO_NEWCARD = { x: 314, y: -166, w: 172, h: 112, gutter: 16, tilt: 8 };
 // Build strip under the page (game x of the slot row). The strip's paper only spans x 32..678 and
-// 'build:' plus the red margin line sit left of 66, so the slots stay inside 76..664: a label in
+// 'build:' plus the red margin line sit left of 72, so the slots stay inside 76..664: a label in
 // the last slot never runs off the torn edge onto the dark page. Names are written at 26 px
 // (~13 CSS px on a 360 px phone) on up to two lines, above the strip's bottom edge.
-const GO_STRIP = { y: 914, h: 164, left: 76, right: 664, maxSlot: 150, cardY: -34, cardScale: 0.95, labelY: 0, labelSize: 26, labelPad: 14 };
+// buildX: game x of the rotated 'build:' (its ~33 px line height becomes its width), so its letter
+// tops clear the torn left edge at 32 and its baseline stays left of the first slot.
+const GO_STRIP = { y: 914, h: 164, left: 76, right: 664, maxSlot: 150, cardY: -34, cardScale: 0.95, labelY: 0, labelSize: 26, labelPad: 14, buildX: 54, buildSize: 28 };
+
+// Left / right game x of the rotated 'build:' label for a text box lineHeight px tall (its width
+// once turned up the margin), at the strip's own scale 1.
+function goBuildLabelSpan(lineHeight) {
+  const h = lineHeight || GO_STRIP.buildSize * 1.2;
+  return { left: GO_STRIP.buildX - h / 2, right: GO_STRIP.buildX + h / 2 };
+}
 
 // Slot width and the first slot's centre (strip-local x) for a build of n cards.
 function goStripSlots(n) {
@@ -242,7 +251,7 @@ class GameOverScene extends Phaser.Scene {
     const slot = S.slot;
     const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(ids) : [];
     const strip = this.add.container(GAME_WIDTH / 2, y, [uiBoilImage(this, 0, 0, goStripTexture(this))]).setRotation(0.012).setScale(scale || 1);
-    const build = uiInkText(this, -GAME_WIDTH / 2 + 40, 0, 'build:', { size: 28, color: UI_INK.pencilDarkHex, stroke: null, rot: -Math.PI / 2 + 0.04, boil: false });
+    const build = uiInkText(this, L.buildX - GAME_WIDTH / 2, 0, 'build:', { size: L.buildSize, color: UI_INK.pencilDarkHex, stroke: null, rot: -Math.PI / 2 + 0.04, boil: false });
     strip.add(build);
     const xOf = (i) => S.first + i * slot;
     for (const family of sets) {
@@ -276,6 +285,15 @@ class GameOverScene extends Phaser.Scene {
     this.tweens.add({ targets: strip, y, alpha: 1, delay: 120, duration: 240, ease: 'Back.Out' });
   }
 
+  // This run's stats in PROGRESS's mission terms, so a mission that arrives already beaten by the
+  // run is labelled 'again next run' (uiMissionRowLabel). Same numbers as the page's headline.
+  runStats() {
+    const stats = { altitude: this.altitude, cards: this.cards.length };
+    if (this.topSpeed !== undefined) stats.topSpeed = this.topSpeed;
+    if (this.maxChain !== undefined) stats.maxChain = this.maxChain;
+    return stats;
+  }
+
   // Missions note under the page: this run's finished missions get crossed out in red crayon one
   // by one, each paying its coins into the purse (count-up), then slide away for the next ones.
   // Everything here is decoration on a timer: RETRY works from the first frame.
@@ -296,7 +314,7 @@ class GameOverScene extends Phaser.Scene {
     note.add(purse);
     const rowY = (i) => -M.noteH / 2 + M.rowTop + i * M.rowStep;
     const rows = plan.map((p, i) => {
-      const row = uiMissionRow(this, 0, rowY(i), p.mission, M.rowW, { size: 28, fresh: !!p.isNew });
+      const row = uiMissionRow(this, 0, rowY(i), p.mission, M.rowW, { size: 28, fresh: !!p.isNew, runStats: this.runStats() });
       note.add(row);
       if (p.isNew) this.markNewRow(note, row);
       return row;
@@ -312,7 +330,7 @@ class GameOverScene extends Phaser.Scene {
       this.time.delayedCall(start + k * step, () => {
         rows[i].strike(300, () => {
           this.game.events.emit('sfx', 'perfect', { chain: k + 2 });
-          this.payCoins(note, rows[i], purse, plan[i].mission.reward || 0, () => shown, (v) => { shown = v; });
+          this.payCoins(note, rows[i], purse, plan[i].mission.reward || 0, () => shown, (v) => { shown = v; }, totalNow);
         });
       });
     });
@@ -324,7 +342,7 @@ class GameOverScene extends Phaser.Scene {
         if (!next) return;
         const old = rows[i];
         this.tweens.add({ targets: old, x: -GAME_WIDTH, alpha: 0, delay: k * 140, duration: 260, ease: 'Quad.In', onComplete: () => old.destroy() });
-        const row = uiMissionRow(this, GAME_WIDTH, rowY(i), next, M.rowW, { size: 28, fresh: true });
+        const row = uiMissionRow(this, GAME_WIDTH, rowY(i), next, M.rowW, { size: 28, fresh: true, runStats: this.runStats() });
         note.add(row);
         this.tweens.add({
           targets: row, x: 0, delay: 200 + k * 140, duration: 300, ease: 'Back.Out',
@@ -333,12 +351,13 @@ class GameOverScene extends Phaser.Scene {
       });
       this.game.events.emit('sfx', 'pageturn', {});
       // Settle the purse on the saved total in case a tween was cut short.
-      this.time.delayedCall(700, () => { if (purse.active) purse.setValue(totalNow); });
+      this.time.delayedCall(700, () => { shown = totalNow; if (purse.active) purse.setValue(totalNow); });
     });
   }
 
   // A coin hops from the mission's reward to the purse, which counts up and punches.
-  payCoins(note, row, purse, amount, getShown, setShown) {
+  // cap: the saved total; a hop that lands after the settle (slow frames) never counts past it.
+  payCoins(note, row, purse, amount, getShown, setShown, cap) {
     const coin = uiBoilImage(this, row.x + GO_META.rowW / 2 - 14, row.y, uiCoinTexture(this)).setScale(0.6);
     note.add(coin);
     this.tweens.add({
@@ -346,7 +365,7 @@ class GameOverScene extends Phaser.Scene {
       onComplete: () => {
         coin.destroy();
         const from = getShown();
-        const to = from + amount;
+        const to = cap !== undefined ? Math.min(cap, from + amount) : from + amount;
         setShown(to);
         const c = { v: from };
         this.tweens.add({ targets: c, v: to, duration: 380, onUpdate: () => purse.setValue(Math.floor(c.v)), onComplete: () => purse.setValue(to) });

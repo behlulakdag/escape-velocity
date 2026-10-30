@@ -639,14 +639,18 @@ function uiShortNumber(n) {
 // Unit written after a mission's progress: ' m' for altitude goals, ' km/s' for speed goals.
 // m.stat when given, else looked up in PROGRESS's mission pool by id ('' when unknown).
 const UI_MISSION_UNITS = { altitude: ' m', topSpeed: ' km/s' };
-function uiMissionUnit(m) {
-  if (!m) return '';
-  let stat = m.stat;
-  if (!stat && m.id && typeof MISSION_POOL !== 'undefined') {
+// A mission's pool definition field (stat / kind): m's own when given, else PROGRESS's pool by id.
+function uiMissionDefField(m, field) {
+  if (!m) return undefined;
+  if (m[field]) return m[field];
+  if (m.id && typeof MISSION_POOL !== 'undefined') {
     const def = MISSION_POOL.find((d) => d.id === m.id);
-    stat = def && def.stat;
+    return def ? def[field] : undefined;
   }
-  return UI_MISSION_UNITS[stat] || '';
+  return undefined;
+}
+function uiMissionUnit(m) {
+  return UI_MISSION_UNITS[uiMissionDefField(m, 'stat')] || '';
 }
 
 // Progress written after a mission: '212/300', '312/500 m', '271/300 km/s'. One-shot missions
@@ -658,8 +662,18 @@ function uiMissionProgressLabel(m) {
 
 // A mission that just replaced a finished one has not been played yet: '0/5' right under a run
 // that already did 5 reads as broken, so it says 'next run' until it has progress.
-function uiMissionRowLabel(m, fresh) {
-  if (fresh && m && !m.done && !(m.progress > 0)) return 'next run';
+// runStats (optional): the finished run's own stats ({ topSpeed, altitude, maxChain, cards }).
+// A fresh one-run mission ('Reach 300 km/s') arrives with no progress even when the run that
+// unlocked it went past its goal (335 km/s): it only counts from the next run, so it says
+// 'again next run' instead of looking like the game missed the run's speed.
+function uiMissionRowLabel(m, fresh, runStats) {
+  if (fresh && m && !m.done && !(m.progress > 0)) {
+    const stat = uiMissionDefField(m, 'stat');
+    const kind = uiMissionDefField(m, 'kind');
+    const value = runStats && stat ? runStats[stat] : undefined;
+    if (kind === 'run' && typeof value === 'number' && m.goal > 0 && value >= m.goal) return 'again next run';
+    return 'next run';
+  }
   return uiMissionProgressLabel(m);
 }
 
@@ -848,7 +862,7 @@ function uiMissionRow(scene, x, y, mission, width, o) {
   const reward = uiInkText(scene, width / 2 - 32, 1, '+' + (mission.reward || 0), {
     size: size - 2, color: '#9a5a08', stroke: null, ox: 1, rot: -0.03, boil: false,
   });
-  const progressLabel = uiMissionRowLabel(mission, o.fresh);
+  const progressLabel = uiMissionRowLabel(mission, o.fresh, o.runStats);
   const progress = uiInkText(scene, reward.x - reward.width - 14, 2, progressLabel, {
     size: size - 5, color: '#2f6fa8', stroke: null, ox: 1, rot: 0.01, boil: false,
   });
