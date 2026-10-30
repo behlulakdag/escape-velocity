@@ -1021,3 +1021,66 @@ test('novaSpeed: first (tutorial) runs keep the gentler time ramp', () => {
   assert.strictEqual(o.novaSpeedFor(30, 0, 1, 1, true), o.novaSpeed(30, 0, true));
   assert.strictEqual(o.novaSpeed(1e6, 0, true), o.novaSpeed(1e6, 0), 'same top speed');
 });
+
+test('catchSlowScale: light and short (~0.6x easing back to 1x within CATCH_SLOW.time)', () => {
+  assert.strictEqual(o.catchSlowScale(-1), 1);
+  assert.ok(Math.abs(o.catchSlowScale(0) - 0.6) < 1e-9);
+  assert.ok(o.CATCH_SLOW.time >= 0.15 && o.CATCH_SLOW.time <= 0.2);
+  let prev = 0;
+  for (let t = 0; t < o.CATCH_SLOW.time; t += 0.01) {
+    const k = o.catchSlowScale(t);
+    assert.ok(k >= prev - 1e-9 && k >= 0.6 && k <= 1, String(t));
+    prev = k;
+  }
+  assert.strictEqual(o.catchSlowScale(o.CATCH_SLOW.time), 1);
+  assert.strictEqual(o.catchSlowScale(NaN), 1);
+});
+
+test('earlyHelpShare: full early, fading out, gone by earlyHelpSeconds', () => {
+  assert.strictEqual(o.earlyHelpShare(0), 1);
+  assert.strictEqual(o.earlyHelpShare(o.TUNING.earlyHelpFull), 1);
+  const mid = o.earlyHelpShare((o.TUNING.earlyHelpFull + o.TUNING.earlyHelpSeconds) / 2);
+  assert.ok(mid > 0.4 && mid < 0.6);
+  assert.strictEqual(o.earlyHelpShare(o.TUNING.earlyHelpSeconds), 0);
+  assert.strictEqual(o.earlyHelpShare(60), 0);
+});
+
+test('orbitDangerLevel: 0 from orbitDangerEta, 1 by orbitDangerFull, rising in between', () => {
+  assert.strictEqual(o.orbitDangerLevel(5), 0);
+  assert.strictEqual(o.orbitDangerLevel(o.TUNING.orbitDangerEta), 0);
+  assert.ok(o.orbitDangerLevel(1) > 0 && o.orbitDangerLevel(1) < o.orbitDangerLevel(0.6));
+  assert.strictEqual(o.orbitDangerLevel(0), 1);
+  assert.strictEqual(o.orbitDangerLevel(NaN), 0);
+});
+
+test('Wall Kick exploit: recharge only from aimed upward launches, cooldown, climb scales with the incoming climb', () => {
+  assert.strictEqual(o.wallKickRecharges(true, -0.7), true);
+  assert.strictEqual(o.wallKickRecharges(true, 0), false, 'flat sideways release');
+  assert.strictEqual(o.wallKickRecharges(true, -0.1), true, 'aimed a little up');
+  assert.strictEqual(o.wallKickRecharges(true, 0.4), false, 'falling release');
+  assert.strictEqual(o.wallKickRecharges(false, -0.9), false, 'unaimed');
+  assert.strictEqual(o.wallKickAllowed(0, 0.5), false, 'cooldown');
+  assert.strictEqual(o.wallKickAllowed(0, o.TUNING.wallKickCooldown), true);
+  assert.strictEqual(o.wallKickAllowed(2, 10), false);
+  // Flat or falling in: only a shallow climb (no free near-vertical climb).
+  assert.ok(Math.abs(o.wallKickClimb(0) + o.TUNING.wallKickClimbMin) < 1e-9);
+  assert.ok(Math.abs(o.wallKickClimb(0.6) + o.TUNING.wallKickClimbMin) < 1e-9);
+  // Climbing in: scaled up to the max; a steeper climb keeps its own steepness.
+  assert.ok(o.wallKickClimb(-0.5) < o.wallKickClimb(-0.3));
+  assert.ok(Math.abs(o.wallKickClimb(-0.75) + o.TUNING.wallKickClimbMax) < 1e-9);
+  assert.ok(Math.abs(o.wallKickClimb(-0.95) + 0.95) < 1e-9);
+});
+
+test('pickAssistTarget: an optional wider cone (early help) finds a planet the normal one misses', () => {
+  const planet = { x: 400, y: -400, radius: 60 };
+  // Aim straight up from (0, 0): the planet's near pass point is ~33 degrees off.
+  assert.strictEqual(o.pickAssistTarget(0, 0, 0, -1, [planet], null), null);
+  const wide = o.pickAssistTarget(0, 0, 0, -1, [planet], null, 0.7);
+  assert.ok(wide && wide.planet === planet && wide.angle > o.TUNING.assistMaxAngle);
+});
+
+test('novaOrbitEta: a big orbit swinging down into a far-ish wave is not reported as the plain gap', () => {
+  // gap / wave = 2.4 s, but the orbit's low point (radius 400 below the planet) meets the front much sooner.
+  const e = o.novaOrbitEta({ novaY: 1200, cometY: 0, planetY: 400, angle: -Math.PI / 2, radius: 400, dir: 1, spin: 4, wave: 500 });
+  assert.ok(e < 2, String(e));
+});

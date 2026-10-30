@@ -23,6 +23,14 @@
 // confused = first run (guided tutorial on), taps the screen at random like the masher.
 // instant = grabs the nearest grabbable planet and lets go the very next frame (autopilot exploit check).
 // rhythmFast = blind rhythm tapping: holds 180 ms, lets go for 180 ms, forever, ignoring the screen.
+// humanLike = a returning human: holds 10-15 frames after a planet comes within ~110 px of its surface, and
+//   lets go 150-450 ms after the aim first turned green (reaction lag: it may already have swept past), or
+//   after 3 s.
+// pinball = Wall Kick exploit check: grabs like careful, lets go when the orbit tangent is flat sideways
+//   (|unit vy| < 0.12), aimed or not.
+// Orbit warning lead: every supernova death while orbiting reports orbitWarn (s a warning was up before it:
+// the HUD band, eta < 1.2 s, or the orbit warning, orbiting with eta < 1.5 s; -1 = none); summaries give
+// orbitWarnMin / orbitWarnMed.
 // window.simTutorial = true turns the tutorial on for every style (newbie / confused always have it).
 // Card picks: every run reports pickDeath (s between the last card pick and a supernova death within 1.5 s,
 // else null) and lateEta08 (share of frames at >= 15,000 m with eta < 0.8 s, the late warning band).
@@ -40,7 +48,8 @@
 // frames with a planet or its orbit ring under the bottom-corner HUD blocks). Date.now follows the step clock.
 // playtestSummary(styles, runsEach, maxSeconds) - maxSeconds defaults to 600 for expert, 240 otherwise.
 // playtestTargets(runsEach, groups, only) - the balance target suite in one call: groups 'normal' (fresh
-// starts, all styles), 'late9k' / 'late9kNoCards' (simStart at 9000 m), 'long' (anyAssist / expert, 600 s);
+// starts, all styles), 'late9k' / 'late15k' / 'late9kNoCards' (simStart at 9000 / 15000 m), 'long'
+// (anyAssist / expert, 600 s);
 // only = limit to these styles. Keep each call under ~40 s of page time (e.g. 15 runs of the long styles).
 (() => {
   let clock = performance.now();
@@ -183,6 +192,9 @@
     let greenMs = -1;         // ...and ms into an orbit before it starts looking for the green aim
     // supernova visibility
     let warnSince = -1;       // run seconds the eta < 1.2 s warning has been up since (-1 = off)
+    let orbitWarnSince = -1;  // ...and the eta < 1.5 s orbit warning (J), counted from the first warned frame
+    let humanGreenMs = -1;    // humanLike: ms since the aim first turned green in this orbit (-1 = not yet)
+    let humanLag = 0;
     let lateFrames = 0;
     let lateSeen = 0;
     let lateEta08 = 0;
@@ -255,6 +267,31 @@
         }
       } else if (style === 'holder') {
         s.isHolding = true;
+      } else if (style === 'humanLike' && !s.orbit) {
+        let near = null;
+        for (const p of s.planets) {
+          if (p === left || p === s.noGrabPlanet) continue;
+          if (s.distanceTo(p) - p.radius < 110 && p.y < s.comet.y + 60) { near = p; break; }
+        }
+        if (near && !s.isHolding && reactFrames < 0) reactFrames = 10 + Math.floor(Math.random() * 6);
+        if (!near && !s.scrape && reactFrames >= 0) reactFrames = -1;
+        if (reactFrames >= 0 && --reactFrames < 0) s.pressHold();
+        holdNoOrbit = s.isHolding && !s.orbit ? holdNoOrbit + 16.67 : 0;
+        if (holdNoOrbit > 1500) { s.releaseHold(); holdNoOrbit = 0; }
+        held = 0;
+        humanGreenMs = -1;
+      } else if (style === 'humanLike') {
+        left = s.orbitPlanet;
+        held += 16.67;
+        reactFrames = -1;
+        if (humanGreenMs < 0 && s.currentAssist()) { humanGreenMs = 0; humanLag = 150 + Math.random() * 300; }
+        else if (humanGreenMs >= 0) humanGreenMs += 16.67;
+        if (s.isHolding && ((humanGreenMs >= 0 && humanGreenMs >= humanLag) || held > 3000)) s.releaseHold();
+      } else if (style === 'pinball' && s.orbit) {
+        left = s.orbitPlanet;
+        held += 16.67;
+        const u = tangentVelocity(s.orbit, 1);
+        if (held > 150 && Math.abs(u.vy) < 0.12) s.releaseHold();
       } else if (style === 'mid' && !s.orbit) {
         // Reacts to how close a planet looks, not to the real grab zone, and only after a delay.
         let near = null;
@@ -314,6 +351,8 @@
       }
       const eta = etaOf();
       if (eta < 1.2) { if (warnSince < 0) warnSince = s.elapsed; } else warnSince = -1;
+      // Any warning on screen: the HUD heat band / '!!' (eta < 1.2 s), or the orbit warning (orbiting, eta < 1.5 s).
+      if (eta < 1.2 || (s.orbit && eta < 1.5)) { if (orbitWarnSince < 0) orbitWarnSince = s.elapsed; } else if (!s.isOver) orbitWarnSince = -1;
       if (s.bestAltitude >= 15000) {
         lateFrames++;
         const bottom = typeof s.visibleBounds === 'function' ? s.visibleBounds().bottom : Infinity;
@@ -352,6 +391,7 @@
     delete s.updateCrawlRescue;
     speeds.sort((a, b) => a - b);
     const kms = (q) => (speeds.length ? Math.round(speeds[Math.floor(q * (speeds.length - 1))] / 10) : 0);
+    const orbitWarn = reason === 'SUPERNOVA!' && deathOrbiting ? (orbitWarnSince >= 0 ? Math.round((s.elapsed - orbitWarnSince) * 100) / 100 : -1) : null;
     const warnBeforeDeath = reason === 'SUPERNOVA!' ? (warnSince >= 0 ? Math.round((s.elapsed - warnSince) * 100) / 100 : -1) : null;
     const lateVisible = lateFrames ? Math.round((lateSeen / lateFrames) * 100) / 100 : null;
     const pickDeath = reason === 'SUPERNOVA!' && s.elapsed - lastPickAt <= 1.5 ? Math.round((s.elapsed - lastPickAt) * 100) / 100 : null;
@@ -363,7 +403,7 @@
     const slowShare = flightFrames ? slowFrames / flightFrames : 0;
     const wallLossShare = totalLoss > 0 ? Math.min(1, wallLoss / totalLoss) : 0;
     const hudShare = flightFrames ? hudFrames / flightFrames : 0;
-    return { hudShare, crawlCalls, crawlReach, crawlCatch, slowShare, cruiseKms, wallLossShare, pinballsAny, pickCrawlDeath, tutorialDoneAt, collapses, pinballs, wallHits: wallHits.length, pickDeath10, pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
+    return { orbitWarn, hudShare, crawlCalls, crawlReach, crawlCatch, slowShare, cruiseKms, wallLossShare, pinballsAny, pickCrawlDeath, tutorialDoneAt, collapses, pinballs, wallHits: wallHits.length, pickDeath10, pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
   };
 
   window.playtestSummary = (styles, runsEach, maxSeconds) => {
@@ -402,6 +442,9 @@
         minWarnBeforeDeath: runs.some((r) => r.warnBeforeDeath !== null) ? Math.min(...runs.filter((r) => r.warnBeforeDeath !== null).map((r) => (r.warnBeforeDeath < 0 ? -1 : r.warnBeforeDeath))) : null,
         lateVisible: median(runs.filter((r) => r.lateVisible !== null).map((r) => r.lateVisible)),
         lateEta08: median(runs.filter((r) => r.lateEta08 !== null).map((r) => r.lateEta08)),
+        orbitWarnMin: runs.some((r) => r.orbitWarn !== null) ? Math.min(...runs.filter((r) => r.orbitWarn !== null).map((r) => r.orbitWarn)) : null,
+        orbitWarnMed: runs.some((r) => r.orbitWarn !== null) ? median(runs.filter((r) => r.orbitWarn !== null).map((r) => r.orbitWarn)) : null,
+        orbitWarnList: runs.filter((r) => r.orbitWarn !== null).map((r) => r.orbitWarn).sort((a, b) => a - b).join(','),
         warnList: runs.filter((r) => r.warnBeforeDeath !== null).map((r) => r.warnBeforeDeath).sort((a, b) => a - b).join(','),
         pickDeaths: runs.filter((r) => r.pickDeath !== null).length,
         // Deaths within 10 s after a card pick, speed collapses and wall pinball bursts (totals over the runs).
@@ -440,7 +483,7 @@
   window.playtestTargets = (runsEach, groups, only) => {
     const n = runsEach || 30;
     const out = {};
-    const keys = ['medianSeconds', 'seconds', 'reached500', 'reached40k', 'died60', 'wallHitsPerMin', 'pinballs', 'collapses', 'crawlRescue', 'medianAlt'];
+    const keys = ['medianSeconds', 'seconds', 'reached500', 'reached40k', 'died60', 'wallHitsPerMin', 'pinballs', 'collapses', 'crawlRescue', 'medianAlt', 'orbitWarnMin', 'orbitWarnMed', 'minWarnBeforeDeath'];
     const run = (name, styles, max, start) => {
       if (groups && groups.indexOf(name) < 0) return;
       const list = only ? styles.filter((st) => only.indexOf(st) >= 0) : styles;
@@ -451,8 +494,9 @@
         list.forEach((st) => { const o = {}; keys.forEach((k) => { o[k] = r[st][k]; }); out[name + ':' + st] = o; });
       } finally { delete window.simStart; }
     };
-    run('normal', ['rhythmFast', 'idle', 'newbie', 'confused', 'mid', 'careful', 'masher', 'instant']);
-    run('late9k', ['instant', 'masher', 'rhythmFast'], 240, { altitude: 9000, speed: 8000, cards: ['wallkick', 'aero'], randomCards: 3, seconds: 75 });
+    run('normal', ['rhythmFast', 'idle', 'newbie', 'confused', 'mid', 'careful', 'masher', 'instant', 'random', 'humanLike']);
+    run('late9k', ['instant', 'masher', 'rhythmFast', 'pinball', 'humanLike'], 240, { altitude: 9000, speed: 8000, cards: ['wallkick', 'aero'], randomCards: 3, seconds: 75 });
+    run('late15k', ['instant', 'masher', 'rhythmFast', 'pinball', 'humanLike'], 240, { altitude: 15000, speed: 8000, cards: ['wallkick', 'aero'], randomCards: 3, seconds: 125 });
     run('late9kNoCards', ['instant', 'masher'], 240, { altitude: 9000, speed: 3000 });
     run('long', ['anyAssist', 'expert'], 600);
     return out;

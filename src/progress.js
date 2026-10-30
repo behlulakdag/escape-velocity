@@ -185,11 +185,15 @@ function createProgress(storageGetter) {
   let run = null;          // stats of the run in progress (null between runs)
   let pendingCards = [];   // cards discovered during the run, committed in endRun
 
-  function fillActive() {
+  // justPlayed (optional): the stats of the run that just ended. A 'run' mission that run already beat is
+  // skipped while another one is free (it comes back later): drawing 'Reach 300 km/s' right after a 335 km/s
+  // run showed it unchecked next to the run that did it.
+  function fillActive(justPlayed) {
     let guard = 0;
+    const beaten = (m) => !!justPlayed && m.kind === 'run' && (justPlayed[m.stat] || 0) >= m.goal;
     while (state.active.length < PROGRESS_ACTIVE_SLOTS && guard++ < MISSION_POOL.length * 3) {
       const taken = (id) => state.completed.indexOf(id) >= 0 || state.active.some((a) => a.id === id);
-      const next = MISSION_POOL.find((m) => !taken(m.id));
+      const next = MISSION_POOL.find((m) => !taken(m.id) && !beaten(m)) || MISSION_POOL.find((m) => !taken(m.id));
       if (next) {
         state.active.push({ id: next.id, best: 0, count: 0 });
         continue;
@@ -323,7 +327,7 @@ function createProgress(storageGetter) {
       state.active = state.active.filter((a) => doneIds.indexOf(a.id) < 0);
       for (const id of doneIds) if (state.completed.indexOf(id) < 0) state.completed.push(id);
       const before = state.active.map((a) => a.id);
-      fillActive();
+      fillActive(stats);
       const newMissions = state.active.filter((a) => before.indexOf(a.id) < 0).map((a) => missionView(a, null));
 
       state.coins += coinsEarned;

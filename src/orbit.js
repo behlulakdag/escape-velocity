@@ -39,6 +39,13 @@ const TUNING = {
   wallKeepFullFrom: 2000,
   wallBounceHighLoss: 0.1, // ...minus up to this at the absolute cap (see highSpeedShare)
   wallKicksPerFling: 2,   // Wall Kick works this many times per flight after an aimed fling (an unaimed one gets none)
+  wallKickRechargeUp: 0,  // ...and only after a fling that LAUNCHES upward (its aim's unit vy below -this): a flat
+                          // sideways release rode the kicks to BEYOND
+  wallKickCooldown: 1.5,  // s between two kicks
+  wallKickClimbGain: 1.15, // a kick climbs at the incoming climb x this (unit vy)...
+  wallKickClimbMin: 0.3,  // ...at least this (a flat or falling flight gets only a shallow climb)...
+  wallKickClimbMax: 0.8,  // ...and at most this, unless it already came in steeper
+  wallKickSteepFrom: 0.3, // a flight climbing at least this steeply (unit) gets the classic steep kick instead
   wallKickNearCap: 0.85,  // a kick adds no speed once the comet is this close to its speed cap
   // HIGH-SPEED DRAG: in flight, extra decay that grows with speed so a cap you did not earn bleeds away.
   dragFrom: 4500,         // px/s (450 km/s) where it starts; the early game never feels it
@@ -172,7 +179,56 @@ const TUNING = {
   secondWindMinCatches: 3, // ...and only runs that caught this many planets (an idle player never earns it)
   secondWindSpeed: 820,   // min speed after it (Unbreakable uses 1000)
   secondWindPush: 400,    // px below the comet the supernova is pushed (Unbreakable: 520)
+  // EARLY HELP (every run, first earlyHelpSeconds s; full until earlyHelpFull, then fading out): returning
+  // players skipping the tutorial died 2-3 s in after one falling fling. A falling free flight curls back up
+  // (earlyCurlTurn rad/s, toward the next planet above) and the green aim cone is wider (earlyAssistAngle).
+  earlyHelpFull: 10,
+  earlyHelpSeconds: 15,
+  earlyCurlTurn: 2.2,
+  earlyAssistAngle: 0.7,
+  // Orbit warning (GameScene: aim line pulse + hud.setOrbitDanger): orbiting with the wave this close (s).
+  orbitDangerEta: 1.5,
+  orbitDangerFull: 0.3,   // ...full strength at this eta
+  // A latch (orbit start) never leaves the wave closer than this many s of orbit eta: the down swing of a
+  // fresh orbit low on the screen killed in 0.2-0.3 s, faster than anyone can react to the warning.
+  latchMinEta: 0.9,
+  latchMaxPush: 450,      // px the wave may be pushed back for that, at most
 };
+
+// Catch feel (juice, not difficulty): world time scale t s after a catch: CATCH_SLOW.from easing back to 1
+// over CATCH_SLOW.time (light and short: the game must stay fast). 1 outside that.
+const CATCH_SLOW = { from: 0.6, time: 0.18, chainGap: 0.4 };
+function catchSlowScale(t) {
+  if (!(t >= 0) || t >= CATCH_SLOW.time) return 1;
+  const k = t / CATCH_SLOW.time;
+  return CATCH_SLOW.from + (1 - CATCH_SLOW.from) * k * k * (3 - 2 * k);
+}
+
+// Share of the early help (0..1) `seconds` into a run: 1 until earlyHelpFull, fading to 0 at earlyHelpSeconds.
+function earlyHelpShare(seconds) {
+  const t = seconds || 0;
+  if (t <= TUNING.earlyHelpFull) return 1;
+  return Math.max(0, 1 - (t - TUNING.earlyHelpFull) / (TUNING.earlyHelpSeconds - TUNING.earlyHelpFull));
+}
+
+// Orbit warning strength 0..1 for an orbit eta (s): 0 at orbitDangerEta and above, 1 at orbitDangerFull.
+function orbitDangerLevel(eta) {
+  if (!(eta < TUNING.orbitDangerEta)) return 0;
+  return Math.min(1, (TUNING.orbitDangerEta - eta) / (TUNING.orbitDangerEta - TUNING.orbitDangerFull));
+}
+
+// Whether a fling recharges Wall Kick: aimed (assist) and launched upward (unitVy: the aim's unit vy).
+function wallKickRecharges(aimed, unitVy) {
+  return !!aimed && unitVy < -TUNING.wallKickRechargeUp;
+}
+
+// Unit vy a Wall Kick leaves the wall with, from the incoming unit vy: the climb scales with the incoming
+// climb (no free near-vertical climb from a flat fling), between wallKickClimbMin and wallKickClimbMax.
+function wallKickClimb(uyIn) {
+  const up = Math.max(0, -(uyIn || 0));
+  const max = Math.max(TUNING.wallKickClimbMax, Math.min(0.98, up));
+  return -Math.max(TUNING.wallKickClimbMin, Math.min(max, up * TUNING.wallKickClimbGain));
+}
 
 // PERFECT window (rad, half-angle) at a speed: base (TUNING.perfectAngle or a card's) scaled up with the
 // late orbit spin boost, so gold stays on screen as long at 600 km/s as it does early (a fixed angle
@@ -286,7 +342,9 @@ function wallPlanetSlide(vx, vy, nx, ny) {
 }
 
 // Wall Kick: whether the next wall hit of this flight is still a kick (kicksUsed since the last aimed fling).
-function wallKickAllowed(kicksUsed) {
+// sinceLastKick (s, optional): a kick needs wallKickCooldown s since the last one.
+function wallKickAllowed(kicksUsed, sinceLastKick) {
+  if (sinceLastKick !== undefined && sinceLastKick < TUNING.wallKickCooldown) return false;
   return kicksUsed < TUNING.wallKicksPerFling;
 }
 
@@ -306,7 +364,9 @@ function tangentVelocity(orbit, speed) {
 // Aim assist: among planets roughly in front of the release direction, pick the one closest
 // in angle and return a point beside it (inside its grab zone, outside its surface), so a
 // near-miss release still flies into a catchable orbit instead of into empty space.
-function pickAssistTarget(x, y, dirX, dirY, planets, exclude) {
+// maxAngle (optional): a wider cone than assistMaxAngle (the early help).
+function pickAssistTarget(x, y, dirX, dirY, planets, exclude, maxAngle) {
+  const cone = maxAngle === undefined ? TUNING.assistMaxAngle : maxAngle;
   const len = Math.hypot(dirX, dirY) || 1;
   const ux = dirX / len;
   const uy = dirY / len;
@@ -326,7 +386,7 @@ function pickAssistTarget(x, y, dirX, dirY, planets, exclude) {
       const ay = p.y + ny * passDist * side;
       const al = Math.hypot(ax - x, ay - y);
       const angle = Math.acos(Math.max(-1, Math.min(1, ((ax - x) * ux + (ay - y) * uy) / al)));
-      if (angle <= TUNING.assistMaxAngle && (!best || angle < best.angle)) {
+      if (angle <= cone && (!best || angle < best.angle)) {
         best = { planet: p, aimX: ax, aimY: ay, angle };
       }
     }
@@ -707,16 +767,18 @@ function novaOrbitEta(o) {
   const gap = o.novaY - o.cometY;
   if (gap <= 0) return 0;
   const wave = Math.max(1, o.wave || 0);
-  if (gap / wave >= TUNING.etaSwingUnder) return gap / wave;
+  const reach = TUNING.cometRadius * 0.5;   // the comet dies when its center is this far past the front
+  // Far wave: the plain gap, unless the orbit's low point (a big orbit swinging down) is reached sooner.
+  const lowPoint = o.planetY + Math.abs(o.radius);
+  if (gap / wave >= TUNING.etaSwingUnder && (o.novaY - lowPoint - reach) / wave >= TUNING.etaSwingUnder) return gap / wave;
   const slowFor = Math.max(0, o.slowFor || 0);
   const slow = o.slowWave === undefined ? wave : o.slowWave;
-  const reach = TUNING.cometRadius * 0.5;   // the comet dies when its center is this far past the front
   for (let t = 0; t <= TUNING.etaSwingUnder; t += 0.02) {
     const y = o.planetY + Math.sin(o.angle + o.dir * o.spin * t) * o.radius;
     const front = o.novaY - slow * Math.min(t, slowFor) - wave * Math.max(0, t - slowFor);
     if (y + reach >= front) return t;
   }
-  return TUNING.etaSwingUnder;
+  return Math.max(TUNING.etaSwingUnder, gap / wave);
 }
 
 // Aim at one planet whatever the angle: the pass point beside it (assistPassGap off its surface) on the side
@@ -1092,5 +1154,5 @@ function nextMachTier(stampedTier, mach) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { routineCatchPopAllowed, wallKickVelocity, wallPlanetSlide, wallPlanetSlideActive, WALL_PLANET_SLIDE, flightDecayShare, isLossPop, popAdmitted, POP_GATES, passPointInField, guidedFlingBlocked, guidedAimLinedUp, wallBounceVelocity, crawlRescueStep, popGapOk, novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { CATCH_SLOW, catchSlowScale, earlyHelpShare, orbitDangerLevel, wallKickRecharges, wallKickClimb, routineCatchPopAllowed, wallKickVelocity, wallPlanetSlide, wallPlanetSlideActive, WALL_PLANET_SLIDE, flightDecayShare, isLossPop, popAdmitted, POP_GATES, passPointInField, guidedFlingBlocked, guidedAimLinedUp, wallBounceVelocity, crawlRescueStep, popGapOk, novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

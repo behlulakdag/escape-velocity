@@ -118,11 +118,25 @@ test('several missions complete in one run and all get replaced', () => {
 
 test('a mission that becomes active at game over does not count the run that just ended', () => {
   const { p } = fresh();
-  const r = playRun(p, { catches: 8, speed: 200, altitude: 2000 });
+  const r = playRun(p, { catches: 8, speed: 200, altitude: 1000 });
   assert.ok(r.newMissions.some((m) => m.id === 'hypersonic'));
   const hyper = p.activeMissions().find((m) => m.id === 'hypersonic');
   assert.strictEqual(hyper.done, false);
   assert.strictEqual(hyper.progress, 0);
+});
+
+test('a run mission the ending run already beat is not drawn as a new goal (335 km/s, then Reach 300 km/s)', () => {
+  const { p } = fresh();
+  const r = playRun(p, { catches: 8, speed: 200, altitude: 2000 });
+  // hypersonic (1500 m) was beaten by this 2000 m run: skipped for now, speed300 comes in instead.
+  assert.ok(!r.newMissions.some((m) => m.id === 'hypersonic'));
+  assert.deepStrictEqual(r.newMissions.map((m) => m.id), ['combo3', 'catch50', 'speed300']);
+  // The 335 km/s case: speed150 done in a run that also did 335 -> speed300 is not the replacement.
+  const q = fresh().p;
+  const r2 = playRun(q, { speed: 335 });
+  assert.deepStrictEqual(r2.completed.map((m) => m.id), ['speed150']);
+  assert.ok(!r2.newMissions.some((m) => m.id === 'speed300'));
+  assert.ok(q.activeMissions().every((m) => !(m.kind === 'run' && m.id.indexOf('speed') === 0 && m.goal <= 335)));
 });
 
 test('cumulative missions add up across runs from when they became active', () => {
@@ -157,12 +171,14 @@ test('perfect chain, close call, warp, set bonus, second wind and wall kick even
   assert.deepStrictEqual(p.activeMissions().map((m) => m.id), ['perfect25', 'blackhole', 'setbonus']);
   r = playRun(p, { chain: 20, warps: 1, setBonuses: 1 });
   assert.deepStrictEqual(r.completed.map((m) => m.id).sort(), ['blackhole', 'perfect25', 'setbonus']);
-  assert.deepStrictEqual(p.activeMissions().map((m) => m.id), ['combo10', 'speed450', 'beatbest']);
+  // combo10 is skipped for now: that 20 chain already beat it (it comes back once a run has not).
+  assert.deepStrictEqual(p.activeMissions().map((m) => m.id), ['speed450', 'beatbest', 'wallkick3']);
   r = playRun(p, { chain: 10, speed: 460, altitude: 3000 });   // 3000 m does not beat the 3100 m best
-  assert.deepStrictEqual(r.completed.map((m) => m.id).sort(), ['combo10', 'speed450']);
+  assert.deepStrictEqual(r.completed.map((m) => m.id).sort(), ['speed450']);
+  assert.deepStrictEqual(p.activeMissions().map((m) => m.id), ['beatbest', 'wallkick3', 'hyperspace']);
   r = playRun(p, { altitude: 3200 });
   assert.deepStrictEqual(r.completed.map((m) => m.id), ['beatbest']);
-  assert.deepStrictEqual(p.activeMissions().map((m) => m.id), ['wallkick3', 'hyperspace', 'speed600']);
+  assert.deepStrictEqual(p.activeMissions().map((m) => m.id), ['wallkick3', 'hyperspace', 'combo10']);
   r = playRun(p, { wallKicks: 2 });
   assert.strictEqual(r.completed.length, 0);
   assert.strictEqual(p.activeMissions()[0].progress, 2);
