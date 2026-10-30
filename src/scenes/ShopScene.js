@@ -123,9 +123,10 @@ class ShopScene extends Phaser.Scene {
       this.previewTrail = [];
       this.refresh();
     });
-    // Tiles drop in one after another.
-    tile.setAlpha(0).setY(y + 26);
-    this.tweens.add({ targets: tile, y, alpha: 1, delay: 120 + i * 50, duration: 220, ease: 'Back.Out' });
+    // Visible from the first frame (a tap right away must land on something), with a quick
+    // little settle one after another.
+    tile.setY(y + 12).setScale(1.06);
+    this.tweens.add({ targets: tile, y, scale: 1, delay: i * 20, duration: 140, ease: 'Back.Out' });
     // A pose that differs a little per skin so the row does not look stamped.
     const pose = shopPoseTrail(26, -6, -0.55 + (i % 3) * 0.12, 13, 7, 1 + (i % 2));
     const draw = () => {

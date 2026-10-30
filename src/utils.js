@@ -590,10 +590,55 @@ function uiShortNumber(n) {
   return (k < 100 ? (Math.floor(k * 10) / 10) : Math.floor(k)) + 'k';
 }
 
-// Progress written after a mission: '212/300'. One-shot missions (goal 1) and finished ones show none.
+// Unit written after a mission's progress: ' m' for altitude goals, ' km/s' for speed goals.
+// m.stat when given, else looked up in PROGRESS's mission pool by id ('' when unknown).
+const UI_MISSION_UNITS = { altitude: ' m', topSpeed: ' km/s' };
+function uiMissionUnit(m) {
+  if (!m) return '';
+  let stat = m.stat;
+  if (!stat && m.id && typeof MISSION_POOL !== 'undefined') {
+    const def = MISSION_POOL.find((d) => d.id === m.id);
+    stat = def && def.stat;
+  }
+  return UI_MISSION_UNITS[stat] || '';
+}
+
+// Progress written after a mission: '212/300', '312/500 m', '271/300 km/s'. One-shot missions
+// (goal 1) and finished ones show none.
 function uiMissionProgressLabel(m) {
   if (!m || m.done || !(m.goal > 1)) return '';
-  return uiShortNumber(Math.min(m.progress || 0, m.goal)) + '/' + uiShortNumber(m.goal);
+  return uiShortNumber(Math.min(m.progress || 0, m.goal)) + '/' + uiShortNumber(m.goal) + uiMissionUnit(m);
+}
+
+// Menu onboarding flags, one small JSON key: runDone (a run has reached the game over page),
+// metaSeen (the missions / SHOP / JOURNAL layer has been shown once, so 'new!' only shows once).
+const UI_MENU_FLAGS_KEY = 'escape_velocity_menu_v1';
+function uiLoadMenuFlags() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(UI_MENU_FLAGS_KEY) || '{}');
+    return { runDone: !!(raw && raw.runDone), metaSeen: !!(raw && raw.metaSeen) };
+  } catch (e) {
+    return { runDone: false, metaSeen: false };
+  }
+}
+
+function uiSaveMenuFlag(name) {
+  const flags = uiLoadMenuFlags();
+  if (flags[name]) return;
+  flags[name] = true;
+  try { localStorage.setItem(UI_MENU_FLAGS_KEY, JSON.stringify(flags)); } catch (e) { /* blocked: the session still knows */ }
+  uiMenuSession[name] = true;
+}
+
+// Storage may be blocked: the flags also live for the session, so a first run still unlocks the menu.
+const uiMenuSession = { runDone: false, metaSeen: false };
+
+// Has the player finished at least one run? Players from before the flag existed count by
+// their saved best score / altitude.
+function uiHasFinishedRun() {
+  if (uiMenuSession.runDone || uiLoadMenuFlags().runDone) return true;
+  if (loadHighScore() > 0) return true;
+  return uiProgressCall((P) => P.bestAltitude() > 0, false);
 }
 
 // What the shop's big button says for the selected skin.

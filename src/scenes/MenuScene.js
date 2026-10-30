@@ -3,11 +3,12 @@
 // Everything static is a pre-rendered boil texture (see utils.js); only the comet's dashed
 // trail is drawn per frame.
 // Vertical plan of the menu (game px). Title, orbit doodle, how-to line, missions note, PLAY,
-// then SHOP / JOURNAL; everything clear of the top corner buttons and ~65 px off the bottom.
+// then SHOP / JOURNAL; everything clear of the top corner buttons and ~90 px off the bottom.
+// First visit (no finished run yet): only title, orbit doodle, how-to line and PLAY (firstPlayY).
 const MENU_LAYOUT = {
-  bestY: 104, titleY: 190, orbitY: 556, orbitR: 128, howY: 722,
-  noteY: 864, noteW: 620, noteH: 200,
-  playY: 1032, metaY: 1166, metaW: 280, metaH: 100, metaX: [200, 520],
+  bestY: 104, titleY: 190, orbitY: 524, orbitR: 120, howY: 692,
+  noteY: 842, noteW: 620, noteH: 200,
+  playY: 1016, firstPlayY: 900, metaY: 1140, metaW: 280, metaH: 100, metaX: [200, 520],
 };
 
 class MenuScene extends Phaser.Scene {
@@ -32,8 +33,14 @@ class MenuScene extends Phaser.Scene {
     uiBoilImage(this, this.hero.x, this.hero.y, 'ui_planet_ring').setScale(0.74);
 
     this.trailGfx = this.add.graphics();
-    this.comet = uiBoilImage(this, cx, L.orbitY - L.orbitR, 'ui_comet').setScale(0.7);
+    // The equipped skin, drawn by the game's own comet art (same as the shop preview); the
+    // doodle texture is only the fallback when art.js is missing.
+    this.skin = uiProgressCall((P) => P.equippedSkin(), null);
+    this.useArtComet = typeof ART !== 'undefined' && !!ART.drawComet;
+    if (this.useArtComet && ART.setPage) ART.setPage(0);
+    this.comet = uiBoilImage(this, cx, L.orbitY - L.orbitR, 'ui_comet').setScale(0.7).setVisible(!this.useArtComet);
     this.trail = [];
+    this.artTrail = [];   // the scene object outlives a restart: start a fresh tail
     this.orbitAngle = -Math.PI / 2;
 
     this.titleLetters = [
@@ -45,8 +52,11 @@ class MenuScene extends Phaser.Scene {
     this.tweens.add({ targets: underline, scaleX: 1, duration: 380, delay: 700, ease: 'Quad.Out' });
     uiInkText(this, cx + 30, L.titleY + 218, 'speed is your life', { size: 36, color: uiColorHex(UI_CRAYON.pink), rot: -0.04 });
 
+    // First visit: just the title, the doodle, the how-to line and PLAY. The meta layer
+    // (missions, coins, SHOP, JOURNAL) shows up after the first finished run.
+    this.firstVisit = !uiHasFinishedRun();
     const best = loadHighScore();
-    if (best > 0) {
+    if (best > 0 && !this.firstVisit) {
       uiInkText(this, cx, L.bestY, 'best: ' + best, { size: 34, color: UI_INK.pencilHex, stroke: null, rot: 0.03 });
     }
     uiInkText(this, cx, L.howY, 'hold near a planet to orbit,\nlet go to fling. outrun the supernova!', {
@@ -55,7 +65,7 @@ class MenuScene extends Phaser.Scene {
 
     // Fresh data object so a previous scene.start's data (e.g. skipIntro from RETRY) never leaks in.
     const startGame = () => this.scene.start('Game', {});
-    const play = makeButton(this, cx, L.playY, 'PLAY', startGame, {
+    const play = makeButton(this, cx, this.firstVisit ? L.firstPlayY : L.playY, 'PLAY', startGame, {
       width: 440, height: 130, fontSize: '68px', color: UI_CRAYON.yellow,
     });
     play.setRotation(-0.025);
@@ -68,9 +78,11 @@ class MenuScene extends Phaser.Scene {
       },
     });
 
-    if (typeof PROGRESS !== 'undefined') {
-      this.showMissions();
-      this.showMetaButtons();
+    if (typeof PROGRESS !== 'undefined' && !this.firstVisit) {
+      const fresh = !(uiMenuSession.metaSeen || uiLoadMenuFlags().metaSeen);
+      this.showMissions(fresh);
+      this.showMetaButtons(fresh);
+      if (fresh) uiSaveMenuFlag('metaSeen');
     }
 
     makeMuteButton(this, 92, 116);
@@ -79,15 +91,17 @@ class MenuScene extends Phaser.Scene {
   }
 
   // Taped note with the 3 active missions (progress in blue pencil) and the coin purse.
-  showMissions() {
+  // fresh: first time the note is shown, so it gets a little red 'new!'.
+  showMissions(fresh) {
     const L = MENU_LAYOUT;
     const missions = uiProgressCall((P) => P.activeMissions(), []);
     const coins = uiProgressCall((P) => P.coins(), 0);
     const note = this.add.container(GAME_WIDTH / 2, L.noteY).setRotation(0.012);
     note.add(uiBoilImage(this, 0, 0, uiNoteTexture(this, L.noteW, L.noteH, { rules: { top: 58, step: 46 }, margin: 40 })));
-    note.add(uiInkText(this, -L.noteW / 2 + 58, -L.noteH / 2 + 30, 'missions', {
+    const header = uiInkText(this, -L.noteW / 2 + 58, -L.noteH / 2 + 30, 'missions', {
       size: 30, color: uiColorHex(0xb4441a), stroke: null, ox: 0, rot: -0.04,
-    }));
+    });
+    note.add(header);
     note.add(uiCoinCounter(this, L.noteW / 2 - 130, -L.noteH / 2 + 30, coins, { size: 34 }));
     if (!missions.length) {
       note.add(uiInkText(this, 10, 20, 'all missions done. legend!', { size: 30, color: UI_INK.darkHex, stroke: null, rot: -0.02 }));
@@ -95,12 +109,13 @@ class MenuScene extends Phaser.Scene {
     missions.slice(0, 3).forEach((m, i) => {
       note.add(uiMissionRow(this, 8, -L.noteH / 2 + 82 + i * 46, m, L.noteW - 44, { size: 27 }));
     });
+    if (fresh) note.add(uiNewTag(this, header.x + header.width + 46, -L.noteH / 2 + 24, 0.12));
     note.setY(L.noteY + 24).setAlpha(0);
     this.tweens.add({ targets: note, y: L.noteY, alpha: 1, duration: 260, delay: 380, ease: 'Back.Out' });
   }
 
   // SHOP and JOURNAL under PLAY: smaller and in cooler crayons so PLAY stays the obvious tap.
-  showMetaButtons() {
+  showMetaButtons(fresh) {
     const L = MENU_LAYOUT;
     const shop = makeButton(this, L.metaX[0], L.metaY, 'SHOP', () => this.scene.start('Shop'), {
       width: L.metaW, height: L.metaH, fontSize: '44px', color: UI_CRAYON.green,
@@ -108,13 +123,22 @@ class MenuScene extends Phaser.Scene {
     const coin = uiBoilImage(this, -L.metaW / 2 + 40, -2, uiCoinTexture(this)).setScale(0.8);
     shop.add(coin);
     const journal = makeButton(this, L.metaX[1], L.metaY, 'JOURNAL', () => this.scene.start('Journal'), {
-      width: L.metaW, height: L.metaH, fontSize: '44px', color: UI_CRAYON.blue,
+      width: L.metaW, height: L.metaH, fontSize: '40px', color: UI_CRAYON.blue,
     }).setRotation(-0.02);
+    // 'N/12' written inside the button's right end, the word slid left to make room.
+    const label = journal.list[2];
+    label.setX(-26);
     const found = uiProgressCall((P) => P.discovered(), []).filter((id) => typeof cardById !== 'function' || cardById(id)).length;
     const total = typeof CARDS !== 'undefined' ? CARDS.length : 12;
-    journal.add(uiInkText(this, L.metaW / 2 - 14, -L.metaH / 2 - 4, found + '/' + total, {
-      size: 28, color: UI_INK.creamHex, stroke: UI_INK.darkHex, strokeW: 5, rot: 0.14,
+    const tagX = Math.min(L.metaW / 2 - 34, label.x + label.width / 2 + 34);
+    journal.add(uiInkText(this, tagX, 4, found + '/' + total, {
+      size: 26, color: UI_INK.creamHex, stroke: UI_INK.darkHex, strokeW: 5, rot: 0.1,
     }));
+    if (fresh) {
+      // On the outer top corners, clear of PLAY above them.
+      shop.add(uiNewTag(this, -L.metaW / 2 + 34, -L.metaH / 2 - 8, -0.16));
+      journal.add(uiNewTag(this, L.metaW / 2 - 34, -L.metaH / 2 - 8, 0.16));
+    }
   }
 
   update(time, delta) {
@@ -129,11 +153,45 @@ class MenuScene extends Phaser.Scene {
     this.comet.setPosition(x, y).setRotation(this.orbitAngle + Math.PI / 2);
     this.trail.unshift({ x, y });
     if (this.trail.length > 26) this.trail.length = 26;
-    uiDrawDashTrail(this.trailGfx, this.trail, Math.floor(time / UI_BOIL_MS));
+    if (!this.useArtComet) {
+      uiDrawDashTrail(this.trailGfx, this.trail, Math.floor(time / UI_BOIL_MS));
+      return;
+    }
+    // Velocity along the squashed orbit, so the face looks where the comet is going.
+    const vx = -Math.sin(this.orbitAngle) * orbitR * 2.1;
+    const vy = Math.cos(this.orbitAngle) * orbitR * 0.86 * 2.1;
+    this.trailGfx.clear();
+    try {
+      const s = this.skin;
+      // The art's tail wants points a few px apart (in play the comet is much faster).
+      const tail = this.artTrail || (this.artTrail = []);
+      // A long hitch (tab in the background) would stretch the tail across the page: restart it.
+      if (tail.length && Math.hypot(tail[0].x - x, tail[0].y - y) > 60) tail.length = 0;
+      if (!tail.length || Math.hypot(tail[0].x - x, tail[0].y - y) >= 8) tail.unshift({ x, y });
+      else tail[0] = { x, y };
+      if (tail.length > 18) tail.length = 18;
+      ART.drawComet(this.trailGfx, { x, y, vx, vy }, tail, {
+        time: time / 1000, speedFraction: 0.45, momentum: 0,
+        skin: s ? s.colors : undefined, skinId: s ? s.id : undefined, skinDetail: s ? s.detail : undefined,
+      });
+    } catch (e) {
+      // Broken art must never take the menu down: back to the doodle comet.
+      this.useArtComet = false;
+      this.comet.setVisible(true);
+    }
   }
 }
 
 // ---- doodles shared by Menu / GameOver / Boot ----
+
+// Little red crayon 'new!' scrawled next to something that just appeared, with a short wiggle.
+function uiNewTag(scene, x, y, rot) {
+  const tag = uiInkText(scene, x, y, 'new!', { size: 30, color: uiColorHex(UI_CRAYON.red), stroke: UI_INK.creamHex, strokeW: 5, rot: rot || 0 });
+  tag.setScale(0);
+  scene.tweens.add({ targets: tag, scale: 1, delay: 650, duration: 260, ease: 'Back.Out',
+    onComplete: () => scene.tweens.add({ targets: tag, scale: 1.12, yoyo: true, repeat: 3, duration: 180, delay: 300 }) });
+  return tag;
+}
 
 // Dashed speed marks behind a moving doodle: every other trail segment, thinning out.
 function uiDrawDashTrail(g, trail, seed) {

@@ -111,6 +111,8 @@ class GameOverScene extends Phaser.Scene {
     const cx = GAME_WIDTH / 2;
     const previousBest = loadHighScore();
     const isRecord = saveHighScore(this.finalScore);
+    // A run reached its end: from now on the menu shows missions, coins, SHOP and JOURNAL.
+    if (typeof uiSaveMenuFlag === 'function') uiSaveMenuFlag('runDone');
     uiAddPaper(this, 0);
     uiMakeDoodles(this);
     uiScatterStars(this, [[70, 120], [640, 940], [80, 1180], [650, 1230]]);
