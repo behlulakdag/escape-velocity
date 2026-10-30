@@ -199,8 +199,11 @@ class CardScene extends Phaser.Scene {
 
     this.header = uiTitleText(this, GAME_WIDTH / 2, CARD_UI.headerY, 'PICK AN UPGRADE', { size: 64, rot: -0.03, shadowColor: uiColorHex(UI_CRAYON.orange) });
     const headerFit = Math.min(1, (GAME_WIDTH - 60) / this.header.main.width);
-    this.header.setScale(headerFit * 0.4);
-    this.tweens.add({ targets: this.header, scale: headerFit, duration: 300, ease: 'Back.Out' });
+    // Held back until the HUD's zone banner (hideBanner) has fully faded: no 'TOP SPEED' ghosting.
+    const headerWait = typeof HUD_BANNER !== 'undefined' ? HUD_BANNER.clearMs : 120;
+    this.header.setScale(headerFit * 0.4).setAlpha(0);
+    this.tweens.add({ targets: this.header, alpha: 1, delay: headerWait, duration: 60 });
+    this.tweens.add({ targets: this.header, scale: headerFit, delay: headerWait, duration: 300, ease: 'Back.Out' });
     // Honest cost: every pick feeds the supernova. Written in red crayon with a scrawled underline.
     const novaPct = typeof CARD_TUNING !== 'undefined' ? Math.round(CARD_TUNING.novaPerCard * 100) : 5;
     this.subHeader = uiInkText(this, GAME_WIDTH / 2 + 10, CARD_UI.headerY + 62, 'SUPERNOVA +' + novaPct + '% FASTER', {
@@ -208,8 +211,8 @@ class CardScene extends Phaser.Scene {
     }).setAlpha(0);
     this.subLine = uiBoilImage(this, GAME_WIDTH / 2 + 14, CARD_UI.headerY + 86, 'ui_underline')
       .setTint(UI_CRAYON.red).setScale(0, 0.6).setAlpha(0.8).setRotation(0.02);
-    this.tweens.add({ targets: this.subHeader, alpha: 1, delay: 150, duration: 200 });
-    this.tweens.add({ targets: this.subLine, scaleX: 0.66, delay: 260, duration: 220, ease: 'Quad.Out' });
+    this.tweens.add({ targets: this.subHeader, alpha: 1, delay: 150 + headerWait, duration: 200 });
+    this.tweens.add({ targets: this.subLine, scaleX: 0.66, delay: 260 + headerWait, duration: 220, ease: 'Quad.Out' });
 
     const n = this.choices.length;
     this.choices.forEach((id, i) => {
@@ -431,6 +434,8 @@ class CardScene extends Phaser.Scene {
         duration: 340, ease: 'Cubic.In',
       });
     }
+    // A very fast pick lands while the header's delayed fade-in is still queued: drop it first.
+    this.tweens.killTweensOf([this.header, this.subHeader, this.subLine, this.ringText, this.ringGfx]);
     this.tweens.add({ targets: [this.header, this.subHeader, this.subLine, this.ringText, this.ringGfx], alpha: 0, duration: 200 });
     this.tweens.add({ targets: this.dim, alpha: 0, delay: 80, duration: 260 });
     this.time.delayedCall(EXIT_MS, () => {

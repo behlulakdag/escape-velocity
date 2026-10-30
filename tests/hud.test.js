@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -138,4 +138,19 @@ test('momentum cue escalates: more and taller flames, bigger and hotter number, 
   const inks = new Set();
   for (let m = 0; m <= 1; m += 0.01) inks.add(hud.hudMomentumStyle(m).ink);
   assert.ok(inks.size <= 9);
+});
+test('supernova nearness is 0 far below the band, 1 up behind it, and safe on bad input', () => {
+  assert.strictEqual(hud.hudNovaNear(hud.HUD_NOVA.farY + 200), 0);
+  assert.strictEqual(hud.hudNovaNear(hud.HUD_NOVA.farY), 0);
+  assert.strictEqual(hud.hudNovaNear(hud.HUD_NOVA.nearY), 1);
+  assert.strictEqual(hud.hudNovaNear(200), 1);
+  const mid = hud.hudNovaNear((hud.HUD_NOVA.farY + hud.HUD_NOVA.nearY) / 2);
+  assert.ok(mid > 0.45 && mid < 0.55, String(mid));
+  assert.strictEqual(hud.hudNovaNear(undefined), 0);
+  assert.strictEqual(hud.hudNovaNear(NaN), 0);
+});
+
+test('the zone banner is fully faded before the card header shows', () => {
+  assert.ok(hud.HUD_BANNER.fadeMs < hud.HUD_BANNER.clearMs);
+  assert.ok(hud.HUD_BANNER.clearMs <= 200, 'the header must not feel late');
 });

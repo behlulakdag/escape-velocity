@@ -102,7 +102,8 @@ const HUD_MILESTONE = {
 };
 
 // Zone banner title y: lower when the owned-card row is shown, so the row never touches it.
-const HUD_BANNER = { y: 400, yWithCards: 474 };
+// fadeMs: hideBanner() fade; clearMs: the card header's hold-back, a little longer than the fade.
+const HUD_BANNER = { y: 400, yWithCards: 474, fadeMs: 90, clearMs: 120 };
 
 // Pure helper (tested): the next queue after a pop arrives while a banner is up.
 // Same label replaces its older copy; the queue keeps the newest POP_WAIT.max entries,
@@ -211,6 +212,20 @@ const HUD_SPEED = { x: 300, y: GAME_HEIGHT - 140, lineY: GAME_HEIGHT - 100, minL
 // right-aligned. scale 1.34 makes a 64 px mini scrap ~86 px wide.
 const HUD_CARDS = { y: 304, scale: 1.34, gap: 94, groupGap: 18, right: GAME_WIDTH - 76, minLeft: 70, cardW: 86, cardH: 99 };
 // Multiplier circle tint by level (x1..x5): the same warm ramp as the comet.
+// Supernova front (screen y) near the bottom band: its orange flames sit right behind the speed
+// readout and the momentum crown. 0 while the front is below farY, 1 once it is up at nearY.
+const HUD_NOVA = { farY: GAME_HEIGHT + 60, nearY: GAME_HEIGHT - 120, ease: 6 };
+// Ink smudge behind the speed readout, so the number reads over black holes / planets / the nova.
+// ink: near-black (the page's own dark ink barely shows on navy paper).
+const HUD_HALO = { x: 305, y: GAME_HEIGHT - 134, w: 470, h: 200, alpha: 0.6, novaAlpha: 0.3, ink: 0x07060d };
+
+// Pure helper (tested): how close the supernova front is to the bottom band, 0..1.
+function hudNovaNear(novaScreenY) {
+  if (typeof novaScreenY !== 'number' || !isFinite(novaScreenY)) return 0;
+  const k = (HUD_NOVA.farY - novaScreenY) / (HUD_NOVA.farY - HUD_NOVA.nearY);
+  return Math.max(0, Math.min(1, k));
+}
+
 const HUD_LEVEL_TINTS = [UI_INK.cream, UI_CRAYON.yellow, UI_CRAYON.orange, UI_CRAYON.red, UI_CRAYON.pink];
 
 class HudScene extends Phaser.Scene {
@@ -267,6 +282,10 @@ class HudScene extends Phaser.Scene {
     this.nextWaitAt = 0;      // earliest time the next waiting pop may show
 
     // Speed written on the page, with a crayon underline (redrawn only on boil ticks / growth).
+    // Crayon smudge first, so the underline, crown and number are all drawn on top of it.
+    this.speedHalo = uiBoilImage(this, HUD_HALO.x, HUD_HALO.y, 'hud_speed_halo').setTint(HUD_HALO.ink).setAlpha(HUD_HALO.alpha);
+    this.novaNear = 0;          // eased hudNovaNear() of the supernova front (Game scene)
+    this.novaDrawn = 0;         // novaNear the crown was last drawn at
     this.speedLine = this.add.graphics();
     this.momentumGfx = this.add.graphics();   // flame licks behind the number (setMomentum)
     this.momentum = 0;          // shown momentum, eased toward momentumTarget
@@ -278,7 +297,7 @@ class HudScene extends Phaser.Scene {
     this.speedBaseY = HUD_SPEED.y;
     this.speedText = uiInkText(this, this.speedBaseX, this.speedBaseY, '', { size: 54, rot: -0.03, boil: false });
     this.createMultiplierBadge();
-    this.bottomPanel = this.add.container(0, 0, [this.speedLine, this.momentumGfx, this.speedText, this.badge]);
+    this.bottomPanel = this.add.container(0, 0, [this.speedHalo, this.speedLine, this.momentumGfx, this.speedText, this.badge]);
     // One layer for the stats, so the intro fade never fights the bump tweens on its children.
     this.statsLayer = this.add.container(0, 0, [this.note, this.bottomPanel]);
     const game = this.scene.get('Game');
@@ -605,6 +624,7 @@ class HudScene extends Phaser.Scene {
       this.scoreText.setFontSize(scoreString.length <= 5 ? 64 : scoreString.length === 6 ? 54 : 46);
     }
     this.setTextIfChanged('score', this.scoreText, scoreString);
+    this.updateNovaNear(dt);
     this.updateSpeedReadout(time, dt);
     this.updatePageInk();
     this.updatePops();
@@ -616,6 +636,19 @@ class HudScene extends Phaser.Scene {
     const fadeTarget = this.scene.isActive('Cards') ? 0.12 : this.panelFadeTarget;
     this.panelFade += (fadeTarget - this.panelFade) * Math.min(1, dt * 10);
     this.bottomPanel.setAlpha(this.panelFade);
+  }
+
+  // Reads the supernova front straight from the Game scene (screen space), eases novaNear and
+  // presses the speed smudge darker while the nova's flames are behind the readout.
+  updateNovaNear(dt) {
+    const game = this.scene.get('Game');
+    let target = 0;
+    if (game && game.comet && typeof game.novaY === 'number' && game.worldToScreen && game.cameras && game.cameras.main) {
+      target = hudNovaNear(game.worldToScreen(game.comet.x, game.novaY).y);
+    }
+    this.novaNear += (target - this.novaNear) * Math.min(1, dt * HUD_NOVA.ease);
+    if (this.novaNear < 0.01) this.novaNear = 0;
+    if (this.speedHalo) this.speedHalo.setAlpha(HUD_HALO.alpha + HUD_HALO.novaAlpha * this.novaNear);
   }
 
   // Page/zone changed (GameScene calls this on run start and on every page turn).
@@ -651,6 +684,8 @@ class HudScene extends Phaser.Scene {
     if (this.popLine && this.popLine.active) this.stylePop(this.popLine);
     // Set loops are redrawn in the deeper gold (known cards are not slapped in again).
     if (this.cardBadges.length) this.setCards(this.cardBadges.map(b => b.id));
+    // Dark ink smudge on dark paper; a cream paper smudge under the dark ink of the cream page.
+    if (this.speedHalo) this.speedHalo.setTint(light ? UI_CRAYON.note : HUD_HALO.ink);
     this.drawSpeedLine(true);
   }
 
@@ -709,8 +744,10 @@ class HudScene extends Phaser.Scene {
     const g = this.momentumGfx;
     if (!g) return;
     const m = this.momentum;
-    if (!force && Math.abs(m - this.momentumDrawn) < 0.04) return;
+    const nova = this.novaNear || 0;
+    if (!force && Math.abs(m - this.momentumDrawn) < 0.04 && Math.abs(nova - this.novaDrawn) < 0.08) return;
     this.momentumDrawn = m;
+    this.novaDrawn = nova;
     g.clear();
     const style = hudMomentumStyle(m);
     if (!style.licks) return;
@@ -730,14 +767,22 @@ class HudScene extends Phaser.Scene {
     const span = Math.min(textW * 0.92, style.licks * 48);
     const x0 = cx - textW * 0.02 - span / 2;
     const x1 = x0 + span;
-    const outerFill = m > 0.6 ? mid : outer;
+    // Over the supernova's orange flames the crown gets a thick dark-ink backing (same tongues,
+    // traced fat behind it) and its fill moves to yellow, so it never melts into the nova.
+    let outerFill = m > 0.6 ? mid : outer;
+    if (nova > 0.05) {
+      inkFlameCrown(g, x0 - 5, x1 + 5, baseY + 3, style.height * 1.06, style.licks, seed * 11 + 1, {
+        color: UI_INK.dark, fill: UI_INK.dark, width: 10 + m * 3, alpha: 0.85 * nova,
+      });
+      if (!dark && nova > 0.5) outerFill = UI_CRAYON.yellow;
+    }
     inkFlameCrown(g, x0, x1, baseY, style.height, style.licks, seed * 11 + 1, {
       color: ink, fill: outerFill, width: 2.5 + m * 2, alpha: 0.6 + m * 0.4,
     });
     if (m > 0.45) {
       const pad = textW * 0.08;
       inkFlameCrown(g, x0 + pad, x1 - pad, baseY + 2, style.height * 0.55, Math.max(1, style.licks - 1), seed * 7 + 5, {
-        color: m > 0.85 ? inner : mid, fill: inner, width: 2, alpha: 0.9,
+        color: m > 0.85 || (!dark && nova > 0.5) ? (dark ? inner : UI_INK.cream) : mid, fill: inner, width: 2, alpha: 0.9,
       });
     }
   }
@@ -1215,8 +1260,10 @@ class HudScene extends Phaser.Scene {
     if (this.pendingBanner) { this.pendingBanner.remove(false); this.pendingBanner = null; }
     const parts = this.bannerParts();
     this.tweens.killTweensOf(parts);
+    // Gone (fadeMs) before the card header shows: CardScene holds it back for HUD_BANNER.clearMs,
+    // so the 'TOP SPEED' subtitle never ghosts through 'PICK AN UPGRADE'.
     const visible = parts.filter(p => p.alpha > 0);
-    if (visible.length) this.tweens.add({ targets: visible, alpha: 0, duration: 140, ease: 'Quad.Out' });
+    if (visible.length) this.tweens.add({ targets: visible, alpha: 0, duration: HUD_BANNER.fadeMs, ease: 'Quad.Out' });
   }
 
   bannerParts() {
@@ -1328,6 +1375,21 @@ function uiMakeHudTextures(scene) {
     ctx.fillStyle = 'rgba(240,232,190,0.6)';
     ctx.fill();
     ctx.restore();
+  });
+  // Speed readout smudge (white, tinted dark ink / cream paper): two overlapping lopsided crayon
+  // patches, hatched and grained, softer at the edges. Never a panel: no outline, no hard edge.
+  uiSketchTexture(scene, 'hud_speed_halo', HUD_HALO.w, HUD_HALO.h, (ctx, shape, jitter, v, w, h) => {
+    const lobes = [
+      uiLoop(w * 0.47, h * 0.57, w * 0.44, h * 0.3, shape, jitter, { n: 26, lop: 0.1, amp: 3 }),
+      uiLoop(w * 0.55, h * 0.36, w * 0.3, h * 0.22, shape, jitter, { n: 20, lop: 0.12, amp: 3 }),
+    ];
+    for (const pts of lobes) {
+      uiTracePath(ctx, pts, true);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fill();
+      uiHatch(ctx, pts, jitter, { spacing: 7, width: 5, alpha: 0.55, angle: -0.5, gaps: 0.12 });
+    }
+    uiGrain(ctx, w, h, jitter, 0.02);
   });
   // Crayon scribble that is dense at the bottom edge and thins out upward (white, tinted red).
   uiSketchTexture(scene, 'hud_danger', GAME_WIDTH, 300, (ctx, shape, jitter) => {
