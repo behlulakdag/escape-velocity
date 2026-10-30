@@ -42,6 +42,6 @@ Speed is your life, your score and your way out. Swing around planets to pick it
 ## Credits & tools
 
 - Built with **Phaser 3.90** (HTML5, plain JavaScript).
-- Code, art and audio were made with **Claude Code** (Anthropic), an AI coding agent.
 - All art is drawn in code at runtime (no image files). All audio is procedural Web Audio (no audio files).
 - Font: **Lilita One** by Juan Montoreano (SIL Open Font License).
+- AI tools used: Claude Code (code, in-code drawings, procedural audio).
