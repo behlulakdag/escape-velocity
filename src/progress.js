@@ -1,4 +1,5 @@
-// Meta progression: missions, coins, comet skins, card discovery journal and the best-run ghost.
+// Meta progression: missions, coins, comet skins and the card discovery journal. (The best-run ghost API
+// below is kept for old saves and its tests, but the game no longer records or draws a ghost.)
 // Pure logic, free of Phaser, so node can unit-test it (tests/progress.test.js).
 //
 // Everything lives under ONE versioned localStorage key. Storage can be blocked (private tab,
