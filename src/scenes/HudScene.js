@@ -58,6 +58,35 @@ const POP_HIGH = 3;
 const POP_MEDIUM = 2;
 const POP_LOW = 1;
 
+// Repeats ('it keeps writing X'): the same pop / stamp word never comes out twice within ms.
+// A pop of the same kind arriving while the first is still up merges into it instead
+// ('-15% SPEED' then '-10% SPEED' reads '-25% SPEED'; anything else just keeps the line up).
+const HUD_REPEAT = { ms: 1500, maxPenalty: 90 };
+
+// Pure helper (tested): may `label` come out at `now`? Records it when it may. seen: {label: time}.
+function hudRepeatAllowed(seen, label, now) {
+  const last = seen[label];
+  if (typeof last === 'number' && now - last >= 0 && now - last < HUD_REPEAT.ms) return false;
+  seen[label] = now;
+  return true;
+}
+
+// Pure helper (tested): the kind of a pop with its numbers taken out ('-15% SPEED' and
+// '-8% SPEED' are one kind; 'PERFECT x4!' and 'PERFECT x5!' too).
+function hudPopKind(label) {
+  return String(label).toUpperCase().replace(/[0-9]+(\.[0-9]+)?/g, '#').trim();
+}
+
+// Pure helper (tested): one line for two pops of the same kind. '-N% X' penalties add up
+// (capped); anything else reads as the newer label.
+function hudMergePopLabel(prev, next) {
+  const re = /^-(\d+)%\s*(.*)$/;
+  const a = re.exec(String(prev));
+  const b = re.exec(String(next));
+  if (a && b && a[2] === b[2]) return '-' + Math.min(HUD_REPEAT.maxPenalty, Number(a[1]) + Number(b[1])) + '% ' + b[2];
+  return String(next);
+}
+
 // Pop color in crayon: the old neon pop colors and the card family colors map to their crayons.
 function hudPopColor(color) {
   if (typeof CARD_FAMILIES !== 'undefined' && typeof cardCrayon === 'function') {
@@ -307,6 +336,7 @@ function hudPageIsLight(zone, fallbackLight) {
 // beside a planet): the hand first, near what it is about, then the word near the hand.
 // Hand coords: the fingertip is (0, 0), the hand trails down below it. Word coords: the word's
 // center is (0, 0), the small sub line under it.
+const HUD_STEP_DEPTH = 900;   // over the stats, under the fullscreen / mute buttons (1000)
 const HUD_STEP = {
   fadeIn: 0.25,          // s
   fadeOut: 0.2,          // s
@@ -334,8 +364,12 @@ const HUD_STEP = {
   liftPx: 50,
   rippleMax: 54,
   arrowFrom: 70,         // the fling arrow starts this far from the comet along dir ...
-  arrowTo: 290,          // ... and ends here
+  arrowTo: 290,          // ... and ends here (no target given)
   arrowSamples: 6,
+  arrowStop: 14,         // with a target: the tip stops this far outside the target's body
+  arrowMin: 90,          // ... but the arrow is never shorter than this past arrowFrom
+  arrowBend: 0.5,        // control point along the tangent, as a share of the chord
+  arrowTargetR: 50,      // target screen radius when GameScene does not pass tr
   word: { holdSize: 124, letgoSize: 108, subSize: 30, subY: 100, lineY: 52 },
   // Round the drawn parts at scale 1 (checked in the hud tests and measured in the browser):
   // the hand with its ripples / lift dashes and cream halo, and the lettering.
@@ -391,15 +425,59 @@ function hudStepHudRects() {
   return [HUD_NOTE.rect, HUD_PANEL, HUD_BADGE_PANEL, { left: GAME_WIDTH - 170, right: GAME_WIDTH - 14, top: 40, bottom: 196 }];
 }
 
-// Pure helper (tested): the fling arrow as sample circles (screen coords) for placement.
-function hudStepArrowCircles(cx, cy, dirX, dirY) {
+// Pure helper (tested): the LET GO arrow as a quadratic curve {sx, sy, mx, my, ex, ey} (screen
+// coords). With a target (tx, ty; tr its screen radius) it leaves the comet along the fling
+// tangent (dir) and bends round onto the target, stopping just short of its body, so the arrow
+// says "this way, to THAT planet". Without a target: a straight-ish arrow along dir
+// (arrowFrom..arrowTo), as before. null when there is nothing to point along.
+function hudStepArrowPath(cx, cy, dirX, dirY, tx, ty, tr) {
   const S = HUD_STEP;
-  const len = Math.hypot(dirX, dirY) || 1;
-  const out = [];
-  for (let i = 0; i <= S.arrowSamples; i++) {
-    const d = S.arrowFrom + ((S.arrowTo - S.arrowFrom) * i) / S.arrowSamples;
-    out.push({ x: cx + (dirX / len) * d, y: cy + (dirY / len) * d, r: 26 });
+  const ok = (v) => typeof v === 'number' && isFinite(v);
+  if (!ok(cx) || !ok(cy)) return null;
+  const hasTarget = ok(tx) && ok(ty) && Math.hypot(tx - cx, ty - cy) > 1;
+  let dx = ok(dirX) ? dirX : 0;
+  let dy = ok(dirY) ? dirY : 0;
+  let dl = Math.hypot(dx, dy);
+  if (!dl && hasTarget) { dx = tx - cx; dy = ty - cy; dl = Math.hypot(dx, dy); }
+  if (!dl) return null;
+  dx /= dl;
+  dy /= dl;
+  const sx = cx + dx * S.arrowFrom;
+  const sy = cy + dy * S.arrowFrom;
+  if (!hasTarget) {
+    const ex = cx + dx * S.arrowTo;
+    const ey = cy + dy * S.arrowTo;
+    return { sx, sy, mx: (sx + ex) / 2, my: (sy + ey) / 2, ex, ey, target: false };
   }
+  const tdx = tx - cx;
+  const tdy = ty - cy;
+  const td = Math.hypot(tdx, tdy);
+  const stop = hudBodyRadius('planet', ok(tr) && tr > 0 ? tr : S.arrowTargetR) + S.arrowStop;
+  // Never shorter than a readable arrow, even when the target is close.
+  const reach = Math.max(S.arrowFrom + S.arrowMin, td - stop);
+  const ex = cx + (tdx / td) * reach;
+  const ey = cy + (tdy / td) * reach;
+  // Control point out along the tangent: the curve leaves the comet the way the fling starts.
+  const k = Math.hypot(ex - sx, ey - sy) * S.arrowBend;
+  return { sx, sy, mx: sx + dx * k, my: sy + dy * k, ex, ey, target: true };
+}
+
+// Pure helper (tested): a point at u (0..1) on a hudStepArrowPath curve.
+function hudStepArrowPoint(p, u) {
+  const a = (1 - u) * (1 - u);
+  const b = 2 * (1 - u) * u;
+  const c = u * u;
+  return { x: a * p.sx + b * p.mx + c * p.ex, y: a * p.sy + b * p.my + c * p.ey };
+}
+
+// Pure helper (tested): the fling arrow as sample circles (screen coords) for placement.
+// tx / ty / tr (optional): the target planet the arrow bends onto (see hudStepArrowPath).
+function hudStepArrowCircles(cx, cy, dirX, dirY, tx, ty, tr) {
+  const S = HUD_STEP;
+  const p = hudStepArrowPath(cx, cy, dirX, dirY, tx, ty, tr);
+  const out = [];
+  if (!p) return out;
+  for (let i = 0; i <= S.arrowSamples; i++) out.push(Object.assign(hudStepArrowPoint(p, i / S.arrowSamples), { r: 26 }));
   return out;
 }
 
@@ -489,7 +567,15 @@ function hudStepScene(step, info, top) {
   const bodies = [];
   const planet = px !== null && py !== null ? { x: px, y: py } : null;
   const comet = cx !== null && cy !== null ? { x: cx, y: cy } : null;
-  if (planet) {
+  // 'letgo' with tx / ty: px / py / pr is the planet the comet orbits (kept clear, not lit) and
+  // tx / ty / tr the target (lit; the arrow bends onto it). Without tx: px is the target.
+  const target = step === 'letgo' && num(i.tx) !== null && num(i.ty) !== null
+    ? { x: num(i.tx), y: num(i.ty), r: num(i.tr) !== null ? num(i.tr) : S.arrowTargetR } : null;
+  if (target) {
+    spots.push({ x: target.x, y: target.y, r: hudSpotRadius('planet', target.r) });
+    bodies.push({ x: target.x, y: target.y, r: hudBodyRadius('planet', target.r) });
+    if (planet) bodies.push({ x: px, y: py, r: hudBodyRadius('planet', pr) });
+  } else if (planet) {
     spots.push({ x: px, y: py, r: hudSpotRadius('planet', pr) });
     bodies.push({ x: px, y: py, r: hudBodyRadius('planet', pr) });
   }
@@ -498,12 +584,17 @@ function hudStepScene(step, info, top) {
     bodies.push({ x: cx, y: cy, r: hudBodyRadius('comet') });
   }
   const circles = bodies.slice();
-  if (step === 'letgo' && comet && dirX !== null && dirY !== null && (dirX || dirY)) {
-    for (const c of hudStepArrowCircles(cx, cy, dirX, dirY)) circles.push(c);
+  let arrow = null;
+  if (step === 'letgo' && comet) {
+    arrow = target ? hudStepArrowPath(cx, cy, dirX, dirY, target.x, target.y, target.r)
+      : (dirX !== null && dirY !== null && (dirX || dirY) ? hudStepArrowPath(cx, cy, dirX, dirY) : null);
+    if (arrow) {
+      for (let k = 0; k <= S.arrowSamples; k++) circles.push(Object.assign(hudStepArrowPoint(arrow, k / S.arrowSamples), { r: 26 }));
+    }
   }
   const mid = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
   return {
-    spots, bodies, circles,
+    spots, bodies, circles, arrow, target,
     rects: hudStepHudRects(),
     screen: { top: Math.max(S.margin, typeof top === 'number' && isFinite(top) ? top : S.margin) },
     wordBox: step === 'letgo' ? S.wordLetgoBox : S.wordHoldBox,
@@ -622,7 +713,24 @@ function hudCirclesUnder(rect, circles, pad) {
 }
 
 // Score note (top-left) bounds, and its alpha while something flies under it.
-const HUD_NOTE = { rect: { left: 15, right: 305, top: 52, bottom: 236 }, under: 0.5, pad: 6, ease: 8 };
+// rect: the whole note texture (kept clear by the tutorial layout); paper: the paper actually
+// drawn (texture corners ~20..272 x 22..164 round the note at 160, 142). The note only steps
+// back when a planet's BODY (rings left out: they are flat ellipses) or the comet is really
+// under the paper; the old test (whole texture, ring-grown radius, 6 px pad) greyed it out with
+// nothing visibly under it.
+const HUD_NOTE = { rect: { left: 15, right: 305, top: 52, bottom: 236 }, paper: { left: 33, right: 289, top: 72, bottom: 218 }, under: 0.5, pad: 6, ease: 8 };
+// Owned-card row: steps back to `under` while a planet (with its rings and orbit room) or the
+// comet comes within pad of it, so it never hides what the player steers by.
+const HUD_CARD_FADE = { under: 0.35, pad: 120, ease: 8 };
+
+// Pure helper (tested): the owned-card row's screen rect from its container x / scale and span
+// (relative to the row's right end, see setCards). null when there is no row.
+function hudCardRowRect(rowX, rowScale, span) {
+  if (!span || typeof rowX !== 'number' || !isFinite(rowX)) return null;
+  const k = typeof rowScale === 'number' && rowScale > 0 ? rowScale : 1;
+  const half = (HUD_CARDS.cardH / 2 + 12) * k;
+  return { left: rowX + span.left * k, right: rowX + span.right * k, top: HUD_CARDS.y - half, bottom: HUD_CARDS.y + half };
+}
 
 // Set bonus: short, high, never in the lower third or near the bottom speed band.
 const HUD_SETBONUS = { y: 300, rowGap: 110, cometBand: 190, below: 250, maxY: 720, holdMs: 900, fadeMs: 300, labelDy: -82, subDy: 92, subHalf: 24 };
@@ -710,7 +818,10 @@ class HudScene extends Phaser.Scene {
     this.stepBanner = null;   // banner asked for while a tutorial step waits
     this.stepMilestone = null;  // chain stamp asked for while a tutorial step waits
     this.stepNiceShown = false;
-    this.popWait = [];        // pops waiting for a banner to fade (see POP_WAIT)
+    this.popSeen = {};        // pop kind -> time it last came out (HUD_REPEAT)
+    this.stampSeen = {};      // stamp word -> time it was last stamped
+    this.cardRowFade = 1;     // owned-card row alpha (steps back over planets / the comet)
+    this.popWait = [];      // pops waiting for a banner to fade (see POP_WAIT)
     this.bannerClearAt = 0;   // time the last banner stopped being readable
     this.nextWaitAt = 0;      // earliest time the next waiting pop may show
 
@@ -915,9 +1026,16 @@ class HudScene extends Phaser.Scene {
   // onto the page in crayon with an ink burst and a slight random tilt; bigger and hotter per
   // level (1 NICE!, 2 BLAZING!, 3 UNSTOPPABLE!). ~0.9 s. Placed off the comet and its tail and
   // off any banner; the current pop line makes way.
-  showMilestone(name, level) {
+  // opts.force: stamp now even while a tutorial step fades (the tutorial's own NICE!);
+  // opts.at {cx, cy}: the comet to place it by (hudNiceSpot) instead of placeMilestone.
+  showMilestone(name, level, opts) {
+    opts = opts || {};
     // A tutorial step is waiting: the stamp comes out once it is gone (the newest one only).
-    if (this.stepWaiting()) { this.stepMilestone = [name, level]; return; }
+    if (!opts.force && this.stepWaiting()) { this.stepMilestone = [name, level]; return; }
+    const now = this.time.now;
+    // The same word again within HUD_REPEAT.ms (tutorial NICE! then the chain's NICE!, a queued
+    // copy) is never stamped twice.
+    if (!hudRepeatAllowed(this.stampSeen || (this.stampSeen = {}), String(name), now)) return;
     level = Phaser.Math.Clamp(Math.round(level || 1), 1, HUD_MILESTONE.levels.length);
     const L = HUD_MILESTONE.levels[level - 1];
     if (this.milestone) { this.milestone.destroy(); this.milestone = null; }
@@ -950,7 +1068,14 @@ class HudScene extends Phaser.Scene {
     stamp.level = level;
     stamp.label = String(name);
     stamp.bornAt = this.time.now;
-    this.placeMilestone(stamp);
+    if (opts.at) {
+      const p = hudNiceSpot(Number(opts.at.cx), Number(opts.at.cy), stamp.halfW, stamp.halfH);
+      stamp.setPosition(p.x, p.y);
+      stamp.isTutorial = true;
+      stamp.setDepth(HUD_STEP_DEPTH + 50);   // over the overlay that is still fading out
+    } else {
+      this.placeMilestone(stamp);
+    }
     const tilt = (Math.random() < 0.5 ? -1 : 1) * (0.05 + Math.random() * 0.07);
     stamp.setRotation(tilt);
     this.milestone = stamp;
@@ -1070,7 +1195,7 @@ class HudScene extends Phaser.Scene {
   buildStep() {
     const S = HUD_STEP;
     uiMakeStepTextures(this);
-    const depth = 900;   // over the stats, under the fullscreen / mute buttons (1000)
+    const depth = HUD_STEP_DEPTH;
     const wash = this.add.renderTexture(0, 0, GAME_WIDTH, GAME_HEIGHT).setOrigin(0).setDepth(depth).setAlpha(0).setVisible(false);
     // Drawn into the wash only (never on the display list).
     const hatch = this.make.image({ x: 0, y: 0, key: 'hud_step_hatch_0', add: false }).setOrigin(0).setScale(2).setTint(S.dark).setAlpha(S.hatch);
@@ -1081,28 +1206,35 @@ class HudScene extends Phaser.Scene {
     // peach crayon fill, blue cuff, gel-pen ink. Same textures as before, upright and bigger.
     const ox = HUD_HAND.tipX / HUD_HAND.w;
     const oy = HUD_HAND.tipY / HUD_HAND.h;
-    const shadow = uiBoilImage(this, 6, 8, 'hud_hand2_fill').setOrigin(ox, oy).setTint(UI_INK.dark).setAlpha(0.5);
-    const halo = [];
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2;
-      halo.push(uiBoilImage(this, Math.cos(a) * 7, Math.sin(a) * 7, 'hud_hand2_ink').setOrigin(ox, oy).setTint(UI_INK.cream).setAlpha(0.9));
-    }
-    const backing = uiBoilImage(this, 2, -2, 'hud_hand2_fill').setOrigin(ox, oy).setTint(UI_INK.cream);
-    const fill = uiBoilImage(this, 0, 0, 'hud_hand2_fill').setOrigin(ox, oy).setTint(hudLerpColor(HUD_HAND.skin, UI_INK.cream, 0.3));
-    const cuff = uiBoilImage(this, 0, 0, 'hud_hand2_cuff').setOrigin(ox, oy).setTint(UI_CRAYON.blue);
-    const ink = uiBoilImage(this, 0, 0, 'hud_hand2_ink').setOrigin(ox, oy).setTint(UI_INK.cream);
-    const hand = this.add.container(0, 0, [shadow].concat(halo, [backing, fill, cuff, ink]));
-    hand.setScale(S.handScale).setRotation(-S.lean);
+    // prefix 'hud_hand2' = the pressing HOLD hand, 'hud_hand3' = the open LET GO hand.
+    const makeHand = (prefix) => {
+      const shadow = uiBoilImage(this, 6, 8, prefix + '_fill').setOrigin(ox, oy).setTint(UI_INK.dark).setAlpha(0.5);
+      const halo = [];
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        halo.push(uiBoilImage(this, Math.cos(a) * 7, Math.sin(a) * 7, prefix + '_ink').setOrigin(ox, oy).setTint(UI_INK.cream).setAlpha(0.9));
+      }
+      const backing = uiBoilImage(this, 2, -2, prefix + '_fill').setOrigin(ox, oy).setTint(UI_INK.cream);
+      const fill = uiBoilImage(this, 0, 0, prefix + '_fill').setOrigin(ox, oy).setTint(hudLerpColor(HUD_HAND.skin, UI_INK.cream, 0.3));
+      const cuff = uiBoilImage(this, 0, 0, prefix + '_cuff').setOrigin(ox, oy).setTint(UI_CRAYON.blue);
+      const ink = uiBoilImage(this, 0, 0, prefix + '_ink').setOrigin(ox, oy).setTint(UI_INK.cream);
+      const h = this.add.container(0, 0, [shadow].concat(halo, [backing, fill, cuff, ink]));
+      return h.setScale(S.handScale).setRotation(-S.lean);
+    };
+    const pressHand = makeHand('hud_hand2');
+    const openHand = makeHand('hud_hand3').setVisible(false);
+    const hand = pressHand;
     const ripples = this.add.graphics();
     const word = uiTitleText(this, 0, 0, 'HOLD', {
       size: S.word.holdSize, color: uiColorHex(UI_CRAYON.yellow), shadowColor: UI_INK.darkHex, shadowDx: 7, shadowDy: 9, rot: -0.04, boil: true,
     });
     const line = uiBoilImage(this, 6, S.word.lineY, 'ui_underline').setTint(UI_CRAYON.yellow);
     const sub = uiInkText(this, 0, S.word.subY, 'anywhere on screen', { size: S.word.subSize, strokeW: 6, rot: -0.02, boilAmount: 0.01 });
-    const handGroup = this.add.container(0, 0, [ripples, hand]).setDepth(depth + 2).setAlpha(0).setVisible(false);
+    const handGroup = this.add.container(0, 0, [ripples, pressHand, openHand]).setDepth(depth + 2).setAlpha(0).setVisible(false);
     const wordGroup = this.add.container(0, 0, [line, word, sub]).setDepth(depth + 2).setAlpha(0).setVisible(false);
     this.step = {
-      wash, hatch, brush, rings, arrow, handGroup, wordGroup, hand, ripples, word, line, sub,
+      wash, hatch, brush, rings, arrow, handGroup, wordGroup, hand, pressHand, openHand, ripples, word, line, sub,
+      arrowPath: null,     // hudStepArrowPath for 'letgo' (comet -> target)
       want: null,          // 'hold' | 'letgo' | null (fading out)
       shown: null,         // the step the group is lettered for
       info: null,          // last info (screen coords)
@@ -1127,20 +1259,21 @@ class HudScene extends Phaser.Scene {
       this.hideTutorialStep();
       if (this.stepNiceShown) return;   // once per call burst (idempotent if called each frame)
       this.stepNiceShown = true;
-      this.showMilestone('NICE!', 1);
-      const m = this.milestone;
-      if (m && m.active) {
-        const p = hudNiceSpot(Number(info.cx), Number(info.cy), m.halfW, m.halfH);
-        m.setPosition(p.x, p.y);
-        m.isTutorial = true;
-      }
+      // Stamped right now, straight at hudNiceSpot: the overlay is still fading out (stepWaiting),
+      // which used to queue the stamp and later land a second, misplaced NICE! (and move whatever
+      // stamp happened to be on screen). force skips that queue; nothing else waits on it.
+      if (this.stepMilestone && this.stepMilestone[0] === 'NICE!') this.stepMilestone = null;
+      this.showMilestone('NICE!', 1, { force: true, at: info });
       return;
     }
     if (step !== 'hold' && step !== 'letgo') return;
     this.stepNiceShown = false;
     const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
     const s = this.step || this.buildStep();
-    s.info = { cx: num(info.cx), cy: num(info.cy), px: num(info.px), py: num(info.py), dirX: num(info.dirX), dirY: num(info.dirY) };
+    s.info = {
+      cx: num(info.cx), cy: num(info.cy), px: num(info.px), py: num(info.py), dirX: num(info.dirX), dirY: num(info.dirY),
+      tx: num(info.tx), ty: num(info.ty), tr: num(info.tr),
+    };
     if (s.want !== step) {
       // A pop or stamp on screen makes way (the step is the only thing to read).
       if (this.popLine) this.removePop(this.popLine);
@@ -1152,6 +1285,7 @@ class HudScene extends Phaser.Scene {
     // The spotlights follow every call; the hand and word only move when something lands on them.
     const scene = hudStepScene(step, info, top);
     s.spots = scene.spots;
+    s.arrowPath = scene.arrow;
     if (!hudStepLayoutClear(s.layout, scene)) s.layout = hudStepLayout(step, info, top);
   }
 
@@ -1178,6 +1312,11 @@ class HudScene extends Phaser.Scene {
     s.word.main.setColor(uiColorHex(crayon));
     s.line.setTint(crayon).setScale(Math.min(1.15, (s.word.main.width + 30) / 540), 0.9);
     s.sub.setVisible(step === 'hold');
+    // HOLD: the pressing index finger; LET GO: the open hand springing off the page.
+    s.pressHand.setVisible(step !== 'letgo');
+    s.openHand.setVisible(step === 'letgo');
+    s.hand = step === 'letgo' ? s.openHand : s.pressHand;
+    s.hand.y = 0;
     // A fresh step slams its word in.
     s.word.setScale(1.35);
     this.tweens.killTweensOf(s.word);
@@ -1299,31 +1438,23 @@ class HudScene extends Phaser.Scene {
 
   // Curved ink arrow from just off the comet along the fling (screen coords), drawn out to
   // `grow` (0..1) of its length: dark under-stroke, green crayon, a cream second pen pass.
+  // With a target the curve leaves along the fling tangent and bends onto it (hudStepArrowPath).
   drawStepArrow(s, grow, seed) {
-    const i = s.info;
     const g = s.arrow;
-    if (!i || i.cx === null || i.dirX === null || i.dirY === null || grow <= 0) return;
-    const S = HUD_STEP;
-    const len0 = Math.hypot(i.dirX, i.dirY) || 1;
-    const dx = i.dirX / len0;
-    const dy = i.dirY / len0;
-    const sx = i.cx + dx * S.arrowFrom;
-    const sy = i.cy + dy * S.arrowFrom;
-    const len = (S.arrowTo - S.arrowFrom) * grow;
-    const ex = sx + dx * len;
-    const ey = sy + dy * len;
-    const bow = 0.14 * len;
-    const mx = (sx + ex) / 2 - dy * bow;
-    const my = (sy + ey) / 2 + dx * bow;
+    const path = s.arrowPath;
+    if (!path || grow <= 0) return;
     const pts = [];
-    const n = 14;
+    const n = 16;
+    let len = 0;
     for (let k = 0; k <= n; k++) {
-      const u = k / n;
+      // Drawn out along the curve up to `grow`, with a little pen wobble across it.
+      const u = (k / n) * grow;
+      const p = hudStepArrowPoint(path, u);
+      const q = hudStepArrowPoint(path, Math.min(1, u + 0.02));
+      const tl = Math.hypot(q.x - p.x, q.y - p.y) || 1;
       const wob = (uiNoise(seed, k) - 0.5) * 3;
-      pts.push({
-        x: (1 - u) * (1 - u) * sx + 2 * (1 - u) * u * mx + u * u * ex - dy * wob,
-        y: (1 - u) * (1 - u) * sy + 2 * (1 - u) * u * my + u * u * ey + dx * wob,
-      });
+      pts.push({ x: p.x - ((q.y - p.y) / tl) * wob, y: p.y + ((q.x - p.x) / tl) * wob });
+      if (k) len += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y);
     }
     const tip = pts[n];
     const prev = pts[n - 2];
@@ -1668,11 +1799,13 @@ class HudScene extends Phaser.Scene {
     const zoom = game.cameras.main.zoom || 1;
     for (const p of game.planets || []) {
       const s = game.worldToScreen(p.x, p.y);
-      out.push({ x: s.x, y: s.y, r: (p.radius || 0) * zoom * (p.hasRing ? 1.35 : 1) });
+      // r: with the rings (corner blocks, card row); core: the body alone (score note).
+      out.push({ x: s.x, y: s.y, r: (p.radius || 0) * zoom * (p.hasRing ? 1.35 : 1), core: (p.radius || 0) * zoom });
     }
+    const holeR = typeof TUNING !== 'undefined' && TUNING.blackHoleRadius ? TUNING.blackHoleRadius : 34;
     for (const h of game.blackHoles || []) {
       const s = game.worldToScreen(h.x, h.y);
-      out.push({ x: s.x, y: s.y, r: 80 * zoom });
+      out.push({ x: s.x, y: s.y, r: 80 * zoom, core: (holeR + 16) * zoom });
     }
     return out;
   }
@@ -1688,9 +1821,15 @@ class HudScene extends Phaser.Scene {
       : hudCirclesUnder(rect, bodies, U.planetPad) ? U.planet : 1);
     this.panelFadeTarget = under(HUD_PANEL);
     this.badgeFadeTarget = under(HUD_BADGE_PANEL);
-    const noteTarget = hudCirclesUnder(HUD_NOTE.rect, bodies.concat(cometCircle), HUD_NOTE.pad) ? HUD_NOTE.under : 1;
+    const cores = bodies.map(b => ({ x: b.x, y: b.y, r: b.core !== undefined ? b.core : b.r }));
+    const noteTarget = hudCirclesUnder(HUD_NOTE.paper, cores.concat(cometCircle), 0) ? HUD_NOTE.under : 1;
     this.noteFade += (noteTarget - this.noteFade) * Math.min(1, dt * HUD_NOTE.ease);
     if (this.note) this.note.setAlpha(this.noteFade);
+    // Owned-card row: see-through while a planet / black hole / the comet is near it.
+    const row = this.cardRow && this.cardBadges.length ? hudCardRowRect(this.cardRow.x, this.cardRow.scaleX, this.cardRowSpan) : null;
+    const rowTarget = row && hudCirclesUnder(row, bodies.concat(cometCircle), HUD_CARD_FADE.pad) ? HUD_CARD_FADE.under : 1;
+    this.cardRowFade += (rowTarget - this.cardRowFade) * Math.min(1, dt * HUD_CARD_FADE.ease);
+    if (this.cardRow) this.cardRow.setAlpha(this.cardRowFade);
     this.badgeFade += (this.badgeFadeTarget - this.badgeFade) * Math.min(1, dt * 10);
     if (this.badge) this.badge.setAlpha(this.badgeFade);
   }
@@ -1814,12 +1953,26 @@ class HudScene extends Phaser.Scene {
     }
     const cur = this.popLine && this.popLine.active ? this.popLine : null;
     const age = cur ? now - cur.bornAt : Infinity;
-    if (cur && cur.label === label && age < POP.sameLabelMs) {
-      // The same event again: re-punch the line in place, no second copy.
-      cur.lifetime = Math.max(cur.lifetime, Math.max(450, opts.duration || 700));
-      this.animatePop(cur, true);
+    const kind = hudPopKind(label);
+    if (!this.popSeen) this.popSeen = {};
+    if (cur && !cur.leaving && hudPopKind(cur.label) === kind) {
+      // The same kind of event while its line is still up: one line, never a second copy. A
+      // penalty adds up into it; the same word just stays up a little longer.
+      const merged = hudMergePopLabel(cur.label, label);
+      cur.lifetime = Math.max(450, opts.duration || 700);
+      if (merged !== cur.label) {
+        cur.setText(merged);
+        cur.label = merged;
+        this.fitPop(cur);
+        this.animatePop(cur, true);
+      } else {
+        this.animatePop(cur, age < POP.sameLabelMs ? true : 'quiet');
+      }
+      this.popSeen[kind] = now;
       return;
     }
+    // The same kind came out under HUD_REPEAT.ms ago (and is gone already): not again so soon.
+    if (!hudRepeatAllowed(this.popSeen, kind, now)) return;
     if (priority < POP_HIGH && this.bannerUp()) {
       // A zone / set banner is being read: the pop waits for it, never stacks under it.
       this.popWait = hudQueueWaitingPop(this.popWait, { label, color, opts, at: now });
@@ -1976,12 +2129,17 @@ class HudScene extends Phaser.Scene {
   }
 
   // Punchy: scale in over 120ms, hold, then a short drift away from the comet + fade.
+  // again: true re-punches a live line; 'quiet' only restarts its hold (no second slam).
   animatePop(t, again) {
     this.tweens.killTweensOf(t);
     const s = t.fitScale;
     t.drift = 0;
-    t.setAlpha(1).setScale(again ? s * POP.overshoot : s * 0.45);
-    this.tweens.add({ targets: t, scale: s, duration: 120, ease: again ? 'Quad.Out' : 'Back.Out' });
+    if (again === 'quiet') {
+      t.setAlpha(1).setScale(s);
+    } else {
+      t.setAlpha(1).setScale(again ? s * POP.overshoot : s * 0.45);
+      this.tweens.add({ targets: t, scale: s, duration: 120, ease: again ? 'Quad.Out' : 'Back.Out' });
+    }
     const hold = t.lifetime * 0.55;
     // Fades drifting away from the comet: up when above it, down when below.
     const drift = t.offY < 0 ? -24 : 18;
@@ -2206,16 +2364,30 @@ const HUD_HAND = {
     [118, 140], [136, 150], [149, 168], [26, 172], [42, 142], [42, 202], [42, 204], [42, 240], [132, 204], [132, 240]],
 };
 
+// LET GO hand: the same hand (same texture size and fingertip anchor, same crayon and pen) but
+// OPEN: the fingers have sprung apart off the page and the thumb sticks out, so it reads as
+// "let go" next to the pressing index finger of HOLD. Fingers as [baseX, baseY, tipX, tipY, r]
+// (texture px; the tip is the finger's outermost point). The index tip is the anchor.
+const HUD_HAND_OPEN = {
+  fingers: [[62, 150, 62, 8, 17], [86, 150, 102, 28, 15], [106, 158, 128, 64, 13], [122, 172, 139, 112, 10]],
+  thumb: [52, 180, 20, 132, 12],
+  palm: [86, 182, 50, 42],
+  outline: [[62, 8], [45, 26], [79, 26], [102, 28], [87, 40], [117, 44], [128, 64], [115, 72], [141, 72],
+    [139, 112], [129, 120], [149, 120], [20, 132], [8, 140], [32, 128], [36, 182], [136, 182], [86, 224],
+    [46, 208], [130, 208], [46, 236], [130, 236]],
+};
+
 // Pure helper (tested): the hand outline in group coords (tip at 0, 0) with the hand lifted by
 // liftY and scaled by (sx, sy) - exactly how updateTutorialStep poses it (leaned, scaled).
-function hudHandPoints(liftY, sx, sy) {
+// outline: texture points (default the pressing hand, HUD_HAND.outline).
+function hudHandPoints(liftY, sx, sy, outline) {
   const S = HUD_STEP;
   const H = HUD_HAND;
   const kx = sx === undefined ? S.handScale : sx;
   const ky = sy === undefined ? kx : sy;
   const c = Math.cos(-S.lean);
   const s = Math.sin(-S.lean);
-  return H.outline.map(([px, py]) => {
+  return (outline || H.outline).map(([px, py]) => {
     const x = (px - H.tipX) * kx;
     const y = (py - H.tipY) * ky;
     return { x: x * c - y * s, y: (liftY || 0) + x * s + y * c };
@@ -2233,6 +2405,28 @@ function hudFingerOutline(cx, top, r, bottom, jitter) {
   for (let i = 1; i <= 4; i++) pts.push({ x: cx + r + i * 0.4, y: cy + ((bottom - cy) * i) / 4 });
   for (let i = 4; i >= 1; i--) pts.push({ x: cx - r - i * 0.3, y: cy + ((bottom - cy) * i) / 4 });
   return pts.map(p => ({ x: p.x + (jitter() - 0.5) * 1.6, y: p.y + (jitter() - 0.5) * 1.6 }));
+}
+
+// A finger from its base to its tip at any angle: hudFingerOutline drawn upright, then turned.
+function hudFingerOutlineAt(bx, by, tx, ty, r, jitter) {
+  const len = Math.hypot(tx - bx, ty - by) || 1;
+  const a = Math.atan2(tx - bx, -(ty - by));   // clockwise from straight up
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return hudFingerOutline(0, -len, r, 0, jitter).map(p => ({ x: bx + p.x * c - p.y * s, y: by + p.x * s + p.y * c }));
+}
+
+// The open (LET GO) hand's parts as point loops, like hudHandShapes.
+function hudOpenHandShapes(shape, jitter) {
+  const O = HUD_HAND_OPEN;
+  const fingers = O.fingers.map(([bx, by, tx, ty, r]) => hudFingerOutlineAt(bx, by, tx, ty, r, jitter));
+  const [tbx, tby, ttx, tty, tr] = O.thumb;
+  const thumb = hudFingerOutlineAt(tbx, tby, ttx, tty, tr, jitter);
+  const [px, py, prx, pry] = O.palm;
+  const back = uiLoop(px, py, prx, pry, shape, jitter, { n: 24, lop: 0.06, amp: 1.3 });
+  const nail = uiLoop(HUD_HAND.tipX, HUD_HAND.tipY + 22, 12, 15, shape, jitter, { n: 14, lop: 0.04, amp: 0.8 });
+  const cuff = uiWobblyRect(46, 208, 84, 28, shape, jitter, 1.3);
+  return { fingers, thumb, back, nail, cuff };
 }
 
 // The hand's parts as point loops (shared by the fill, cuff and ink textures, so they register).
@@ -2362,6 +2556,65 @@ function uiMakeHudTextures(scene) {
     line([{ x: 112, y: 162 }, { x: 121, y: 166 }, { x: 128, y: 165 }]);
     line([{ x: 52, y: 150 }, { x: 56, y: 170 }, { x: 54, y: 190 }]);
     // Cuff: its own outline over the wrist, with a pen stripe.
+    uiStroke(ctx, sh.cuff, jitter, { width: 5, color: 0xffffff, closed: true, overshoot: 2, retrace: true });
+    line([{ x: 52, y: 222 }, { x: 88, y: 221 }, { x: 124, y: 223 }]);
+  });
+  // The open LET GO hand (HUD_HAND_OPEN): same three layers, same pen and crayon.
+  const openBody = (sh) => [sh.back, sh.thumb].concat(sh.fingers);
+  uiSketchTexture(scene, 'hud_hand3_fill', H.w, H.h, (ctx, shape, jitter, v, w, h) => {
+    const sh = hudOpenHandShapes(shape, jitter);
+    for (const pts of openBody(sh)) {
+      uiTracePath(ctx, pts.map(p => ({ x: p.x + 2, y: p.y - 2 })), true);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    for (const pts of openBody(sh)) uiHatch(ctx, pts, jitter, { spacing: 7, width: 2.5, alpha: 0.3, angle: -0.9, offX: 2, offY: -2, gaps: 0.3, color: 0 });
+    uiTracePath(ctx, sh.nail, true);
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fill();
+    ctx.restore();
+    uiGrain(ctx, w, h, jitter, 0.02);
+  });
+  uiSketchTexture(scene, 'hud_hand3_cuff', H.w, H.h, (ctx, shape, jitter, v, w, h) => {
+    const sh = hudOpenHandShapes(shape, jitter);
+    uiTracePath(ctx, sh.cuff.map(p => ({ x: p.x + 2, y: p.y - 1 })), true);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    uiHatch(ctx, sh.cuff, jitter, { spacing: 6, width: 2.5, alpha: 0.35, angle: 0.7, offX: 2, offY: -1, gaps: 0.3, color: 0 });
+    ctx.restore();
+    uiGrain(ctx, w, h, jitter, 0.03);
+  });
+  uiSketchTexture(scene, 'hud_hand3_ink', H.w, H.h, (ctx, shape, jitter) => {
+    const sh = hudOpenHandShapes(shape, jitter);
+    const body = openBody(sh);
+    for (const pts of body) uiStroke(ctx, pts, jitter, { width: 9, color: 0xffffff, closed: true, retrace: false });
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = '#000';
+    for (const pts of body.concat([sh.cuff])) { uiTracePath(ctx, pts, true); ctx.fill(); }
+    ctx.restore();
+    const line = (pts, width) => uiStroke(ctx, pts, jitter, { width: width || 3.2, color: 0xffffff, retrace: false });
+    // Each finger's own contour (so the fingers read apart, not as a mitten), stopping where the
+    // finger meets the palm: drawn on a scratch canvas, the palm punched out of it, then laid on.
+    const tmp = document.createElement('canvas');
+    tmp.width = ctx.canvas.width;
+    tmp.height = ctx.canvas.height;
+    const t = tmp.getContext('2d');
+    for (const pts of sh.fingers.concat([sh.thumb])) uiStroke(t, pts, jitter, { width: 3.4, color: 0xffffff, closed: true, retrace: false });
+    t.globalCompositeOperation = 'destination-out';
+    uiTracePath(t, sh.back, true);
+    t.fill();
+    ctx.drawImage(tmp, 0, 0);
+    uiStroke(ctx, sh.nail, jitter, { width: 3, color: 0xffffff, closed: true, overshoot: 2, retrace: false });
+    line([{ x: H.tipX - 5, y: H.tipY + 15 }, { x: H.tipX - 6, y: H.tipY + 22 }], 2.4);
+    // Knuckle creases on the index finger, and the palm's crease (the palm faces us).
+    line([{ x: 48, y: 96 }, { x: 60, y: 99 }, { x: 74, y: 96 }]);
+    line([{ x: 66, y: 168 }, { x: 84, y: 160 }, { x: 104, y: 162 }, { x: 118, y: 172 }], 2.6);
+    line([{ x: 70, y: 192 }, { x: 88, y: 186 }, { x: 102, y: 190 }], 2.2);
     uiStroke(ctx, sh.cuff, jitter, { width: 5, color: 0xffffff, closed: true, overshoot: 2, retrace: true });
     line([{ x: 52, y: 222 }, { x: 88, y: 221 }, { x: 124, y: 223 }]);
   });

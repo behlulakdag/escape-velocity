@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, hudFitCardRow, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardRowRect, HUD_CARD_FADE })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -578,4 +578,124 @@ test('tutorial step fades: in over ~0.25 s, out over ~0.2 s, settling exactly', 
   assert.strictEqual(hud.hudStepFade(0.5, 1, S.fadeIn, -1), 0.5, 'negative dt is ignored');
   // The wash darkens the page ~55-65%: flat wash plus hatch strokes over it.
   assert.ok(S.wash >= 0.4 && S.wash <= 0.6 && S.hatch > 0.3);
+});
+
+test('LET GO arrow: leaves the comet along the fling tangent and bends onto the target (up-left and up-right)', () => {
+  const S = hud.HUD_STEP;
+  // Comet orbiting a planet below it; the next planet up-left / up-right, the tangent pointing up or sideways.
+  for (const [tx, ty, dirX, dirY] of [[170, 380, 0.2, -1], [560, 360, -0.2, -1], [560, 360, 1, -0.2], [170, 380, -1, -0.3]]) {
+    const cx = 360;
+    const cy = 700;
+    const tr = 60;
+    const p = hud.hudStepArrowPath(cx, cy, dirX, dirY, tx, ty, tr);
+    assert.ok(p && p.target, 'a target arrow');
+    const len = Math.hypot(dirX, dirY);
+    // Start: arrowFrom out along the tangent; the curve's first direction is the tangent.
+    assert.ok(Math.abs(p.sx - (cx + (dirX / len) * S.arrowFrom)) < 1e-6 && Math.abs(p.sy - (cy + (dirY / len) * S.arrowFrom)) < 1e-6);
+    const a = hud.hudStepArrowPoint(p, 0.01);
+    const cos = ((a.x - p.sx) * dirX + (a.y - p.sy) * dirY) / (Math.hypot(a.x - p.sx, a.y - p.sy) * len);
+    assert.ok(cos > 0.95, 'leaves along the tangent ' + cos);
+    // Tip: on the comet->target line, just outside the target's body, and pointing into it.
+    const dTip = Math.hypot(p.ex - tx, p.ey - ty);
+    assert.ok(Math.abs(dTip - (hud.hudBodyRadius('planet', tr) + S.arrowStop)) < 1e-6, 'tip at the target ' + dTip);
+    const b = hud.hudStepArrowPoint(p, 0.97);
+    const into = ((p.ex - b.x) * (tx - p.ex) + (p.ey - b.y) * (ty - p.ey)) / (Math.hypot(p.ex - b.x, p.ey - b.y) * dTip);
+    assert.ok(into > 0.5, 'the head points at the target ' + into);
+    // The last half closes in on the target all the way.
+    let last = Infinity;
+    for (let u = 0.5; u <= 1.0001; u += 0.05) {
+      const q = hud.hudStepArrowPoint(p, Math.min(1, u));
+      const d = Math.hypot(q.x - tx, q.y - ty);
+      assert.ok(d <= last + 1e-6, 'closing in at u ' + u);
+      last = d;
+    }
+  }
+  // Close target: still a readable arrow. No direction: straight at the target. Junk: null.
+  const close = hud.hudStepArrowPath(360, 700, 0, -1, 360, 560, 50);
+  assert.ok(Math.hypot(close.ex - 360, close.ey - 700) >= S.arrowFrom + S.arrowMin - 1e-6);
+  const straight = hud.hudStepArrowPath(360, 700, NaN, NaN, 360, 300, 50);
+  assert.ok(Math.abs(straight.sx - 360) < 1e-6 && straight.sy < 700);
+  assert.strictEqual(hud.hudStepArrowPath(NaN, 1, 0, -1), null);
+  assert.strictEqual(hud.hudStepArrowPath(360, 700, 0, 0), null);
+});
+
+test('LET GO with a target: lights the target, keeps the hand and word off the orbit planet, the target and the arrow', () => {
+  const S = hud.HUD_STEP;
+  const cases = [
+    { px: 360, py: 820, pr: 70, cx: 360, cy: 730, dirX: 0.2, dirY: -1, tx: 170, ty: 400, tr: 60 },    // target up-left
+    { px: 360, py: 820, pr: 70, cx: 360, cy: 730, dirX: -0.2, dirY: -1, tx: 560, ty: 380, tr: 60 },   // target up-right
+    { px: 250, py: 760, pr: 60, cx: 330, cy: 700, dirX: 0.5, dirY: -1, tx: 520, ty: 360, tr: 80 },
+    { px: 480, py: 700, pr: 90, cx: 380, cy: 640, dirX: -0.6, dirY: -1, tx: 200, ty: 330, tr: 50 },
+    { px: 360, py: 600, pr: 60, cx: 440, cy: 560, dirX: 0, dirY: -1, tx: 300, ty: 980, tr: 60 },      // target below
+  ];
+  for (const k of cases) {
+    const L = hud.hudStepLayout('letgo', k, 250);
+    stepCheck(L, JSON.stringify(k));
+    assert.strictEqual(L.spots.length, 2, 'target + comet lit');
+    assert.ok(Math.hypot(L.spots[0].x - k.tx, L.spots[0].y - k.ty) < 1e-6, 'the target is lit');
+    assert.strictEqual(L.bodies.length, 3, 'orbit planet, target and comet kept clear');
+    assert.strictEqual(L.circles.length, 3 + S.arrowSamples + 1);
+    assert.ok(L.arrow && L.arrow.target);
+  }
+});
+
+test('LET GO hand is open (fingers apart, thumb out) and stays inside the hand box', () => {
+  const S = hud.HUD_STEP;
+  const O = hud.HUD_HAND_OPEN;
+  const halo = 8 * S.handScale + 8;
+  for (const lift of [0, -S.liftPx]) {
+    for (const pt of hud.hudHandPoints(lift, S.handScale, S.handScale, O.outline)) {
+      assert.ok(pt.x - halo >= S.handBox.l && pt.x + halo <= S.handBox.r, 'x ' + pt.x);
+      assert.ok(pt.y - halo >= S.handBox.t && pt.y + halo <= S.handBox.b, 'y ' + pt.y);
+    }
+  }
+  // Same anchor (index tip) as the pressing hand, but five spread digits.
+  assert.deepStrictEqual(Array.from(O.fingers[0].slice(2, 4)), [hud.HUD_HAND.tipX, hud.HUD_HAND.tipY]);
+  assert.strictEqual(O.fingers.length, 4);
+  const tipsX = O.fingers.map(f => f[2]);
+  for (let i = 1; i < tipsX.length; i++) assert.ok(tipsX[i] > tipsX[i - 1] + 5, 'fingers fan out');
+  assert.ok(O.thumb[2] < O.thumb[0] - 20, 'thumb sticks out');
+  for (const f of O.fingers.concat([O.thumb])) {
+    assert.ok(f[2] - f[4] >= 0 && f[2] + f[4] <= hud.HUD_HAND.w && f[3] >= 0, 'finger inside the texture ' + f);
+  }
+});
+
+test('repeats: the same pop / stamp never twice within 1.5 s; penalties merge', () => {
+  const R = hud.HUD_REPEAT;
+  assert.strictEqual(R.ms, 1500);
+  const seen = {};
+  assert.strictEqual(hud.hudRepeatAllowed(seen, 'NICE!', 1000), true);
+  assert.strictEqual(hud.hudRepeatAllowed(seen, 'NICE!', 1200), false);
+  assert.strictEqual(hud.hudRepeatAllowed(seen, 'NICE!', 2499), false);
+  assert.strictEqual(hud.hudRepeatAllowed(seen, 'BLAZING!', 1300), true, 'other words are free');
+  assert.strictEqual(hud.hudRepeatAllowed(seen, 'NICE!', 2500), true);
+  // Numbers do not make a new kind.
+  assert.strictEqual(hud.hudPopKind('-15% SPEED'), hud.hudPopKind('-8% SPEED'));
+  assert.strictEqual(hud.hudPopKind('PERFECT x4!'), hud.hudPopKind('PERFECT x5!'));
+  assert.notStrictEqual(hud.hudPopKind('WALL KICK!'), hud.hudPopKind('WARP!'));
+  // Penalties add up (capped), anything else reads as the newer label.
+  assert.strictEqual(hud.hudMergePopLabel('-15% SPEED', '-10% SPEED'), '-25% SPEED');
+  assert.strictEqual(hud.hudMergePopLabel('-60% SPEED', '-50% SPEED'), '-' + R.maxPenalty + '% SPEED');
+  assert.strictEqual(hud.hudMergePopLabel('PERFECT x4!', 'PERFECT x5!'), 'PERFECT x5!');
+  assert.strictEqual(hud.hudMergePopLabel('WALL KICK!', 'WALL KICK!'), 'WALL KICK!');
+});
+
+test('owned-card row fades near planets / the comet; the score note only greys with something under its paper', () => {
+  const L = hud.HUD_CARDS;
+  const span = { left: -2 * L.gap - L.cardW / 2 - 14, right: L.cardW / 2 + 14 };
+  const row = hud.hudCardRowRect(L.right, 1, span);
+  assert.ok(row.left < row.right && row.top < L.y && row.bottom > L.y);
+  assert.ok(Math.abs(row.right - (L.right + span.right)) < 1e-6);
+  assert.strictEqual(hud.hudCardRowRect(NaN, 1, span), null);
+  assert.strictEqual(hud.hudCardRowRect(600, 1, null), null);
+  const F = hud.HUD_CARD_FADE;
+  assert.ok(F.under >= 0.3 && F.under <= 0.4 && F.pad >= 120);
+  // A planet whose orbit room reaches up to the row: faded; far below: not.
+  assert.strictEqual(hud.hudCirclesUnder(row, [{ x: 560, y: row.bottom + 160, r: 60 }], F.pad), true);
+  assert.strictEqual(hud.hudCirclesUnder(row, [{ x: 360, y: 900, r: 60 }], F.pad), false);
+  // The note: a planet just below the note's paper (body clear) no longer greys it.
+  const N = hud.HUD_NOTE;
+  assert.ok(N.paper.left > N.rect.left && N.paper.bottom < N.rect.bottom);
+  assert.strictEqual(hud.hudCirclesUnder(N.paper, [{ x: 200, y: 280, r: 50 }], 0), false, 'body clear of the paper');
+  assert.strictEqual(hud.hudCirclesUnder(N.paper, [{ x: 200, y: 250, r: 50 }], 0), true, 'body on the paper');
 });
