@@ -187,8 +187,10 @@ class PauseScene extends Phaser.Scene {
     const N = L.note;
     const noteKey = uiNoteTexture(this, N.w, N.h, { rules: { top: 128, step: 58 }, margin: 44 });
     const paper = uiBoilImage(this, 0, 0, noteKey);
-    const title = uiTitleText(this, L.title.x - N.x, L.title.y - N.y, 'PAUSED', {
-      size: 86, color: UI_INK.darkHex, shadowColor: uiColorHex(UI_CRAYON.orange), rot: -0.04,
+    // Same lettering as the game over headline: crayon fill with a thin ink edge. A dark fill under the
+    // title helper's thick dark stroke closed the letters up into one blurry blob.
+    const title = uiInkText(this, L.title.x - N.x, L.title.y - N.y, 'PAUSED', {
+      size: 80, color: '#2f6fa8', stroke: '#16304f', strokeW: 4, rot: -0.04,
     });
     // A little pencil 'zz' by the title: the run is asleep, not over.
     const zz = uiInkText(this, L.title.x - N.x + 178, L.title.y - N.y - 34, 'z z', {
