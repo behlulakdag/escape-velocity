@@ -2,7 +2,7 @@
 # First time only: run "& $env:USERPROFILE\tools\butler\butler.exe login" and approve in the browser.
 # Usage: powershell -ExecutionPolicy Bypass -File deploy.ps1 [-Target user/game]
 param(
-  [string]$Target = "behlulakdag/slapjam-test-build"
+  [string]$Target = "behlulakdag/escape-velocity"
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
