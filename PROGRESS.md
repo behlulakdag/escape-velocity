@@ -80,4 +80,7 @@
 - Strict critic: Fun 3.4 / Visual 3.9 / Theme 3.6 -> off-screen late deaths, ceiling ~38-40k, finger reads badly, HUD clutter.
 - [x] First-run/fairness, slow-motion guided tutorial (2 planets, full lap, owner spec), ghost removed, speed-feel pass.
 - [x] SUBMITTED to the jam (Oct 30 ~21:00 TR, 20h58m before the deadline); entry shows on the entries page. Later butler pushes update the same page until the deadline.
-- [ ] Running: close the wall-climb exploit, pause button (replaces in-game fullscreen), rescue shake, redrawn supernova jaws. Then: recapture itch screenshots from the final build; feature freeze Oct 31 ~12:00.
+- [x] Wall-climb exploit closed (mirror walls), pause (PauseScene, auto-pause), rescue shake, redrawn jaws, card-pick tap fix, visible tutorial flame, planets-are-friends onboarding, light catch slow-down, CLOSER = FASTER, card procs, picks 12 s apart, grace without PERFECT. Strict judge 4.0 / 4.4 / 4.3. Deployed build #2255339 (Oct 30 ~23:55).
+- [x] itch description rewritten (no duplicates, one-line controls pitch, planets-are-friends how-to, AI disclosure as one credits line).
+- [ ] Oct 31 morning: owner phone test, recapture itch screenshots/GIF from the final build, last bug fixes only. Feature freeze 12:00, nothing after ~15:00.
+- Post-jam ideas (owner's friends): shop backgrounds, a mission/level mode, Play Store release, personal top-5 list.
