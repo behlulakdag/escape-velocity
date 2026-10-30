@@ -187,18 +187,96 @@ function cardLegendTexture(scene) {
   });
 }
 
-// Small yellow scrap for the "+1 SET" hint, taped across the bottom of a card.
+// "+1 SET" hint: a small scrap torn off a notebook page and taped crooked onto the card's
+// bottom edge. Deliberately not a label tag: straight scissor cut on top, ragged torn bottom,
+// one strip of tape at a corner, hand lettering with a crayon scribble under the set name.
+const CARD_SET_SCRAP = { w: 188, h: 64, pad: 18, tear: 7 };
+
+// Ragged torn edge from (x0, y) to (x1, y): small irregular teeth of mixed width and depth,
+// never deeper than `depth` either side of the line. rand() -> [0, 1).
+function cardTornEdge(x0, x1, y, depth, rand) {
+  const pts = [{ x: x0, y }];
+  let x = x0;
+  let k = 0;
+  while (true) {
+    x += 5 + rand() * 9;
+    if (x >= x1 - 3) break;
+    const sign = k++ % 2 ? 1 : -1;
+    pts.push({ x, y: y + sign * depth * (0.3 + rand() * 0.7) });
+  }
+  pts.push({ x: x1, y });
+  return pts;
+}
+
+// Closed outline of the scrap in texture px: cut top, torn bottom, slightly ragged sides.
+function cardSetScrapOutline(rand) {
+  const { w, h, pad, tear } = CARD_SET_SCRAP;
+  const top = [];
+  for (let i = 0; i <= 4; i++) top.push({ x: pad + (w * i) / 4, y: pad + (rand() - 0.5) * 3 + i * 0.8 });
+  const bottom = cardTornEdge(pad, pad + w, pad + h, tear, rand).reverse();
+  bottom[0].x += 3; // the tear starts a little in from the cut corner
+  return top.concat([{ x: pad + w + 2, y: pad + h * 0.5 }], bottom, [{ x: pad - 2, y: pad + h * 0.55 }]);
+}
+
+// Css px between the screen edge and the outermost ink of the dealt row (cards and their set
+// scraps), on a phone `viewW` css px wide. The game is FIT-scaled from GAME_WIDTH (720).
+function cardRowGutterCss(viewW, gameW) {
+  const half = Math.max(CARD_UI.width + 14, CARD_SET_SCRAP.w + CARD_SET_SCRAP.pad * 2) / 2 * CARD_UI.rowScale;
+  // The outer cards rest tilted up to 2.5 deg and the scrap sits rotated and nudged sideways.
+  const slack = 10;
+  const edge = gameW / 2 - CARD_UI.spacing - half - slack;
+  return edge * (viewW / gameW);
+}
+
 function cardSetNoteTexture(scene) {
-  return uiSketchTexture(scene, 'cd_setnote', 250, 92, (ctx, shape, jitter) => {
-    const pts = uiWobblyRect(14, 14, 222, 62, shape, jitter, 0.8);
-    uiTracePath(ctx, pts.map((p) => ({ x: p.x + 4, y: p.y + 6 })), true);
-    ctx.fillStyle = 'rgba(5,6,16,0.4)';
+  const { w, h, pad } = CARD_SET_SCRAP;
+  return uiSketchTexture(scene, 'cd_setnote2', w + pad * 2, h + pad * 2, (ctx, shape, jitter) => {
+    const outline = cardSetScrapOutline(shape).map((p) => ({ x: p.x + (jitter() - 0.5) * 1.2, y: p.y + (jitter() - 0.5) * 1.2 }));
+    // Soft shadow: the scrap lifts a little off the card.
+    uiTracePath(ctx, outline.map((p) => ({ x: p.x + 3, y: p.y + 5 })), true);
+    ctx.fillStyle = 'rgba(5,6,16,0.35)';
     ctx.fill();
-    uiTracePath(ctx, pts, true);
-    ctx.fillStyle = uiCss(0xfff6c8);
+    uiTracePath(ctx, outline, true);
+    ctx.fillStyle = uiCss(0xfbefc2);
     ctx.fill();
-    uiHatch(ctx, pts, jitter, { color: 0xffffff, spacing: 4, width: 4, alpha: 0.9, offX: 2, offY: -1, grow: 0.98 });
-    uiStroke(ctx, pts, jitter, { width: 2.4, color: UI_INK.dark, closed: true, retrace: false });
+    // Faint blue notebook rule and the fibres showing along the torn edge.
+    ctx.save();
+    uiTracePath(ctx, outline, true);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(90,130,200,0.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(pad - 4, pad + h * 0.36 + (shape() - 0.5) * 2);
+    ctx.lineTo(pad + w + 4, pad + h * 0.36 + (shape() - 0.5) * 2);
+    ctx.stroke();
+    ctx.restore();
+    const torn = outline.filter((p) => p.y > pad + h - 12);
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 3;
+    uiTracePath(ctx, torn.map((p) => ({ x: p.x, y: p.y - 2 })), false);
+    ctx.stroke();
+    uiStroke(ctx, outline, jitter, { width: 1.8, color: UI_INK.pencilDark, closed: true, retrace: false });
+    // One strip of tape holding the top-left corner down.
+    ctx.save();
+    ctx.translate(pad + 14, pad + 4);
+    ctx.rotate(-0.7);
+    const tape = [];
+    for (let i = 0; i <= 3; i++) tape.push({ x: 24 + (i % 2 ? 3 : 0) + (shape() - 0.5) * 3, y: -11 + i * 7.3 });
+    for (let i = 3; i >= 0; i--) tape.push({ x: -24 - (i % 2 ? 3 : 0) + (shape() - 0.5) * 3, y: -11 + i * 7.3 });
+    uiTracePath(ctx, tape, true);
+    ctx.fillStyle = 'rgba(236,228,190,0.72)';
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+// Crayon scribble under the set name (white, tinted per family).
+function cardSetScribbleTexture(scene) {
+  return uiSketchTexture(scene, 'cd_setscribble', 170, 22, (ctx, shape, jitter) => {
+    const pts = [];
+    for (let i = 0; i <= 8; i++) pts.push({ x: 8 + i * 19, y: 9 + Math.sin(i * 1.3 + shape() * 2) * 2 + (jitter() - 0.5) * 2 + i * 0.3 });
+    for (let i = 7; i >= 3; i--) pts.push({ x: 12 + i * 19, y: 15 + (jitter() - 0.5) * 2.5 });
+    uiStroke(ctx, pts, jitter, { width: 3.6, color: 0xffffff, retrace: false });
   });
 }
 
@@ -231,6 +309,7 @@ class CardScene extends Phaser.Scene {
     cardRareTexture(this);
     cardLegendTexture(this);
     cardSetNoteTexture(this);
+    cardSetScribbleTexture(this);
     uiStarTexture(this);
     uiUnderlineTexture(this);
     uiCircleTexture(this);
@@ -346,16 +425,19 @@ class CardScene extends Phaser.Scene {
       }
     }
 
-    // "+1 SET" scrap taped across the bottom edge.
+    // "+1 SET" scrap torn from a notebook and taped crooked over the bottom edge.
     if (this.completesSet(card) && typeof SET_BONUSES !== 'undefined' && SET_BONUSES[card.family]) {
-      const ry = h / 2 + 10;
-      const note = uiBoilImage(this, 0, ry, 'cd_setnote').setRotation(-0.05);
-      const ribTop = uiInkText(this, -88, ry - 12, '+1 SET:', { size: 20, color: UI_INK.darkHex, stroke: null, ox: 0, rot: -0.06, boil: false });
-      const ribName = uiInkText(this, 0, ry + 11, SET_BONUSES[card.family].name, { size: 25, color: cardCrayonInk(card.family), stroke: null, rot: -0.05, boil: false });
-      ribName.setScale(Math.min(1, 200 / ribName.width));
-      const rib = this.add.container(0, 0, [note, ribTop, ribName]);
+      const ry = h / 2 + 8;
+      const note = uiBoilImage(this, 0, 0, 'cd_setnote2');
+      const ribTop = uiInkText(this, -CARD_SET_SCRAP.w / 2 + 14, -17, '+1 set', { size: 22, color: UI_INK.pencilDarkHex, stroke: null, ox: 0, rot: -0.04, boil: false });
+      const ribName = uiInkText(this, 4, 6, SET_BONUSES[card.family].name.toLowerCase(), { size: 26, color: cardCrayonInk(card.family), stroke: null, rot: -0.02, boil: false });
+      ribName.setScale(Math.min(1, (CARD_SET_SCRAP.w - 24) / ribName.width));
+      const scribble = uiBoilImage(this, 6, 22, 'cd_setscribble').setTint(cardCrayon(card.family)).setScale(Math.min(1, (ribName.displayWidth + 16) / 170), 1);
+      const tilt = (uiHash(card.family) % 2 ? 1 : -1) * 0.06;
+      const rib = this.add.container(8 * Math.sign(tilt), ry, [note, scribble, ribTop, ribName]).setRotation(tilt);
       parts.push(rib);
-      this.tweens.add({ targets: rib, angle: { from: -2, to: 2 }, yoyo: true, repeat: -1, duration: 420, ease: 'Sine.InOut' });
+      // A slow flutter, as if the loose torn end lifts a little.
+      this.tweens.add({ targets: rib, rotation: { from: tilt - 0.02, to: tilt + 0.02 }, yoyo: true, repeat: -1, duration: 520, ease: 'Sine.InOut' });
     }
 
     const inner = this.add.container(0, 0, parts).setScale(CARD_UI.rowScale);
@@ -570,5 +652,5 @@ class CardScene extends Phaser.Scene {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { CARD_UI, cardCountdownLeft, cardPressCounts, cardReleasePick, cardAutoPickDue };
+  module.exports = { CARD_UI, CARD_SET_SCRAP, cardTornEdge, cardSetScrapOutline, cardRowGutterCss, cardCountdownLeft, cardPressCounts, cardReleasePick, cardAutoPickDue };
 }

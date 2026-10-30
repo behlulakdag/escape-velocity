@@ -60,3 +60,37 @@ test('deal-in + arm + countdown + grace + exit fit inside GameScene\'s safety ne
   assert.ok(worst < timeout + 1.5 - 0.2, 'worst case ' + worst.toFixed(2) + ' s');
   assert.ok(ui.CARD_UI.armDelay >= 0.3 && ui.CARD_UI.armDelay <= 0.4);
 });
+
+// Seeded rand for the scrap shape tests.
+function seeded(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+test('the torn edge is ragged, stays within its depth and runs left to right', () => {
+  for (let seed = 1; seed < 40; seed++) {
+    const pts = ui.cardTornEdge(10, 200, 50, 7, seeded(seed));
+    assert.ok(pts.length >= 14, 'teeth: ' + pts.length);
+    for (let i = 1; i < pts.length; i++) assert.ok(pts[i].x > pts[i - 1].x);
+    for (const p of pts) assert.ok(Math.abs(p.y - 50) <= 7);
+    assert.ok(pts.some((p) => p.y < 50 - 2) && pts.some((p) => p.y > 50 + 2), 'teeth go both ways');
+  }
+});
+
+test('the "+1 set" scrap is a torn scrap, not a rounded tag, and fits its texture', () => {
+  const S = ui.CARD_SET_SCRAP;
+  const out = ui.cardSetScrapOutline(seeded(7));
+  const bottom = out.filter((p) => p.y > S.pad + S.h * 0.75);
+  assert.ok(bottom.length >= 12, 'torn bottom edge has many teeth');
+  for (const p of out) {
+    assert.ok(p.x >= 0 && p.x <= S.w + S.pad * 2, 'x in texture');
+    assert.ok(p.y >= 0 && p.y <= S.h + S.pad * 2, 'y in texture');
+  }
+});
+
+test('the dealt row keeps a >= 16 css px gutter on 360 and 375 px wide phones', () => {
+  for (const viewW of [360, 375]) {
+    const g = ui.cardRowGutterCss(viewW, 720);
+    assert.ok(g >= 16, viewW + ' px wide: ' + g.toFixed(1));
+  }
+});
