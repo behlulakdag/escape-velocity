@@ -14,7 +14,10 @@ const CARD_UI = {
   width: 214,
   height: 380,
   pad: 24,              // texture margin around the card for shadow / border strokes
-  spacing: 234,
+  spacing: 210,
+  // The dealt row is drawn at this scale so three cards plus their "+1 SET" scraps keep a
+  // >= 16 css px gutter on 360-375 px wide phones (FIT scaling of 720 wide).
+  rowScale: 0.88,
   centerY: 850,
   headerY: 548,
   hitSlop: 18,          // px of forgiveness round a card for a tap
@@ -23,7 +26,7 @@ const CARD_UI = {
 
 // Card center x that keeps a card scaled by `scale` (plus its border marks) inside the screen.
 function cardSafeX(x, scale) {
-  const half = (CARD_UI.width / 2 + 16) * scale + 8;
+  const half = (CARD_UI.width / 2 + 16) * scale * CARD_UI.rowScale + 34;
   return Phaser.Math.Clamp(x, half, GAME_WIDTH - half);
 }
 
@@ -225,7 +228,7 @@ class CardScene extends Phaser.Scene {
     this.ringGfx = this.add.graphics();
     this.ringText = uiInkText(this, 0, 0, '', { size: 36, rot: -0.04 });
     this.ringAnchor = this.cards[this.autoIndex]
-      ? { x: this.cards[this.autoIndex].baseX, y: CARD_UI.centerY + CARD_UI.height / 2 + 96 }
+      ? { x: this.cards[this.autoIndex].baseX, y: CARD_UI.centerY + CARD_UI.height * CARD_UI.rowScale / 2 + 96 }
       : { x: GAME_WIDTH / 2, y: CARD_UI.centerY };
     this.ringText.setPosition(this.ringAnchor.x, this.ringAnchor.y + 1).setAlpha(0);
     this.ringGfx.setAlpha(0);
@@ -314,11 +317,11 @@ class CardScene extends Phaser.Scene {
       this.tweens.add({ targets: rib, angle: { from: -2, to: 2 }, yoyo: true, repeat: -1, duration: 420, ease: 'Sine.InOut' });
     }
 
-    const inner = this.add.container(0, 0, parts);
+    const inner = this.add.container(0, 0, parts).setScale(CARD_UI.rowScale);
     // Slight resting tilt, as if dealt by hand.
     const restAngle = ((uiHash(id) % 100) / 100 - 0.5) * 5;
     const box = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT + h, [inner]);
-    box.setSize(w + 14, h + 30);
+    box.setSize((w + 14) * CARD_UI.rowScale, (h + 30) * CARD_UI.rowScale);
     // Only for the hand cursor: taps are hit-tested by the scene (see onPointerDown), so a card
     // still dealing in (moving under the finger) takes the very first tap.
     box.setInteractive({ useHandCursor: true });
@@ -367,12 +370,12 @@ class CardScene extends Phaser.Scene {
     let best = -1;
     let bestD = Infinity;
     this.cards.forEach((c, i) => {
-      const hw = (CARD_UI.width / 2) * Math.max(1, c.box.scaleX) + pad;
-      const hh = (CARD_UI.height / 2) * Math.max(1, c.box.scaleY) + pad;
+      const hw = (CARD_UI.width / 2) * CARD_UI.rowScale * Math.max(1, c.box.scaleX) + pad;
+      const hh = (CARD_UI.height / 2) * CARD_UI.rowScale * Math.max(1, c.box.scaleY) + pad;
       const onScreen = c.box.y - hh < GAME_HEIGHT;
       if (!onScreen) return;
       const inNow = Math.abs(px - c.box.x) <= hw && Math.abs(py - c.box.y) <= hh;
-      const inRest = Math.abs(px - c.baseX) <= CARD_UI.width / 2 + pad && Math.abs(py - c.baseY) <= CARD_UI.height / 2 + pad;
+      const inRest = Math.abs(px - c.baseX) <= CARD_UI.width * CARD_UI.rowScale / 2 + pad && Math.abs(py - c.baseY) <= CARD_UI.height * CARD_UI.rowScale / 2 + pad;
       if (!inNow && !inRest) return;
       const d = Math.min(Math.hypot(px - c.box.x, py - c.box.y), Math.hypot(px - c.baseX, py - c.baseY));
       if (d < bestD) { bestD = d; best = i; }
