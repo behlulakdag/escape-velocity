@@ -42,7 +42,7 @@ const TUNING = {
   catchBonus: 60,         // instant speed for every planet caught
   hitKeep: 0.7,           // speed kept after hitting a planet
   maxOrbitSpin: 5,        // rad/s cap on visible orbit rotation so high speed stays readable...
-  orbitSpinBoost: 2,      // ...plus up to this at the absolute cap, so a late orbit (fast wave) still comes round in time
+  orbitSpinBoost: 8,      // ...plus up to this at the absolute cap, so a late orbit (fast wave) comes round before the wave arrives
   orbitSpinBoostFrom: 4500, // px/s where that extra spin starts (the early game keeps the plain cap)
   assistMaxBelow: 40,     // assist never steers toward planets further below than this
   minZoom: 0.68,          // camera zoom at top speed
@@ -64,16 +64,27 @@ const TUNING = {
   novaRamp: 5,            // extra px/s every second
   novaMaxSpeed: 950,      // wave top speed in the first zone; it scales with the zone's speed cap...
   novaMaxAbsolute: 1900,  // ...up to this by ESCAPE VELOCITY (page 5)...
-  novaPerPage: 300,       // ...then every new page past ESCAPE VELOCITY raises the top speed by this...
-  novaMaxLate: 4000,      // ...up to this
-  novaLateRamp: 0.05,     // extra px/s per meter past ESCAPE VELOCITY, so the late wave really uses that top speed
+  novaPerPage: 150,       // ...then every new page past ESCAPE VELOCITY raises the top speed by this...
+  novaMaxLate: 2250,      // ...up to this (a clean 'release on green' climb stays a little faster, so BEYOND is reachable)
+  novaHardCap: 2250,      // px/s: the wave never goes faster than this, upgrade cards (+5% each) included
+  novaLateRamp: 0.01,     // extra px/s per meter past ESCAPE VELOCITY (small: the time ramp already reaches the top speed)
   lateHazardPerPage: 0.06, // asteroid / black hole chance added per page past ESCAPE VELOCITY
   maxAsteroidChance: 0.8,
   maxBlackHoleChance: 0.5,
   novaAltitudeRamp: 0.01, // extra px/s per meter of best altitude, so faster zones get a faster wave
   novaLeash: 250,         // the wave is never further than this below the visible screen (falling back = death)
-  novaLeashLate: 900,     // ...growing to this by 10,000 m (half a page past ESCAPE VELOCITY): the late wave is much faster,
-                          // so a clean climber gets more room to line up a release; a random fling still falls into it
+  novaLeashSeconds: 0.8,  // ...growing by 10,000 m (half a page past ESCAPE VELOCITY) to this many seconds of wave travel:
+                          // a leash in px is gone in a blink at 2900 px/s; by time the wave always takes ~1 s to reach you
+  // CALM START: every run opens with a slow wave that ramps up over the first seconds.
+  novaCalmSeconds: 15,    // s the calm start lasts
+  novaCalmFrom: 0.7,      // wave speed share at second 0, easing up to 1 by novaCalmSeconds
+  novaCalmStartBelow: 120, // extra px below the comet the wave starts (on top of novaStartBelow)
+  // First runs (finger tutorial on): until the player made learnCatches catches of their own the wave crawls.
+  novaLearnMul: 0.35,
+  tutorialCalmSeconds: 30, // the calm start on the tutorial runs (after the learning crawl) lasts this long
+  novaLearnStartBelow: 330,
+  learnCatches: 2,
+  tutorialHomingTime: 0.3, // s an assisted fling in the tutorial takes to turn onto its target, however wide the angle
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,
   planetGapPerPx: 0.012,
@@ -473,11 +484,66 @@ function novaSpeed(seconds, meters) {
   return Math.min(novaMaxForAltitude(m), TUNING.novaBaseSpeed + TUNING.novaRamp * seconds + climb);
 }
 
-// How far below the visible screen the wave may lag at an altitude (meters): novaLeash early,
-// easing up to novaLeashLate over the first half page past ESCAPE VELOCITY (8000 -> 10000 m).
-function novaLeashFor(meters) {
+// How far below the visible screen the wave may lag (px) at an altitude (meters) and wave speed (px/s):
+// novaLeash early, easing over the first half page past ESCAPE VELOCITY (8000 -> 10000 m) to
+// novaLeashSeconds of wave travel, so the late wave is never more than ~0.7 s below the screen bottom.
+function novaLeashFor(meters, waveSpeed) {
   const k = Math.min(1, pagesPastEscape(meters) * 2);
-  return TUNING.novaLeash + (TUNING.novaLeashLate - TUNING.novaLeash) * k;
+  const late = Math.max(TUNING.novaLeash, (waveSpeed || 0) * TUNING.novaLeashSeconds);
+  return TUNING.novaLeash + (late - TUNING.novaLeash) * k;
+}
+
+// Calm start: share of the wave speed `seconds` into a run. learning (first runs, fewer than
+// learnCatches own catches) keeps it at novaLearnMul; otherwise it eases from novaCalmFrom up to 1,
+// over novaCalmSeconds (tutorialCalmSeconds on the tutorial runs: tutorial = true).
+function novaCalmFactor(seconds, learning, tutorial) {
+  if (learning) return TUNING.novaLearnMul;
+  const span = tutorial ? TUNING.tutorialCalmSeconds : TUNING.novaCalmSeconds;
+  const t = Math.max(0, Math.min(1, (seconds || 0) / span));
+  return TUNING.novaCalmFrom + (1 - TUNING.novaCalmFrom) * t * t * (3 - 2 * t);
+}
+
+// The wave speed actually used: novaSpeed x card multiplier x calm factor, never above novaHardCap.
+function novaSpeedFor(seconds, meters, cardMul, calm) {
+  const v = novaSpeed(seconds, meters) * (cardMul || 1) * (calm === undefined ? 1 : calm);
+  return Math.min(TUNING.novaHardCap, v);
+}
+
+// Seconds until the wave reaches the comet (HUD off-screen warning): gap = novaY - cometY (px) over the
+// wave speed (px/s). cometVy (px/s, + = moving down, e.g. the down swing of an orbit) closes it faster; a
+// climbing comet is NOT counted, so the warning is already up when the climb stops (an orbit late).
+function novaEtaSeconds(gap, waveSpeed, cometVy) {
+  if (gap <= 0) return 0;
+  return gap / (Math.max(1, waveSpeed || 0) + Math.max(0, cometVy || 0));
+}
+
+// Tutorial aim assist (first runs): when no planet is in the normal assist cone, the next planet above
+// fromY (the orbited planet) is the target anyway, whatever the angle, so a learner's release never
+// sends the comet somewhere strange. Same shape as pickAssistTarget, plus wide: true.
+function pickTutorialTarget(x, y, dirX, dirY, planets, exclude, fromY) {
+  const len = Math.hypot(dirX, dirY) || 1;
+  const ux = dirX / len;
+  const uy = dirY / len;
+  let next = null;
+  for (const p of planets) {
+    if (p === exclude || p.y >= fromY - 40) continue;
+    if (!next || p.y > next.y) next = p;
+  }
+  if (!next) return null;
+  const dx = next.x - x;
+  const dy = next.y - y;
+  const dist = Math.hypot(dx, dy);
+  const passDist = next.radius + TUNING.assistPassGap;
+  if (dist <= passDist) return null;
+  let best = null;
+  for (const side of [1, -1]) {
+    const ax = next.x + (-dy / dist) * passDist * side;
+    const ay = next.y + (dx / dist) * passDist * side;
+    const al = Math.hypot(ax - x, ay - y) || 1;
+    const angle = Math.acos(Math.max(-1, Math.min(1, ((ax - x) * ux + (ay - y) * uy) / al)));
+    if (!best || angle < best.angle) best = { planet: next, aimX: ax, aimY: ay, angle, wide: true };
+  }
+  return best;
 }
 
 function flightDecay(altitude) {
@@ -644,5 +710,5 @@ function ghostPositionAt(points, t) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

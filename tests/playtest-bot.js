@@ -10,6 +10,15 @@
 // expert = grabs early like skilled, but only releases on a dead-center gold aim (< 0.55 x the PERFECT
 // window) after 150ms; falls back to any green aim when the supernova gap is under 280px or after 2.2-3.2s.
 // masher = a friend tapping the screen at random, ignoring planets: holds 80-900 ms, lets go for 60-700 ms.
+// anyAssist = strong policy: grabs early (any grabbable planet), releases on the first green/gold aim after 150 ms.
+// FIRST RUN (tutorial on, simulated: the scene gets { simTutorial: true } and never touches real storage):
+// newbie = only follows the finger: presses 250-450 ms after a HOLD prompt appears, lets go 250-450 ms after
+//   a LET GO prompt appears (reads scene.tutorialShown), gives up a hold after 1.5 s without an orbit and
+//   lets go after 3 s in an orbit without a prompt; otherwise does nothing.
+// confused = first run, taps the screen at random like the masher.
+// window.simTutorial = true turns the tutorial on for every style.
+// Supernova visibility: every run reports warnBeforeDeath (s the eta < 1.2 s warning was up right before a
+// supernova death, -1 = none) and lateVisible (share of frames at >= 15,000 m with the nova on screen or warned).
 // Upgrade cards: on every zone entry the headless scene picks a random card at once (reported as cards / avgCards).
 // Late start: window.simStart = { altitude: 9000, speed: 8000, cards: ['wallkick', 'aero'], randomCards: 3,
 //   seconds: 75 } teleports every fresh run to that state (GameScene.debugTeleport: best altitude, comet,
@@ -24,7 +33,8 @@
   window.simRun = (style, maxSeconds) => {
     ['Menu', 'GameOver', 'Game'].forEach((k) => game.scene.stop(k));
     // headless: skips the opening scene, hitstop, slow motion and best-altitude saves.
-    game.scene.start('Game', { headless: true });
+    const simTutorial = style === 'newbie' || style === 'confused' || !!window.simTutorial;
+    game.scene.start('Game', { headless: true, simTutorial });
     for (let i = 0; i < 5; i++) step();
     const s = game.scene.keys.Game;
     if (window.simStart) {
@@ -83,9 +93,36 @@
     let expertPatience = 2500; // expert: ms it waits for a gold aim before taking any green one
     let maxSpeed = 0;
     let frames = 0;
+    // newbie: the prompt it is reacting to, and ms until its finger lands / lifts.
+    let seenPrompt = '';
+    let reactMs = -1;
+    let holdNoOrbit = 0;
+    let orbitNoPrompt = 0;
+    // supernova visibility
+    let warnSince = -1;       // run seconds the eta < 1.2 s warning has been up since (-1 = off)
+    let lateFrames = 0;
+    let lateSeen = 0;
+    const etaOf = () => (typeof s.novaEta === 'function' ? s.novaEta() : (s.novaY - s.comet.y) / Math.max(1, novaSpeed(s.elapsed, s.bestAltitude)));
     while (!s.isOver && frames < maxSeconds * 60) {
       frames++;
-      if (style === 'masher') {
+      if (style === 'newbie') {
+        const prompt = s.tutorialShown || '';
+        if (prompt !== seenPrompt) {
+          seenPrompt = prompt;
+          reactMs = prompt ? 250 + Math.random() * 200 : -1;
+        }
+        if (reactMs >= 0) {
+          reactMs -= 16.67;
+          if (reactMs < 0) {
+            if (seenPrompt === 'hold' && !s.isHolding) s.pressHold();
+            else if (seenPrompt === 'release' && s.isHolding) s.releaseHold();
+          }
+        }
+        // A human gives up a hold that caught nothing, and eventually lets go of an orbit.
+        holdNoOrbit = s.isHolding && !s.orbit ? holdNoOrbit + 16.67 : 0;
+        orbitNoPrompt = s.orbit && seenPrompt !== 'release' ? orbitNoPrompt + 16.67 : 0;
+        if (holdNoOrbit > 1500 || orbitNoPrompt > 3000) { s.releaseHold(); holdNoOrbit = 0; orbitNoPrompt = 0; }
+      } else if (style === 'masher' || style === 'confused') {
         if (s.isHolding) {
           mashHold -= 16.67;
           if (mashHold <= 0) { s.releaseHold(); mashGap = 60 + Math.random() * 640; }
@@ -127,6 +164,7 @@
         if (held <= 16.67) expertPatience = 2200 + Math.random() * 1000;
         const novaGap = s.novaY - s.comet.y;
         const release = style === 'careful' ? assist && held > 200
+          : style === 'anyAssist' ? assist && held > 150
           : style === 'expert' ? (assist && assist.angle < 0.55 * s.perfectAngle() && held > 150)
             || (assist && (novaGap < 280 || held > expertPatience)) || held > expertPatience + 1500
           : style === 'skilled' ? (assist && assist.angle < TUNING.perfectAngle && held > 200) || held > 2500
@@ -134,6 +172,13 @@
         if (release) s.releaseHold();
       }
       step();
+      const eta = etaOf();
+      if (eta < 1.2) { if (warnSince < 0) warnSince = s.elapsed; } else warnSince = -1;
+      if (s.bestAltitude >= 15000) {
+        lateFrames++;
+        const bottom = typeof s.visibleBounds === 'function' ? s.visibleBounds().bottom : Infinity;
+        if (s.novaY < bottom || eta < 1.2) lateSeen++;
+      }
       maxSpeed = Math.max(maxSpeed, s.speed);
       if (frames > 60) speeds.push(s.speed);
     }
@@ -149,7 +194,9 @@
     delete s.openCardPick;
     speeds.sort((a, b) => a - b);
     const kms = (q) => (speeds.length ? Math.round(speeds[Math.floor(q * (speeds.length - 1))] / 10) : 0);
-    return { minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
+    const warnBeforeDeath = reason === 'SUPERNOVA!' ? (warnSince >= 0 ? Math.round((s.elapsed - warnSince) * 100) / 100 : -1) : null;
+    const lateVisible = lateFrames ? Math.round((lateSeen / lateFrames) * 100) / 100 : null;
+    return { warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
   };
 
   window.playtestSummary = (styles, runsEach, maxSeconds) => {
@@ -181,6 +228,12 @@
         speedKms: Math.min(...runs.map((r) => r.minKms)) + '/' + median(runs.map((r) => r.medKms)) + '/' + Math.max(...runs.map((r) => r.maxKms)),
         died60: runs.filter((r) => r.reason && r.seconds <= 60).length + '/' + runs.length,
         maxZone: Math.max(...runs.map((r) => r.zone)),
+        reached500: runs.filter((r) => r.alt >= 500).length + '/' + runs.length,
+        reached40k: runs.filter((r) => r.alt >= 40000).length + '/' + runs.length,
+        diedBefore6: runs.filter((r) => r.reason && r.seconds < 6).length,
+        // Supernova deaths: the shortest time the eta warning was up before one (-1 = a death with no warning).
+        minWarnBeforeDeath: runs.some((r) => r.warnBeforeDeath !== null) ? Math.min(...runs.filter((r) => r.warnBeforeDeath !== null).map((r) => (r.warnBeforeDeath < 0 ? -1 : r.warnBeforeDeath))) : null,
+        lateVisible: median(runs.filter((r) => r.lateVisible !== null).map((r) => r.lateVisible)),
       };
     }
     // Leave the game as a player would find it: no headless Game scene left running in the background.

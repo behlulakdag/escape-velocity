@@ -266,7 +266,7 @@ test('the supernova climbs faster at higher altitude, still capped', () => {
   assert.ok(o.novaSpeed(10, 3000) > o.novaSpeed(10, 0));
   assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxLate);
   // Past ESCAPE VELOCITY the wave gets faster with altitude even early in a run.
-  assert.ok(o.novaSpeed(60, 20000) > o.novaSpeed(60, 9000) + 400);
+  assert.ok(o.novaSpeed(60, 20000) > o.novaSpeed(60, 9000) + 150);
 });
 
 test('orbitStep boost multiplies the orbit gain and the close-orbit bonus', () => {
@@ -542,10 +542,70 @@ test('ghostPositionAt interpolates the path by time and reports its end', () => 
   assert.strictEqual(o.ghostPositionAt(null, 0), null);
 });
 
-test('the supernova leash: unchanged early, more room on the late pages', () => {
-  assert.strictEqual(o.novaLeashFor(0), o.TUNING.novaLeash);
-  assert.strictEqual(o.novaLeashFor(8000), o.TUNING.novaLeash);
-  assert.ok(o.novaLeashFor(9000) > o.TUNING.novaLeash && o.novaLeashFor(9000) < o.TUNING.novaLeashLate);
-  assert.strictEqual(o.novaLeashFor(10000), o.TUNING.novaLeashLate);
-  assert.strictEqual(o.novaLeashFor(1e6), o.TUNING.novaLeashLate);
+test('the supernova leash: unchanged early, by wave travel time on the late pages', () => {
+  assert.strictEqual(o.novaLeashFor(0, 900), o.TUNING.novaLeash);
+  assert.strictEqual(o.novaLeashFor(8000, 2000), o.TUNING.novaLeash);
+  const late = 2800 * o.TUNING.novaLeashSeconds;
+  assert.ok(o.novaLeashFor(9000, 2800) > o.TUNING.novaLeash && o.novaLeashFor(9000, 2800) < late);
+  assert.ok(Math.abs(o.novaLeashFor(10000, 2800) - late) < 1e-9);
+  assert.ok(Math.abs(o.novaLeashFor(1e6, 2800) - late) < 1e-9);
+  // Late, the wave is never more than ~0.6-0.8 s of its own travel below the screen.
+  for (const v of [1500, 2200, 2900]) {
+    const sec = o.novaLeashFor(30000, v) / v;
+    assert.ok(sec >= 0.6 && sec <= 0.8, v + ' px/s -> ' + sec + ' s');
+  }
+  // A slow wave keeps the old px floor.
+  assert.strictEqual(o.novaLeashFor(30000, 100), o.TUNING.novaLeash);
+});
+
+test('calm start: the wave starts slow and is at full speed by novaCalmSeconds; learning crawls', () => {
+  assert.strictEqual(o.novaCalmFactor(0, false), o.TUNING.novaCalmFrom);
+  assert.ok(o.novaCalmFactor(5, false) > o.novaCalmFactor(1, false));
+  assert.strictEqual(o.novaCalmFactor(o.TUNING.novaCalmSeconds, false), 1);
+  assert.strictEqual(o.novaCalmFactor(100, false), 1);
+  assert.strictEqual(o.novaCalmFactor(3, true), o.TUNING.novaLearnMul);
+  assert.ok(o.TUNING.novaLearnMul < o.TUNING.novaCalmFrom);
+  // The tutorial runs ease in over a longer calm start.
+  assert.ok(o.novaCalmFactor(10, false, true) < o.novaCalmFactor(10, false, false));
+  assert.strictEqual(o.novaCalmFactor(o.TUNING.tutorialCalmSeconds, false, true), 1);
+});
+
+test('novaSpeedFor applies cards and calm, never above the hard cap', () => {
+  assert.strictEqual(o.novaSpeedFor(10, 0, 1, 1), o.novaSpeed(10, 0));
+  assert.ok(Math.abs(o.novaSpeedFor(10, 0, 1.2, 0.5) - o.novaSpeed(10, 0) * 0.6) < 1e-9);
+  assert.strictEqual(o.novaSpeedFor(1e4, 1e6, 1.6, 1), o.TUNING.novaHardCap);
+  assert.ok(o.TUNING.novaHardCap <= 3000 && o.TUNING.novaMaxLate <= o.TUNING.novaHardCap);
+});
+
+test('novaEtaSeconds: gap over the wave speed, a falling comet closes faster, a climbing one is ignored', () => {
+  assert.strictEqual(o.novaEtaSeconds(1000, 1000, 0), 1);
+  assert.strictEqual(o.novaEtaSeconds(1000, 1000, 1000), 0.5);
+  assert.strictEqual(o.novaEtaSeconds(1000, 1000, -5000), 1);
+  assert.strictEqual(o.novaEtaSeconds(-5, 1000, 0), 0);
+  assert.ok(isFinite(o.novaEtaSeconds(1000, 0, 0)));
+});
+
+test('late game: the wave stays slower than a clean climb and its leash keeps it ~1 s away', () => {
+  assert.ok(o.TUNING.novaHardCap <= 3000);
+  // At the leash (comet ~715 px above the screen bottom at full zoom-out) the wave needs about a second.
+  const v = o.TUNING.novaHardCap;
+  const eta = o.novaEtaSeconds(715 + o.novaLeashFor(40000, v), v, 0);
+  assert.ok(eta > 0.9 && eta < 1.3, String(eta));
+  // Late orbits spin faster so they come round before that.
+  assert.ok(o.orbitSpinCap(o.TUNING.maxSpeed) >= 2 * Math.PI / eta);
+});
+
+test('pickTutorialTarget: always the next planet above, beside it, with the real angle', () => {
+  const low = { x: 200, y: 0, radius: 60 };
+  const next = { x: 500, y: -600, radius: 60 };
+  const far = { x: 200, y: -1200, radius: 60 };
+  const below = { x: 400, y: 400, radius: 60 };
+  // Comet orbiting `low`, tangent pointing straight down: no normal assist, the tutorial still aims up.
+  const t = o.pickTutorialTarget(200, -100, 0, 1, [low, next, far, below], low, low.y);
+  assert.strictEqual(t.planet, next);
+  assert.ok(t.wide);
+  assert.ok(t.angle > 2);
+  const passDist = next.radius + o.TUNING.assistPassGap;
+  assert.ok(Math.abs(Math.hypot(t.aimX - next.x, t.aimY - next.y) - passDist) < 1e-6);
+  assert.strictEqual(o.pickTutorialTarget(200, -100, 0, 1, [low, below], low, low.y), null);
 });
