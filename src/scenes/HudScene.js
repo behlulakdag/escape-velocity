@@ -340,7 +340,39 @@ const HUD_TUTORIAL = {
   word: { x: 82, releaseX: 104, y: -34, subDy: 38, size: 50, subSize: 25 },
   rippleMax: 44,         // px: outer ripple radius
   dashGap: 10,           // the dashed line from the tip stops this far off the planet's edge
+  tipMargin: 60,         // the fingertip stays this far inside the walls (never parked at the edge)
+  maxShift: 150,         // a spot clamped further than this from where it wants to be is refused
+  bodyClear: 12,         // other planets / black holes (obstacles passed in by GameScene)
+  rectClear: 10,         // the km/s block, the multiplier loop and the score note
+  tailAt: [60, 130, 200],  // px under the comet where its tail is kept clear
+  obstacleMs: 400,       // obstacles passed in older than this are dropped
 };
+
+// Pure helper (tested): sanitized obstacle circles from GameScene ([{x, y, r}], screen coords).
+// Anything that is not a finite circle is dropped; null / non-array -> [].
+function hudTutorialObstacles(list) {
+  const out = [];
+  if (!Array.isArray(list)) return out;
+  for (const o of list) {
+    if (!o || typeof o.x !== 'number' || typeof o.y !== 'number' || !isFinite(o.x) || !isFinite(o.y)) continue;
+    const r = typeof o.r === 'number' && isFinite(o.r) ? Math.max(0, o.r) : 0;
+    out.push({ x: o.x, y: o.y, r });
+  }
+  return out;
+}
+
+// Pure helper (tested): gap between two rects {left, top, right, bottom} (0 when they touch/overlap).
+function hudRectGap(a, b) {
+  const dx = Math.max(0, a.left - b.right, b.left - a.right);
+  const dy = Math.max(0, a.top - b.bottom, b.top - a.bottom);
+  return Math.hypot(dx, dy);
+}
+
+// Pure helper (tested): rects overlap once each is grown by pad.
+function hudRectsOverlap(a, b, pad) {
+  const p = pad || 0;
+  return a.left - p < b.right && b.left - p < a.right && a.top - p < b.bottom && b.top - p < a.bottom;
+}
 
 // Mirrors a side +1 box for side -1.
 function hudTutorialBox(box, side) {
@@ -395,6 +427,13 @@ function hudTutorialReleaseCandidates(cx, cy, dx, dy) {
     }
     place('b' + gap, -ux, -uy, gap, ux > 0.2 ? -1 : 1, 0, 40);
   }
+  // Further ahead along the fling, either side: room when the comet flies low over the HUD blocks.
+  for (const s of [1, -1]) {
+    const nx = -uy * s;
+    const ny = ux * s;
+    const side = nx > 0.3 ? 1 : nx < -0.3 ? -1 : (ux > 0 ? -1 : 1);
+    place((s > 0 ? 'p' : 'n') + 'a', nx, ny, 90, side, 170, 35);
+  }
   for (const c of out) { c.dx = c.x - cx; c.dy = c.y - cy; }
   return out;
 }
@@ -408,8 +447,10 @@ function hudTutorialScore(candidates, obstacles, bounds, bands, prevKey) {
     const b = c.box;
     let x = c.x;
     let y = c.y;
-    const minX = bounds.left - b.l;
-    const maxX = bounds.right - b.r;
+    // The fingertip also stays tipMargin inside the walls when bounds say so.
+    const tip = bounds.tipMargin || 0;
+    const minX = Math.max(bounds.left - b.l, bounds.left + tip);
+    const maxX = Math.min(bounds.right - b.r, bounds.right - tip);
     x = minX <= maxX ? Math.max(minX, Math.min(maxX, x)) : (minX + maxX) / 2;
     const minY = bounds.top - b.t;
     const maxY = bounds.bottom - b.b;
@@ -418,16 +459,19 @@ function hudTutorialScore(candidates, obstacles, bounds, bands, prevKey) {
     let cost = c.pref || 0;
     let hits = 0;
     for (const o of obstacles || []) {
-      const d = hudBoxDistance(o.x, o.y, x0, y0, x1, y1) - (o.r || 0);
+      // Circles {x, y, r, clear} or rects {rect: {left, top, right, bottom}, clear}.
+      const d = o.rect ? hudRectGap(o.rect, { left: x0, top: y0, right: x1, bottom: y1 })
+        : hudBoxDistance(o.x, o.y, x0, y0, x1, y1) - (o.r || 0);
       if (d < o.clear) { cost += 60 + (o.clear - d) * 20; hits++; }
     }
     for (const band of bands || []) {
       const overlap = Math.min(y1, band.bottom) - Math.max(y0, band.top);
       if (overlap > 0) cost += overlap * 10;
     }
-    cost += Math.hypot(x - c.x, y - c.y) * 0.3;
+    const shift = Math.hypot(x - c.x, y - c.y);
+    cost += shift * 0.3;
     if (c.key === prevKey) cost -= HUD_TUTORIAL.keepBonus;
-    out.push({ key: c.key, side: c.side, x, y, box: b, cost, hits });
+    out.push({ key: c.key, side: c.side, x, y, box: b, cost, hits, shift });
   }
   return out;
 }
@@ -455,16 +499,32 @@ function hudTutorialAction(shown, best, current, mode, alpha, now, target) {
   return 'swap';
 }
 
-// Pure helper (tested): the spot's box covers one of the circles {x, y, r} (planet body, comet).
+// Pure helper (tested): the spot's box covers one of the circles {x, y, r} (planet body, comet)
+// or one of the rects {left, top, right, bottom} (km/s block, score note).
 // The hand would rather step away (fade out) than sit on what it points at.
-function hudTutorialCovers(spot, circles) {
+function hudTutorialCovers(spot, circles, rects) {
   if (!spot) return false;
   const b = spot.box;
   for (const c of circles || []) {
     if (!c) continue;
     if (hudBoxDistance(c.x, c.y, spot.x + b.l, spot.y + b.t, spot.x + b.r, spot.y + b.b) - (c.r || 0) < 0) return true;
   }
+  const box = { left: spot.x + b.l, top: spot.y + b.t, right: spot.x + b.r, bottom: spot.y + b.b };
+  for (const r of rects || []) if (r && hudRectsOverlap(r, box, 0)) return true;
   return false;
+}
+
+// Pure helper (tested): which spot to use. Never one over a body (planet, black hole, comet) or
+// one shoved far from where it wants to be (a hand parked at the screen edge reads as junk);
+// a spot over a HUD block (km/s, score note) only when nothing else is left. null = fade out.
+function hudTutorialPick(spots) {
+  let best = null;
+  let fallback = null;
+  for (const s of spots || []) {
+    if (s.covers || s.shift > HUD_TUTORIAL.maxShift) continue;
+    if (!s.coversHud) { if (!best || s.cost < best.cost) best = s; } else if (!fallback || s.cost < fallback.cost) fallback = s;
+  }
+  return best || fallback;
 }
 
 // Pure helper (tested): one fade step toward target (0 / 1) at `rate` per second; settles exactly.
@@ -479,7 +539,8 @@ function hudTutorialFade(alpha, target, rate, dt) {
 // eta: seconds until the nova front reaches the comet. Under HUD_NOVA_WARN.eta s with the front
 // still below the screen, an orange crayon heat band grows along the bottom edge and a
 // scribbled '!!' pulses, faster as eta shrinks.
-const HUD_NOVA_WARN = { eta: 1.2, full: 0.3, minLevel: 0.3, hzMin: 2, hzMax: 9, staleMs: 400, belowMargin: 40, ease: 10 };
+// Only the last ~0.8 s: earlier it was up most of the late game and read as decoration.
+const HUD_NOVA_WARN = { eta: 0.8, full: 0.2, minLevel: 0.35, hzMin: 3, hzMax: 11, staleMs: 400, belowMargin: 40, ease: 14, panelPad: 14 };
 
 // Pure helper (tested): warning level 0..1. 0 when far (or bad input) or when the front is
 // already up on screen (the player can see it).
@@ -489,6 +550,22 @@ function hudNovaWarnLevel(eta, novaScreenY) {
   if (typeof novaScreenY === 'number' && isFinite(novaScreenY) && novaScreenY < GAME_HEIGHT - W.belowMargin) return 0;
   const k = Math.max(0, Math.min(1, (W.eta - Math.max(0, eta)) / (W.eta - W.full)));
   return W.minLevel + (1 - W.minLevel) * k;
+}
+
+// Pure helper (tested): '!!' center x. Under the comet, but always between the km/s block and
+// the multiplier loop (never over the speed readout). halfW: half the '!!' width at its largest.
+function hudNovaWarnX(cometX, halfW) {
+  const W = HUD_NOVA_WARN;
+  const lo = HUD_PANEL.right + W.panelPad + (halfW || 0);
+  const hi = HUD_BADGE_PANEL.left - W.panelPad - (halfW || 0);
+  const want = typeof cometX === 'number' && isFinite(cometX) ? cometX : GAME_WIDTH / 2;
+  return lo <= hi ? Math.max(lo, Math.min(hi, want)) : (lo + hi) / 2;
+}
+
+// Pure helper (tested): pops (PERFECT!, +SPEED) step aside while the finger prompt is up; only
+// high pops (rescues, card names) still show, placed clear of the hand.
+function hudPopAllowed(priority, tutorialUp) {
+  return !tutorialUp || priority >= POP_HIGH;
 }
 
 // Pure helper (tested): '!!' pulse rate (Hz) for a warning level.
@@ -1057,17 +1134,28 @@ class HudScene extends Phaser.Scene {
     const ox = HUD_HAND.tipX / HUD_HAND.w;
     const oy = HUD_HAND.tipY / HUD_HAND.h;
     const shadow = uiBoilImage(this, 5, 7, 'hud_hand2_fill').setOrigin(ox, oy).setTint(UI_INK.dark).setAlpha(0.45);
+    // Cream paper under the crayon on dark pages: the crayon's knocked-out strokes show cream, not
+    // the page (a peach hand over maroon / black paper otherwise reads as a brown glove).
+    const backing = uiBoilImage(this, 2, -2, 'hud_hand2_fill').setOrigin(ox, oy).setTint(UI_INK.cream);
+    // A second, fat cream outline just outside the gel-pen one: the hand pops off any dark page.
+    const halo = [];
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      halo.push(uiBoilImage(this, Math.cos(a) * 7, Math.sin(a) * 7, 'hud_hand2_ink').setOrigin(ox, oy).setTint(UI_INK.cream).setAlpha(0.9));
+    }
     const fill = uiBoilImage(this, 0, 0, 'hud_hand2_fill').setOrigin(ox, oy).setTint(HUD_HAND.skin);
     const cuff = uiBoilImage(this, 0, 0, 'hud_hand2_cuff').setOrigin(ox, oy).setTint(UI_CRAYON.blue);
     const ink = uiBoilImage(this, 0, 0, 'hud_hand2_ink').setOrigin(ox, oy);
-    const hand = this.add.container(0, 0, [shadow, fill, cuff, ink]).setScale(T.scale);
+    const hand = this.add.container(0, 0, [shadow].concat(halo, [backing, fill, cuff, ink])).setScale(T.scale);
     const ripples = this.add.graphics();
     const word = uiInkText(this, T.word.x, T.word.y, 'HOLD', { size: T.word.size, color: uiColorHex(UI_CRAYON.yellow), strokeW: 9, rot: -0.05, boilAmount: 0.014 });
     const sub = uiInkText(this, T.word.x, T.word.y + T.word.subDy, 'anywhere', { size: T.word.subSize, strokeW: 6, rot: -0.03, boilAmount: 0.01 });
     const layer = this.add.container(0, 0, [ripples, hand, word, sub]).setAlpha(0).setVisible(false);
     const arrow = this.add.graphics().setAlpha(0).setVisible(false);
     this.tut = {
-      layer, hand, fill, ink, shadow, cuff, word, sub, ripples, arrow,
+      layer, hand, fill, ink, shadow, cuff, word, sub, ripples, arrow, backing, halo,
+      obstacles: [],      // other planets / black holes {x, y, r} (screen) from the last call
+      obstaclesAt: -1e9,
       mode: null,         // wanted: 'hold' | 'release' | null (fade out)
       shown: null,        // drawn: { key, mode, at }
       lastCall: 0,
@@ -1084,10 +1172,13 @@ class HudScene extends Phaser.Scene {
   }
 
   // Hold wanted: the finger presses beside the planet (screen coords, zoom applied). Safe every frame.
-  tutorialHold(planetX, planetY, planetRadius) {
+  // obstacles (optional): every planet / black hole on screen as [{x, y, r}] (screen coords); the
+  // hand keeps off all of them. Without it the HUD avoids only the target planet and the comet.
+  tutorialHold(planetX, planetY, planetRadius, obstacles) {
     if (![planetX, planetY, planetRadius].every(v => typeof v === 'number' && isFinite(v))) return;
     const t = this.tut || this.buildTutorial();
     const now = this.time.now;
+    this.setTutorialObstacles(t, obstacles);
     const old = t.planet;
     // A different planet (not the same one scrolling a few px per frame): a new target, so the
     // hand fades over to it instead of jumping or gliding across the page.
@@ -1099,9 +1190,10 @@ class HudScene extends Phaser.Scene {
   }
 
   // Release wanted: the finger lifts beside the comet, an arrow shows the fling (dir: any length).
-  tutorialRelease(cometX, cometY, dirX, dirY) {
+  tutorialRelease(cometX, cometY, dirX, dirY, obstacles) {
     if (![cometX, cometY, dirX, dirY].every(v => typeof v === 'number' && isFinite(v))) return;
     const t = this.tut || this.buildTutorial();
+    this.setTutorialObstacles(t, obstacles);
     const len = Math.hypot(dirX, dirY);
     t.release = { x: cometX, y: cometY, dx: len > 0 ? dirX / len : 0, dy: len > 0 ? dirY / len : -1 };
     this.setTutorialMode(t, 'release');
@@ -1109,6 +1201,27 @@ class HudScene extends Phaser.Scene {
 
   clearTutorial() {
     if (this.tut) this.tut.mode = null;
+  }
+
+  setTutorialObstacles(t, obstacles) {
+    t.obstacles = hudTutorialObstacles(obstacles);
+    t.obstaclesAt = this.time.now;
+  }
+
+  // Screen rect the finger prompt covers right now (hand + lettering + arrow end), or null.
+  tutorialRect() {
+    const t = this.tut;
+    if (!t || t.alpha <= 0.05 || !t.shown) return null;
+    const T = HUD_TUTORIAL;
+    const b = hudTutorialBox(t.shown.mode === 'release' ? T.releaseBox : T.holdBox, t.side);
+    const r = { left: t.x + b.l, top: t.y + b.t, right: t.x + b.r, bottom: t.y + b.b };
+    if (t.shown.mode === 'release' && t.release) {
+      const ex = t.release.x + t.release.dx * T.arrowTo;
+      const ey = t.release.y + t.release.dy * T.arrowTo;
+      r.left = Math.min(r.left, ex - 30); r.right = Math.max(r.right, ex + 30);
+      r.top = Math.min(r.top, ey - 30); r.bottom = Math.max(r.bottom, ey + 30);
+    }
+    return r;
   }
 
   // Only records what is wanted: the drawing switches over in updateTutorial (fade out, then in
@@ -1148,7 +1261,9 @@ class HudScene extends Phaser.Scene {
     if (t.light === key) return;
     t.light = key;
     t.ink.setTint(light ? UI_INK.dark : UI_INK.cream);
-    t.fill.setTint(light ? hudDeepen(HUD_HAND.skin, 0.95) : HUD_HAND.skin);
+    t.fill.setTint(light ? hudDeepen(HUD_HAND.skin, 0.95) : hudLerpColor(HUD_HAND.skin, UI_INK.cream, 0.3));
+    t.backing.setVisible(!light);
+    for (const h of t.halo) h.setVisible(!light);
     t.cuff.setTint(light ? hudDeepen(UI_CRAYON.blue, 0.8) : UI_CRAYON.blue);
     t.shadow.setAlpha(light ? 0.22 : 0.45);
     const crayon = UI_CRAYON[hudPromptCrayon(mode === 'release' ? 'LET GO' : 'HOLD')];
@@ -1165,16 +1280,27 @@ class HudScene extends Phaser.Scene {
     const walls = this.wallsOnScreen();
     // Down to the safe bottom edge: the speed / multiplier blocks sit in the corners and the hint
     // line hides while the finger shows.
-    const bounds = { left: walls.left + 14, right: walls.right - 14, top: this.popTop() - 10, bottom: GAME_HEIGHT - HUD_SAFE_BOTTOM - 20 };
+    const bounds = { left: walls.left + 14, right: walls.right - 14, top: this.popTop() - 10, bottom: GAME_HEIGHT - HUD_SAFE_BOTTOM - 20, tipMargin: T.tipMargin };
     const obstacles = [];
     const bodies = [];
     const comet = this.comet;
     if (comet) bodies.push({ x: comet.x, y: comet.y, r: 18 });
     if (comet) {
       obstacles.push({ x: comet.x, y: comet.y, r: 0, clear: T.cometClear });
-      obstacles.push({ x: comet.x, y: comet.y + 130, r: 0, clear: T.tailClear });
     }
+    const tail = this.tailOnScreen(comet);
+    for (const p of tail) obstacles.push({ x: p.x, y: p.y, r: 0, clear: T.tailClear });
     const now = this.time.now;
+    // Every planet / black hole GameScene passed in: soft clearance + never covered.
+    if (now - t.obstaclesAt < T.obstacleMs) {
+      for (const o of t.obstacles) {
+        obstacles.push({ x: o.x, y: o.y, r: o.r, clear: T.bodyClear });
+        bodies.push(o);
+      }
+    }
+    // The km/s block, the multiplier loop and the score note.
+    const hudRects = [HUD_PANEL, HUD_BADGE_PANEL, HUD_NOTE.rect];
+    for (const rect of hudRects) obstacles.push({ rect, clear: T.rectClear });
     const planet = t.planet && now - t.planet.at < T.memoryMs ? t.planet : null;
     let candidates;
     if (t.mode === 'release' && t.release) {
@@ -1203,12 +1329,35 @@ class HudScene extends Phaser.Scene {
       return null;
     }
     const prev = t.shown && t.shown.mode === t.mode ? t.shown.key : null;
-    const spots = hudTutorialScore(candidates, obstacles, bounds, this.blockedBands(false, false), prev);
+    const bands = this.blockedBands(false, false);
+    const spots = hudTutorialScore(candidates, obstacles, bounds, bands, prev);
     // Spots that would sit on the planet body or the comet are never used (no room: fade out).
-    for (const s of spots) s.covers = hudTutorialCovers(s, bodies);
-    let best = null;
-    for (const s of spots) if (!s.covers && (!best || s.cost < best.cost)) best = s;
-    return { spots, best };
+    for (const s of spots) {
+      s.covers = hudTutorialCovers(s, bodies);
+      // Over a HUD block or across a banner / big prompt: only when nothing else is left.
+      s.coversHud = hudTutorialCovers(s, tail.map(p => ({ x: p.x, y: p.y, r: 8 })), hudRects.concat(bands.map(bb => ({ left: -1e4, right: 1e4, top: bb.top, bottom: bb.bottom }))));
+    }
+    return { spots, best: hudTutorialPick(spots) };
+  }
+
+  // The comet's tail as screen points (every few trail points from the Game scene); without a trail,
+  // a short line straight down from the comet (the camera only climbs, so it trails below).
+  tailOnScreen(comet) {
+    const out = [];
+    if (!comet) return out;
+    const game = this.scene.get('Game');
+    const trail = game && game.trail;
+    if (Array.isArray(trail) && trail.length > 1 && game.worldToScreen) {
+      for (let i = 2; i < trail.length; i += 2) {
+        const p = trail[i];
+        if (!p || !isFinite(p.x) || !isFinite(p.y)) continue;
+        const s = game.worldToScreen(p.x, p.y);
+        if (s.y > -50 && s.y < GAME_HEIGHT + 50) out.push({ x: s.x, y: s.y });
+      }
+      if (out.length) return out;
+    }
+    for (const dy of HUD_TUTORIAL.tailAt) out.push({ x: comet.x, y: comet.y + dy });
+    return out;
   }
 
   updateTutorial(dt) {
@@ -1225,7 +1374,7 @@ class HudScene extends Phaser.Scene {
       // The shown key's spot round the SAME target only (a new planet's spots would teleport it).
       const sameTarget = shown && shown.mode === t.mode && (t.mode !== 'hold' || shown.target === (t.target || 0));
       const found = sameTarget ? placed.spots.find(s => s.key === shown.key) : null;
-      const current = found && !found.covers ? found : null;
+      const current = found && !found.covers && found.shift <= T.maxShift ? found : null;
       const action = hudTutorialAction(shown, placed.best, current, t.mode, t.alpha, now, t.mode === 'hold' ? (t.target || 0) : undefined);
       if (action === 'snap') {
         this.showTutorialAt(t, placed.best, t.mode);
@@ -1405,6 +1554,11 @@ class HudScene extends Phaser.Scene {
     return !!(this.tut && this.tut.alpha > 0.05);
   }
 
+  // The finger is wanted or still on screen (pops stay out of its way).
+  tutorialPromptUp() {
+    return !!(this.tut && (this.tut.mode || this.tut.alpha > 0.05));
+  }
+
   // "x3" written on the page inside a crayon circle that pulses when the multiplier rises.
   createMultiplierBadge() {
     this.badgeCircle = uiBoilImage(this, 0, 0, 'ui_circle').setScale(HUD_BADGE.scaleX, HUD_BADGE.scaleY).setTint(HUD_LEVEL_TINTS[0]);
@@ -1522,9 +1676,10 @@ class HudScene extends Phaser.Scene {
       .setStroke(light ? uiColorHex(UI_CRAYON.orange) : UI_INK.darkHex, this.hintText.style.strokeThickness);
     for (const t of [this.comboWord, this.comboNum]) t.setStroke(edge, t.style.strokeThickness);
     if (this.chain >= 2) this.styleCombo(this.chain);
-    // Fullscreen corners: the tint turns the cream strokes to dark ink.
+    // The fullscreen button is a full-colour crayon scrap (its own dark under-strokes read on any
+    // page): a tint would turn it into a black square on the pale pages, so it is never tinted.
     const icon = this.fullscreenButton && this.fullscreenButton.list && this.fullscreenButton.list[0];
-    if (icon) { if (light) icon.setTint(UI_INK.dark); else icon.clearTint(); }
+    if (icon && icon.isTinted) icon.clearTint();
     if (this.popLine && this.popLine.active) this.stylePop(this.popLine);
     // Set loops are redrawn in the deeper gold (known cards are not slapped in again).
     if (this.cardBadges.length) this.setCards(this.cardBadges.map(b => b.id));
@@ -1758,9 +1913,13 @@ class HudScene extends Phaser.Scene {
     this.warnText.setAlpha(level > 0 ? Math.min(1, 0.35 + level) * (0.45 + 0.55 * beat) : 0)
       .setScale(0.8 + level * 0.35 + beat * 0.18);
     if (level > 0) {
-      // Under the comet, so the eye is already there; kept between the corner blocks.
-      const cx = this.comet ? Phaser.Math.Clamp(this.comet.x, 230, GAME_WIDTH - 230) : GAME_WIDTH / 2;
+      // Under the comet, so the eye is already there; always between the km/s block and the
+      // multiplier loop (half width at the biggest pulse scale).
+      const halfW = (this.warnText.width * 1.35) / 2;
+      const cx = hudNovaWarnX(this.comet ? this.comet.x : undefined, halfW);
       this.warnText.x += (cx - this.warnText.x) * Math.min(1, dt * 8);
+      // Never left over the readout while easing in from an old spot.
+      this.warnText.x = hudNovaWarnX(this.warnText.x, halfW);
     }
   }
 
@@ -1843,6 +2002,8 @@ class HudScene extends Phaser.Scene {
     if (this.tut && this.tut.mode && /^\s*-\s*\d+\s*%/.test(String(label))) return;
     const now = this.time.now;
     const priority = opts.priority || popPriority(label);
+    // PERFECT! / +SPEED never print over the HOLD / LET GO finger (the moment is not saved for later).
+    if (!hudPopAllowed(priority, this.tutorialPromptUp())) return;
     const cur = this.popLine && this.popLine.active ? this.popLine : null;
     const age = cur ? now - cur.bornAt : Infinity;
     if (cur && cur.label === label && age < POP.sameLabelMs) {
@@ -1957,6 +2118,7 @@ class HudScene extends Phaser.Scene {
     const bannerUp = this.bannerUp();
     const blocked = this.blockedBands().map(b => (bannerUp ? { top: b.top, bottom: b.bottom + POP.underBanner } : b));
     const wantY = Phaser.Math.Clamp(bannerUp ? comet.y + 60 : comet.y - 170, minY, maxY);
+    const tutRect = this.tutorialRect();
     const xs = [wantX, Phaser.Math.Clamp(mid, minX, maxX), Phaser.Math.Clamp(comet.x, minX, maxX), minX, maxX];
     const ys = [wantY];
     for (let y = minY; y <= maxY; y += 32) ys.push(y);
@@ -1966,7 +2128,8 @@ class HudScene extends Phaser.Scene {
     for (const x of xs) {
       for (const y of ys) {
         const clearance = this.cometClearance(comet, x - halfW, y - halfH, x + halfW, y + halfH);
-        const free = blocked.every(b => y + halfH + 6 <= b.top || y - halfH - 6 >= b.bottom);
+        const free = blocked.every(b => y + halfH + 6 <= b.top || y - halfH - 6 >= b.bottom)
+          && !(tutRect && hudRectsOverlap(tutRect, { left: x - halfW, top: y - halfH, right: x + halfW, bottom: y + halfH }, 10));
         if (free && clearance >= POP.cometClear) {
           const cost = Math.abs(y - wantY) + Math.abs(x - wantX) * 0.5;
           if (!best || cost < best.cost) best = { x, y, cost, clearance };
@@ -2073,7 +2236,10 @@ class HudScene extends Phaser.Scene {
       const d = hudBoxDistance(this.comet.x, this.comet.y, b.x, b.y, b.right, b.bottom);
       // Riding with the comet can also carry it into a banner that is up.
       const onBanner = this.blockedBands().some(bb => b.bottom > bb.top && b.y < bb.bottom);
-      const crowded = d < t.placedClear - 25 || onBanner;
+      const tutRect = this.tutorialRect();
+      const onFinger = (!hudPopAllowed(t.priority, this.tutorialPromptUp()))
+        || (tutRect && hudRectsOverlap(tutRect, { left: b.x, top: b.y, right: b.right, bottom: b.bottom }, 0));
+      const crowded = d < t.placedClear - 25 || onBanner || onFinger;
       if (crowded && t.priority === POP_HIGH && !t.moved) {
         t.moved = true;
         this.placePop(t);
