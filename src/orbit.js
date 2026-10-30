@@ -24,13 +24,26 @@ const TUNING = {
   orbitSettleSpeed: 220,  // px/s the orbit radius eases out to minOrbitGap after a too-close grab
   homingTurn: 2.6,        // rad/s an assisted release curves toward its target
   homingTime: 0.45,       // seconds the release keeps curving
-  wallBounceKeep: 0.92,   // speed kept after bouncing off a side wall
+  wallBounceKeep: 0.92,   // speed kept after bouncing off a side wall...
+  wallBounceHighLoss: 0.22, // ...minus up to this at the absolute cap (see highSpeedShare): no wall pinball
+  wallKicksPerFling: 2,   // Wall Kick works this many times per flight after an aimed fling (an unaimed one gets none)
+  wallKickNearCap: 0.85,  // a kick adds no speed once the comet is this close to its speed cap
+  // HIGH-SPEED DRAG: in flight, extra decay that grows with speed so a cap you did not earn bleeds away.
+  dragFrom: 4500,         // px/s (450 km/s) where it starts; the early game never feels it
+  dragMax: 1600,          // px/s per second at the absolute cap (scaled by highSpeedShare)
+  dragNoDecayFrom: 6000,  // Afterburner / Slipstream cancel it only below this speed (600 km/s)
+  // Orbit gain tapers off near the top so 800 km/s is reached by PERFECT chains, not by sitting in orbit.
+  orbitTaperFrom: 6000,
+  orbitTaperMin: 0.2,     // gain multiplier left at the absolute cap
+  hitHighLoss: 0.2,       // a planet bump at the absolute cap keeps this much less speed (scaled by highSpeedShare)
   assistMaxAngle: 0.45,   // ~25 degrees: releases this close to a planet get steered onto it
   assistMaxDist: 1100,
   assistPassGap: 110,     // how far from the surface an assisted fling passes the planet
   catchBonus: 60,         // instant speed for every planet caught
   hitKeep: 0.7,           // speed kept after hitting a planet
-  maxOrbitSpin: 5,        // rad/s cap on visible orbit rotation so high speed stays readable
+  maxOrbitSpin: 5,        // rad/s cap on visible orbit rotation so high speed stays readable...
+  orbitSpinBoost: 2,      // ...plus up to this at the absolute cap, so a late orbit (fast wave) still comes round in time
+  orbitSpinBoostFrom: 4500, // px/s where that extra spin starts (the early game keeps the plain cap)
   assistMaxBelow: 40,     // assist never steers toward planets further below than this
   minZoom: 0.68,          // camera zoom at top speed
   perfectAngle: 0.12,     // release within ~7 degrees of the assist line = PERFECT
@@ -50,9 +63,17 @@ const TUNING = {
   novaBaseSpeed: 160,     // px/s the wave climbs at the start
   novaRamp: 5,            // extra px/s every second
   novaMaxSpeed: 950,      // wave top speed in the first zone; it scales with the zone's speed cap...
-  novaMaxAbsolute: 1900,  // ...up to this, so late zones at 600-800 km/s stay dangerous
+  novaMaxAbsolute: 1900,  // ...up to this by ESCAPE VELOCITY (page 5)...
+  novaPerPage: 300,       // ...then every new page past ESCAPE VELOCITY raises the top speed by this...
+  novaMaxLate: 4000,      // ...up to this
+  novaLateRamp: 0.05,     // extra px/s per meter past ESCAPE VELOCITY, so the late wave really uses that top speed
+  lateHazardPerPage: 0.06, // asteroid / black hole chance added per page past ESCAPE VELOCITY
+  maxAsteroidChance: 0.8,
+  maxBlackHoleChance: 0.5,
   novaAltitudeRamp: 0.01, // extra px/s per meter of best altitude, so faster zones get a faster wave
   novaLeash: 250,         // the wave is never further than this below the visible screen (falling back = death)
+  novaLeashLate: 900,     // ...growing to this by 10,000 m (half a page past ESCAPE VELOCITY): the late wave is much faster,
+                          // so a clean climber gets more room to line up a release; a random fling still falls into it
   minPlanetGap: 520,      // vertical distance between planets at the start
   maxPlanetGap: 760,
   planetGapPerPx: 0.012,
@@ -106,9 +127,9 @@ function orbitStep(orbit, speed, dt, planetRadius, maxSpeed, boost) {
   const gainMul = boost && boost.gainMul ? boost.gainMul : 1;
   const closeMul = boost && boost.closeMul ? boost.closeMul : 1;
   const tighten = boost && boost.tighten ? boost.tighten : 0;
-  const spin = Math.min(speed / orbit.radius, TUNING.maxOrbitSpin);
+  const spin = Math.min(speed / orbit.radius, orbitSpinCap(speed));
   const angle = orbit.angle + orbit.dir * spin * dt;
-  const gain = TUNING.orbitGain * gainMul * momentumGainMul(speed) * (1 + TUNING.closeOrbitBonus * closeMul * orbitCloseness(orbit.radius, planetRadius));
+  const gain = TUNING.orbitGain * gainMul * momentumGainMul(speed) * orbitTaper(speed) * (1 + TUNING.closeOrbitBonus * closeMul * orbitCloseness(orbit.radius, planetRadius));
   let target = orbit.targetRadius || orbit.radius;
   if (tighten > 0) target = Math.max(planetRadius + TUNING.minOrbitGap, target - tighten * dt);
   // Ease toward the target either way (out after a too-close grab, in while tightening).
@@ -119,6 +140,50 @@ function orbitStep(orbit, speed, dt, planetRadius, maxSpeed, boost) {
     // Never above the cap, but never cut down either (the cap only grows with altitude).
     speed: Math.max(speed, Math.min(maxSpeed || TUNING.maxSpeed, speed + gain * dt)),
   };
+}
+
+// Orbit rotation cap (rad/s) at a speed: maxOrbitSpin, rising above orbitSpinBoostFrom up to + orbitSpinBoost.
+function orbitSpinCap(speed) {
+  const t = (speed - TUNING.orbitSpinBoostFrom) / (TUNING.maxSpeed - TUNING.orbitSpinBoostFrom);
+  return TUNING.maxOrbitSpin + TUNING.orbitSpinBoost * Math.max(0, Math.min(1, t));
+}
+
+// Orbit gain multiplier near the top: 1 below orbitTaperFrom, falling linearly to orbitTaperMin at the
+// absolute cap, so the last 200 km/s come from PERFECTs / chains / milestones, not from spinning.
+function orbitTaper(speed) {
+  const t = (speed - TUNING.orbitTaperFrom) / (TUNING.maxSpeed - TUNING.orbitTaperFrom);
+  if (t <= 0) return 1;
+  return 1 - (1 - TUNING.orbitTaperMin) * Math.min(1, t);
+}
+
+// 0 up to dragFrom (450 km/s), rising as a square to 1 at the absolute cap: how much of the high-speed
+// penalties (drag, harder wall and planet bumps) apply. The early game never feels any of them.
+function highSpeedShare(speed, from) {
+  const t = (speed - (from === undefined ? TUNING.dragFrom : from)) / (TUNING.maxSpeed - TUNING.dragFrom);
+  if (t <= 0) return 0;
+  return Math.min(1, t) * Math.min(1, t);
+}
+
+// Extra flight decay (px/s per second) at a speed. decayMul: Aerodynamic's flightDecayMul (it cuts the
+// drag too). noDecay: Afterburner / Slipstream active; they cancel the drag only below dragNoDecayFrom.
+function highSpeedDrag(speed, decayMul, noDecay) {
+  const share = highSpeedShare(speed, noDecay ? TUNING.dragNoDecayFrom : TUNING.dragFrom);
+  return TUNING.dragMax * share * (decayMul === undefined ? 1 : decayMul);
+}
+
+// Speed kept after a plain side-wall bounce: 0.92 up to 450 km/s, 0.70 at the cap, so pinballing never pays.
+function wallBounceKeepAt(speed) {
+  return TUNING.wallBounceKeep - TUNING.wallBounceHighLoss * highSpeedShare(speed);
+}
+
+// Wall Kick: whether the next wall hit of this flight is still a kick (kicksUsed since the last aimed fling).
+function wallKickAllowed(kicksUsed) {
+  return kicksUsed < TUNING.wallKicksPerFling;
+}
+
+// Speed a Wall Kick adds: the full bonus well below the cap, never more than up to wallKickNearCap * cap.
+function wallKickGain(speed, cap, bonus) {
+  return Math.max(0, Math.min(bonus, cap * TUNING.wallKickNearCap - speed));
 }
 
 // Velocity along the orbit tangent: this is the direction the comet flies when released.
@@ -208,7 +273,46 @@ const ZONES = [
   { from: 3000, name: 'WARP SPEED', sky: 0x121116, paper: 0x121116, ink: 0xf4ead0, fx: 'streaks', maxSpeed: 3700 },
   { from: 5000, name: 'HYPERSPACE', sky: 0x2e1d4f, paper: 0x2e1d4f, ink: 0xf4ead0, fx: 'grid', maxSpeed: 4400 },
   { from: 8000, name: 'ESCAPE VELOCITY', sky: 0xefdcae, paper: 0xefdcae, ink: 0x2a2018, fx: 'rays', maxSpeed: 5200 },
+  { from: 12000, name: 'LIGHTSPEED', sky: 0x5a3b22, paper: 0x5a3b22, ink: 0xf4ead0, fx: 'lightspeed', maxSpeed: 5600 },
+  { from: 17000, name: 'WORMHOLE', sky: 0x1f3b2c, paper: 0x1f3b2c, ink: 0xf4ead0, fx: 'spiral', maxSpeed: 6100 },
+  { from: 23000, name: 'EVENT HORIZON', sky: 0x1b3f6b, paper: 0x1b3f6b, ink: 0xf4ead0, fx: 'blueprint', maxSpeed: 6700 },
+  { from: 30000, name: 'BIG BANG', sky: 0xf1eee4, paper: 0xf1eee4, ink: 0x1d2747, fx: 'graph', maxSpeed: 7400 },
+  { from: 40000, name: 'BEYOND', sky: 0x2a1f1a, paper: 0x2a1f1a, ink: 0xf4ead0, fx: 'charcoal', maxSpeed: 8000 },
 ];
+
+// Past the last fixed page a new page comes every ENDLESS_PAGE_METERS, forever, cycling the looks of
+// the ENDLESS_CYCLE_FROM..last pages (LIGHTSPEED..BEYOND) and named BEYOND II, BEYOND III, ...
+const ENDLESS_PAGE_METERS = 10000;
+const ENDLESS_CYCLE_FROM = 6;
+const ESCAPE_ZONE_INDEX = 5;   // ESCAPE VELOCITY: the late-game difficulty screw counts pages from here
+
+function romanNumeral(n) {
+  const table = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+  let out = '';
+  for (const [v, r] of table) while (n >= v) { out += r; n -= v; }
+  return out;
+}
+
+// Zone object for any page index >= 0 (fixed ZONES first, then generated endless pages).
+// Generated pages are cached so callers can compare them by identity.
+const ENDLESS_ZONE_CACHE = {};
+function zoneAt(index) {
+  const i = Math.max(0, Math.floor(index || 0));
+  if (i < ZONES.length) return ZONES[i];
+  if (ENDLESS_ZONE_CACHE[i]) return ENDLESS_ZONE_CACHE[i];
+  const last = ZONES.length - 1;
+  const cycle = ZONES.length - ENDLESS_CYCLE_FROM;
+  const look = ZONES[ENDLESS_CYCLE_FROM + ((i - last - 1) % cycle)];
+  const zone = {
+    from: ZONES[last].from + (i - last) * ENDLESS_PAGE_METERS,
+    name: 'BEYOND ' + romanNumeral(i - last + 1),
+    sky: look.sky, paper: look.paper, ink: look.ink, fx: look.fx,
+    maxSpeed: TUNING.maxSpeed,
+    endless: true,
+  };
+  ENDLESS_ZONE_CACHE[i] = zone;
+  return zone;
+}
 
 // Speed cap at an altitude (meters): interpolates between zone caps, then creeps up to TUNING.maxSpeed.
 function maxSpeedForAltitude(meters) {
@@ -252,8 +356,10 @@ function autoCatchAllowed(flingNumber, seconds) {
 
 // Speed kept after bumping a planet in zone zoneIndex: softer early, so one mistake does not
 // end a learning run before the first card / HYPERSONIC.
-function planetHitKeep(zoneIndex) {
-  return zoneIndex < TUNING.earlyHitZones ? TUNING.earlyHitKeep : TUNING.hitKeep;
+// speed (optional): bumps at high speed cost proportionally more (up to hitHighLoss at the cap).
+function planetHitKeep(zoneIndex, speed) {
+  const base = zoneIndex < TUNING.earlyHitZones ? TUNING.earlyHitKeep : TUNING.hitKeep;
+  return base - TUNING.hitHighLoss * highSpeedShare(speed || 0);
 }
 
 // One-time SECOND WIND: the first supernova catch of a run below secondWindBefore meters is survived,
@@ -262,10 +368,53 @@ function secondWindAllowed(used, meters, catches) {
   return !used && meters < TUNING.secondWindBefore && catches >= TUNING.secondWindMinCatches;
 }
 
+// Page index for an altitude, covering the endless pages past the last fixed one.
 function zoneIndexForAltitude(meters) {
+  const last = ZONES.length - 1;
+  if (meters >= ZONES[last].from) return last + Math.floor((meters - ZONES[last].from) / ENDLESS_PAGE_METERS);
   let index = 0;
   for (let i = 0; i < ZONES.length; i++) if (meters >= ZONES[i].from) index = i;
   return index;
+}
+
+// Pages (fractional) past ESCAPE VELOCITY at an altitude: 0 up to 8000 m, 1 at LIGHTSPEED, 1.5 halfway
+// to WORMHOLE... Drives the late-game difficulty screw (nova speed, hazard density).
+function pagesPastEscape(meters) {
+  const m = Math.max(0, meters || 0);
+  const i = zoneIndexForAltitude(m);
+  if (i < ESCAPE_ZONE_INDEX) return 0;
+  const a = zoneAt(i).from;
+  const b = zoneAt(i + 1).from;
+  return i - ESCAPE_ZONE_INDEX + (m - a) / (b - a);
+}
+
+// Hazard chances (between two planets) at an altitude: the base ones, denser on every late page.
+function hazardChances(meters) {
+  const extra = TUNING.lateHazardPerPage * pagesPastEscape(meters);
+  return {
+    asteroid: meters > TUNING.asteroidFromMeters ? Math.min(TUNING.maxAsteroidChance, TUNING.asteroidChance + extra) : 0,
+    blackHole: meters > TUNING.blackHoleFromMeters ? Math.min(TUNING.maxBlackHoleChance, TUNING.blackHoleChance + extra * 0.5) : 0,
+  };
+}
+
+// Finger tutorial (first runs): shown while the player has had fewer than 2 runs OR fewer than
+// 3 good catch-and-release cycles, whichever lasts longer. state = { runs, goodCycles } (from storage).
+const TUTORIAL_RUNS = 2;
+const TUTORIAL_GOOD_CYCLES = 3;
+function tutorialActive(state) {
+  const s = state || {};
+  return (s.runs || 0) < TUTORIAL_RUNS || (s.goodCycles || 0) < TUTORIAL_GOOD_CYCLES;
+}
+
+// Reads a stored tutorial state; anything broken counts as a brand-new player.
+function parseTutorialState(raw) {
+  try {
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== 'object') return { runs: 0, goodCycles: 0 };
+    return { runs: Math.max(0, Math.floor(+o.runs) || 0), goodCycles: Math.max(0, Math.floor(+o.goodCycles) || 0) };
+  } catch (e) {
+    return { runs: 0, goodCycles: 0 };
+  }
 }
 
 // Score multiplier x1..x5 by speed: climbing fast is worth more than climbing slow,
@@ -307,7 +456,10 @@ function warpVelocity(hx, hy, x, y, vx, vy) {
 
 // Supernova top speed at an altitude: grows in step with the zone speed cap (the first zone
 // keeps novaMaxSpeed), so a comet doing 700 km/s still has a wave on its tail.
+// Past ESCAPE VELOCITY every page turns the screw: +novaPerPage of top speed per page, up to novaMaxLate.
 function novaMaxForAltitude(meters) {
+  const pages = pagesPastEscape(meters);
+  if (pages > 0) return Math.min(TUNING.novaMaxLate, TUNING.novaMaxAbsolute + TUNING.novaPerPage * pages);
   const scale = maxSpeedForAltitude(meters) / ZONES[0].maxSpeed;
   return Math.min(TUNING.novaMaxAbsolute, TUNING.novaMaxSpeed * scale);
 }
@@ -316,8 +468,16 @@ function novaMaxForAltitude(meters) {
 // little and raises its top speed, so the wave keeps pace when the speed cap rises in later zones.
 function novaSpeed(seconds, meters) {
   const m = Math.max(0, meters || 0);
-  const climb = TUNING.novaAltitudeRamp * m;
+  const late = Math.max(0, m - ZONES[ESCAPE_ZONE_INDEX].from) * TUNING.novaLateRamp;
+  const climb = TUNING.novaAltitudeRamp * m + late;
   return Math.min(novaMaxForAltitude(m), TUNING.novaBaseSpeed + TUNING.novaRamp * seconds + climb);
+}
+
+// How far below the visible screen the wave may lag at an altitude (meters): novaLeash early,
+// easing up to novaLeashLate over the first half page past ESCAPE VELOCITY (8000 -> 10000 m).
+function novaLeashFor(meters) {
+  const k = Math.min(1, pagesPastEscape(meters) * 2);
+  return TUNING.novaLeash + (TUNING.novaLeashLate - TUNING.novaLeash) * k;
 }
 
 function flightDecay(altitude) {
@@ -484,5 +644,5 @@ function ghostPositionAt(points, t) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, ghostPositionAt, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

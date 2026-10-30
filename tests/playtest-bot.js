@@ -9,7 +9,14 @@
 // reaction delay, and lets go on the first green aim once 150-400ms (random) into the orbit (never waits for gold).
 // expert = grabs early like skilled, but only releases on a dead-center gold aim (< 0.55 x the PERFECT
 // window) after 150ms; falls back to any green aim when the supernova gap is under 280px or after 2.2-3.2s.
+// masher = a friend tapping the screen at random, ignoring planets: holds 80-900 ms, lets go for 60-700 ms.
 // Upgrade cards: on every zone entry the headless scene picks a random card at once (reported as cards / avgCards).
+// Late start: window.simStart = { altitude: 9000, speed: 8000, cards: ['wallkick', 'aero'], randomCards: 3,
+//   seconds: 75 } teleports every fresh run to that state (GameScene.debugTeleport: best altitude, comet,
+//   camera, planets, page, supernova just below the screen, cards picked via pickCard; seconds = run time,
+//   default altitude / 120) so late-game balance is measured fast. delete window.simStart to go back.
+// Speed readout: every run reports minKms / medKms / maxKms (km/s, sampled after the first second).
+// playtestSummary(styles, runsEach, maxSeconds) - maxSeconds defaults to 600 for expert, 240 otherwise.
 (() => {
   let clock = performance.now();
   const step = () => { clock += 16.67; game.scene.update(clock, 16.67); };
@@ -20,6 +27,16 @@
     game.scene.start('Game', { headless: true });
     for (let i = 0; i < 5; i++) step();
     const s = game.scene.keys.Game;
+    if (window.simStart) {
+      const st = window.simStart;
+      const cards = (st.cards || []).slice();
+      const pool = CARDS.map((c) => c.id).filter((id) => cards.indexOf(id) < 0);
+      for (let k = 0; k < (st.randomCards || 0) && pool.length; k++) cards.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+      s.debugTeleport(Object.assign({}, st, { cards }));
+    }
+    const speeds = [];
+    let mashHold = 0;   // masher: ms left in the current press / gap
+    let mashGap = 100 + Math.random() * 600;
     const proto = Object.getPrototypeOf(s);
     let reason = null;
     let perfects = 0;
@@ -68,7 +85,15 @@
     let frames = 0;
     while (!s.isOver && frames < maxSeconds * 60) {
       frames++;
-      if (style === 'holder') {
+      if (style === 'masher') {
+        if (s.isHolding) {
+          mashHold -= 16.67;
+          if (mashHold <= 0) { s.releaseHold(); mashGap = 60 + Math.random() * 640; }
+        } else {
+          mashGap -= 16.67;
+          if (mashGap <= 0) { s.pressHold(); mashHold = 80 + Math.random() * 820; }
+        }
+      } else if (style === 'holder') {
         s.isHolding = true;
       } else if (style === 'mid' && !s.orbit) {
         // Reacts to how close a planet looks, not to the real grab zone, and only after a delay.
@@ -110,6 +135,7 @@
       }
       step();
       maxSpeed = Math.max(maxSpeed, s.speed);
+      if (frames > 60) speeds.push(s.speed);
     }
     // Phaser reuses the last start data when none is passed: do not leak headless into real play.
     s.sys.settings.data = {};
@@ -121,14 +147,16 @@
     delete s.onPerfect;
     delete s.chainMilestone;
     delete s.openCardPick;
-    return { style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
+    speeds.sort((a, b) => a - b);
+    const kms = (q) => (speeds.length ? Math.round(speeds[Math.floor(q * (speeds.length - 1))] / 10) : 0);
+    return { minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
   };
 
-  window.playtestSummary = (styles, runsEach) => {
+  window.playtestSummary = (styles, runsEach, maxSeconds) => {
     const median = (xs) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
     const out = {};
     for (const style of styles) {
-      const runs = Array.from({ length: runsEach }, () => window.simRun(style, style === 'expert' ? 600 : 240));
+      const runs = Array.from({ length: runsEach }, () => window.simRun(style, maxSeconds || (style === 'expert' ? 600 : 240)));
       out[style] = {
         seconds: runs.map((r) => r.seconds).sort((a, b) => a - b).join(','),
         medianAlt: median(runs.map((r) => r.alt)),
@@ -149,6 +177,10 @@
         // Top speed in km/s (the readout): median and best run.
         medianTopKms: Math.round(median(runs.map((r) => r.maxSpeed)) / 10),
         maxTopKms: Math.round(Math.max(...runs.map((r) => r.maxSpeed)) / 10),
+        // Speed readout over the runs (km/s): lowest, median-of-medians and highest seen.
+        speedKms: Math.min(...runs.map((r) => r.minKms)) + '/' + median(runs.map((r) => r.medKms)) + '/' + Math.max(...runs.map((r) => r.maxKms)),
+        died60: runs.filter((r) => r.reason && r.seconds <= 60).length + '/' + runs.length,
+        maxZone: Math.max(...runs.map((r) => r.zone)),
       };
     }
     // Leave the game as a player would find it: no headless Game scene left running in the background.

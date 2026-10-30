@@ -173,3 +173,12 @@ test('Tight Spin also spirals the orbit in and kicks close catches', () => {
   assert.strictEqual(none.orbitTighten, 0);
   assert.strictEqual(none.tightCatchBonus, 0);
 });
+
+test('card picks never crash or come up empty when few or no cards are left', () => {
+  const all = c.CARDS.map((x) => x.id);
+  assert.deepStrictEqual(c.drawCardChoices(all, Math.random), [], 'nothing left: no pick (GameScene skips it)');
+  const two = c.drawCardChoices(all.slice(2), Math.random);
+  assert.deepStrictEqual(two.slice().sort(), all.slice(0, 2).sort(), 'two left: offer exactly those');
+  const one = c.drawCardChoices(all.slice(1), () => 0.999);
+  assert.deepStrictEqual(one, [all[0]]);
+});

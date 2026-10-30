@@ -110,7 +110,12 @@ test('planet layout zigzags, stays on screen and spreads out with altitude', () 
 test('orbit spin is capped so fast orbits stay readable', () => {
   const orbit = { angle: 0, radius: 100, dir: 1 };
   const step = o.orbitStep(orbit, 2000, 0.1, 30);
-  assert.ok(Math.abs(step.orbit.angle - o.TUNING.maxOrbitSpin * 0.1) < 1e-9);
+  assert.ok(Math.abs(step.orbit.angle - o.orbitSpinCap(2000) * 0.1) < 1e-9);
+  // The cap is maxOrbitSpin up to 450 km/s and grows above it, up to + orbitSpinBoost.
+  assert.strictEqual(o.orbitSpinCap(800), o.TUNING.maxOrbitSpin);
+  assert.strictEqual(o.orbitSpinCap(4500), o.TUNING.maxOrbitSpin, 'early game keeps the plain cap');
+  assert.ok(o.orbitSpinCap(6000) > o.TUNING.maxOrbitSpin);
+  assert.strictEqual(o.orbitSpinCap(o.TUNING.maxSpeed), o.TUNING.maxOrbitSpin + o.TUNING.orbitSpinBoost);
 });
 
 test('assist never steers toward planets below', () => {
@@ -123,7 +128,12 @@ test('zones start at 0 and are found by altitude', () => {
   assert.strictEqual(o.zoneIndexForAltitude(0), 0);
   assert.strictEqual(o.zoneIndexForAltitude(499), 0);
   assert.strictEqual(o.zoneIndexForAltitude(500), 1);
-  assert.strictEqual(o.zoneIndexForAltitude(1e9), o.ZONES.length - 1);
+  // Endless pages past the last fixed one: one every 10,000 m.
+  const last = o.ZONES.length - 1;
+  assert.strictEqual(o.zoneIndexForAltitude(o.ZONES[last].from), last);
+  assert.strictEqual(o.zoneIndexForAltitude(o.ZONES[last].from + 9999), last);
+  assert.strictEqual(o.zoneIndexForAltitude(o.ZONES[last].from + 10000), last + 1);
+  assert.strictEqual(o.zoneIndexForAltitude(1e9), last + Math.floor((1e9 - o.ZONES[last].from) / 10000));
   for (let i = 1; i < o.ZONES.length; i++) assert.ok(o.ZONES[i].from > o.ZONES[i - 1].from);
 });
 
@@ -254,7 +264,9 @@ test('auto catch only covers the first assisted flings, early in the run', () =>
 test('the supernova climbs faster at higher altitude, still capped', () => {
   assert.strictEqual(o.novaSpeed(10), o.novaSpeed(10, 0));
   assert.ok(o.novaSpeed(10, 3000) > o.novaSpeed(10, 0));
-  assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxAbsolute);
+  assert.strictEqual(o.novaSpeed(1000, 1e6), o.TUNING.novaMaxLate);
+  // Past ESCAPE VELOCITY the wave gets faster with altitude even early in a run.
+  assert.ok(o.novaSpeed(60, 20000) > o.novaSpeed(60, 9000) + 400);
 });
 
 test('orbitStep boost multiplies the orbit gain and the close-orbit bonus', () => {
@@ -356,11 +368,129 @@ test('the supernova top speed scales with the zone speed cap and is capped', () 
   for (let m = 0; m <= 60000; m += 500) {
     const v = o.novaMaxForAltitude(m);
     assert.ok(v >= prev, 'never drops (at ' + m + ' m)');
-    assert.ok(v <= o.TUNING.novaMaxAbsolute);
+    assert.ok(v <= (m <= 8000 ? o.TUNING.novaMaxAbsolute : o.TUNING.novaMaxLate));
     prev = v;
   }
   assert.ok(o.novaMaxForAltitude(8000) > o.novaMaxForAltitude(1500));
-  assert.strictEqual(o.novaMaxForAltitude(1e6), o.TUNING.novaMaxAbsolute);
+  assert.strictEqual(o.novaMaxForAltitude(8000), o.TUNING.novaMaxAbsolute);
+  // Every page past ESCAPE VELOCITY turns the screw by novaPerPage...
+  assert.strictEqual(o.novaMaxForAltitude(12000), o.TUNING.novaMaxAbsolute + o.TUNING.novaPerPage);
+  assert.strictEqual(o.novaMaxForAltitude(17000), o.TUNING.novaMaxAbsolute + 2 * o.TUNING.novaPerPage);
+  // ...up to novaMaxLate.
+  assert.strictEqual(o.novaMaxForAltitude(1e6), o.TUNING.novaMaxLate);
+});
+
+test('new sketchbook pages follow the contract (from, name, paper, ink, fx)', () => {
+  const want = [
+    [12000, 'LIGHTSPEED', 0x5a3b22, 0xf4ead0, 'lightspeed'],
+    [17000, 'WORMHOLE', 0x1f3b2c, 0xf4ead0, 'spiral'],
+    [23000, 'EVENT HORIZON', 0x1b3f6b, 0xf4ead0, 'blueprint'],
+    [30000, 'BIG BANG', 0xf1eee4, 0x1d2747, 'graph'],
+    [40000, 'BEYOND', 0x2a1f1a, 0xf4ead0, 'charcoal'],
+  ];
+  for (const [from, name, paper, ink, fx] of want) {
+    const z = o.ZONES.find((x) => x.name === name);
+    assert.ok(z, name);
+    assert.deepStrictEqual([z.from, z.sky, z.paper, z.ink, z.fx], [from, paper, paper, ink, fx], name);
+  }
+  assert.strictEqual(o.ZONES[o.ZONES.length - 1].maxSpeed, o.TUNING.maxSpeed);
+});
+
+test('zoneAt covers every page index, endless pages cycle LIGHTSPEED..BEYOND looks', () => {
+  for (let i = 0; i < o.ZONES.length; i++) assert.strictEqual(o.zoneAt(i), o.ZONES[i]);
+  const last = o.ZONES.length - 1;
+  const names = [];
+  for (let i = last + 1; i <= last + 12; i++) {
+    const z = o.zoneAt(i);
+    assert.strictEqual(z.from, o.ZONES[last].from + (i - last) * 10000);
+    assert.strictEqual(o.zoneIndexForAltitude(z.from), i);
+    assert.strictEqual(z.maxSpeed, o.TUNING.maxSpeed);
+    const look = o.ZONES[6 + ((i - last - 1) % 5)];
+    assert.deepStrictEqual([z.paper, z.ink, z.fx], [look.paper, look.ink, look.fx]);
+    assert.strictEqual(o.zoneAt(i), z, 'cached: same object every time');
+    names.push(z.name);
+  }
+  assert.deepStrictEqual(names.slice(0, 4), ['BEYOND II', 'BEYOND III', 'BEYOND IV', 'BEYOND V']);
+  assert.strictEqual(o.zoneAt(last + 9).name, 'BEYOND X');
+  assert.strictEqual(o.zoneAt(-3), o.ZONES[0]);
+  assert.strictEqual(o.zoneAt(o.zoneIndexForAltitude(1e7)).name.indexOf('BEYOND'), 0);
+});
+
+test('pagesPastEscape counts fractional pages from ESCAPE VELOCITY', () => {
+  assert.strictEqual(o.pagesPastEscape(0), 0);
+  assert.strictEqual(o.pagesPastEscape(7999), 0);
+  assert.strictEqual(o.pagesPastEscape(8000), 0);
+  assert.strictEqual(o.pagesPastEscape(10000), 0.5);
+  assert.strictEqual(o.pagesPastEscape(12000), 1);
+  assert.strictEqual(o.pagesPastEscape(50000), 6);
+  assert.strictEqual(o.pagesPastEscape(55000), 6.5);
+});
+
+test('hazards get denser on every late page, capped', () => {
+  assert.deepStrictEqual(o.hazardChances(100), { asteroid: 0, blackHole: 0 });
+  const early = o.hazardChances(5000);
+  assert.strictEqual(early.asteroid, o.TUNING.asteroidChance);
+  assert.strictEqual(early.blackHole, o.TUNING.blackHoleChance);
+  assert.ok(o.hazardChances(20000).asteroid > o.hazardChances(12000).asteroid);
+  assert.ok(o.hazardChances(20000).blackHole > o.hazardChances(12000).blackHole);
+  assert.strictEqual(o.hazardChances(1e7).asteroid, o.TUNING.maxAsteroidChance);
+  assert.strictEqual(o.hazardChances(1e7).blackHole, o.TUNING.maxBlackHoleChance);
+});
+
+test('high-speed drag: none early, grows with speed, Aerodynamic cuts it, Afterburner only below 600 km/s', () => {
+  assert.strictEqual(o.highSpeedDrag(3000, 1, false), 0);
+  assert.strictEqual(o.highSpeedDrag(o.TUNING.dragFrom, 1, false), 0);
+  assert.ok(o.highSpeedDrag(6000, 1, false) > 0);
+  assert.ok(o.highSpeedDrag(7000, 1, false) > o.highSpeedDrag(6000, 1, false));
+  assert.strictEqual(o.highSpeedDrag(o.TUNING.maxSpeed, 1, false), o.TUNING.dragMax);
+  assert.ok(Math.abs(o.highSpeedDrag(8000, 0.7, false) - 0.7 * o.TUNING.dragMax) < 1e-9);
+  assert.strictEqual(o.highSpeedDrag(5900, 1, true), 0, 'Afterburner/Slipstream cancel it below 600 km/s');
+  assert.ok(o.highSpeedDrag(8000, 1, true) > 0, '...but not above');
+  assert.ok(o.highSpeedDrag(8000, 1, true) < o.highSpeedDrag(8000, 1, false));
+});
+
+test('orbit gain tapers off near the top speed', () => {
+  assert.strictEqual(o.orbitTaper(3000), 1);
+  assert.strictEqual(o.orbitTaper(o.TUNING.orbitTaperFrom), 1);
+  assert.ok(o.orbitTaper(7000) < 1 && o.orbitTaper(7000) > o.TUNING.orbitTaperMin);
+  assert.ok(Math.abs(o.orbitTaper(o.TUNING.maxSpeed) - o.TUNING.orbitTaperMin) < 1e-9);
+  const orbit = { angle: 0, radius: 100, targetRadius: 100, dir: 1 };
+  const slow = o.orbitStep(orbit, 5000, 0.1, 60, 8000).speed - 5000;
+  const fast = o.orbitStep(orbit, 7600, 0.1, 60, 8000).speed - 7600;
+  assert.ok(fast < slow * 0.6, 'near the cap the orbit refills much slower');
+});
+
+test('wall bounces cost more at high speed; Wall Kick is limited and never pushes to the cap', () => {
+  assert.ok(Math.abs(o.wallBounceKeepAt(0) - o.TUNING.wallBounceKeep) < 1e-9);
+  assert.ok(o.wallBounceKeepAt(8000) < o.wallBounceKeepAt(3000));
+  assert.ok(o.wallBounceKeepAt(8000) <= 0.8);
+  assert.strictEqual(o.wallBounceKeepAt(4500), o.TUNING.wallBounceKeep, 'early game unchanged');
+  assert.strictEqual(o.wallKickAllowed(0), true);
+  assert.strictEqual(o.wallKickAllowed(1), true);
+  assert.strictEqual(o.wallKickAllowed(2), false);
+  assert.strictEqual(o.wallKickGain(2000, 5000, 110), 110);
+  assert.strictEqual(o.wallKickGain(7900, 8000, 110), 0);
+  assert.ok(o.wallKickGain(6750, 8000, 110) < 110);
+});
+
+test('planet bumps cost more at high speed', () => {
+  assert.strictEqual(o.planetHitKeep(3), o.TUNING.hitKeep);
+  assert.ok(o.planetHitKeep(3, 8000) < o.planetHitKeep(3, 2000));
+  assert.strictEqual(o.planetHitKeep(3, 4500), o.TUNING.hitKeep, 'early game unchanged');
+  assert.strictEqual(o.planetHitKeep(0, 3000), o.TUNING.earlyHitKeep);
+  assert.ok(Math.abs(o.planetHitKeep(3, 8000) - (o.TUNING.hitKeep - o.TUNING.hitHighLoss)) < 1e-9);
+});
+
+test('finger tutorial: first 2 runs or until 3 good cycles, whichever lasts longer', () => {
+  assert.strictEqual(o.tutorialActive({ runs: 0, goodCycles: 0 }), true);
+  assert.strictEqual(o.tutorialActive({ runs: 1, goodCycles: 5 }), true, 'still the first 2 runs');
+  assert.strictEqual(o.tutorialActive({ runs: 4, goodCycles: 2 }), true, 'not 3 good cycles yet');
+  assert.strictEqual(o.tutorialActive({ runs: 2, goodCycles: 3 }), false);
+  assert.strictEqual(o.tutorialActive(null), true);
+  assert.deepStrictEqual(o.parseTutorialState(null), { runs: 0, goodCycles: 0 });
+  assert.deepStrictEqual(o.parseTutorialState('garbage{'), { runs: 0, goodCycles: 0 });
+  assert.deepStrictEqual(o.parseTutorialState('{"runs":3,"goodCycles":"2"}'), { runs: 3, goodCycles: 2 });
+  assert.deepStrictEqual(o.parseTutorialState('{"runs":-4}'), { runs: 0, goodCycles: 0 });
 });
 
 test('speed fraction (colors, score multiplier) still tops out at 450 km/s', () => {
@@ -410,4 +540,12 @@ test('ghostPositionAt interpolates the path by time and reports its end', () => 
   assert.deepStrictEqual(o.ghostPositionAt(pts, -1), { x: 0, y: 0, done: false });
   assert.strictEqual(o.ghostPositionAt([pts[0]], 0), null);
   assert.strictEqual(o.ghostPositionAt(null, 0), null);
+});
+
+test('the supernova leash: unchanged early, more room on the late pages', () => {
+  assert.strictEqual(o.novaLeashFor(0), o.TUNING.novaLeash);
+  assert.strictEqual(o.novaLeashFor(8000), o.TUNING.novaLeash);
+  assert.ok(o.novaLeashFor(9000) > o.TUNING.novaLeash && o.novaLeashFor(9000) < o.TUNING.novaLeashLate);
+  assert.strictEqual(o.novaLeashFor(10000), o.TUNING.novaLeashLate);
+  assert.strictEqual(o.novaLeashFor(1e6), o.TUNING.novaLeashLate);
 });

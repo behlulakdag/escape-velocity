@@ -17,7 +17,7 @@ const CARDS = [
   { id: 'sling', family: 'fling', rarity: 'rare', name: 'Slingshot', desc: '+10% speed every release', icon: 'sling' },
   { id: 'chain', family: 'fling', rarity: 'legendary', name: 'Chain Reaction', desc: 'PERFECT chains add speed', icon: 'chain' },
   { id: 'aero', family: 'flight', rarity: 'common', name: 'Aerodynamic', desc: '30% less speed loss', icon: 'aero' },
-  { id: 'wallkick', family: 'flight', rarity: 'rare', name: 'Wall Kick', desc: 'Walls kick you upward', icon: 'wallkick' },
+  { id: 'wallkick', family: 'flight', rarity: 'rare', name: 'Wall Kick', desc: 'Aimed flings: 2 wall kicks up', icon: 'wallkick' },
   { id: 'afterburner', family: 'flight', rarity: 'legendary', name: 'Afterburner', desc: 'No speed loss after PERFECT', icon: 'afterburner' },
   { id: 'heatshield', family: 'shield', rarity: 'common', name: 'Heat Shield', desc: 'First hit each zone: free', icon: 'heatshield' },
   { id: 'armor', family: 'shield', rarity: 'rare', name: 'Tail Armor', desc: 'Smash asteroids for speed', icon: 'armor' },
