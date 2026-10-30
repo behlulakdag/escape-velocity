@@ -12,6 +12,8 @@ const TUNING = {
   momentumFrom: 1000,      // px/s where momentum starts building (0 below)
   momentumGain: 1.2,       // gain multiplier at full momentum = 1 + this
   momentumZoomOut: 0.06,   // extra camera zoom-out at full momentum (feel only)
+  momentumVisualFrom: 2000, // px/s (200 km/s) where the momentum VISUALS start building
+  momentumVisualEase: 2.5,  // ease-out power: the visuals are clearly up by ~300 km/s
   flightDecay: 40,        // px/s lost per second while flying
   flightDecayPerKm: 6,    // extra decay per 1000 px of altitude (difficulty ramp)
   maxFlightDecay: 140,
@@ -339,6 +341,16 @@ function momentum(speed) {
   return Math.max(0, Math.min(1, t));
 }
 
+// MOMENTUM VISUALS 0..1 (flame crown, speed-line weight, extra zoom, HUD cue). Feel only: the
+// physics keep momentum(). The linear curve reads as nothing happening until ~400 km/s, so the
+// visuals ease out from 200 km/s instead and are clearly snowballing by 250-300 km/s.
+function momentumVisual(speed) {
+  const u = (speed - TUNING.momentumVisualFrom) / (TUNING.maxSpeed - TUNING.momentumVisualFrom);
+  if (u <= 0) return 0;
+  if (u >= 1) return 1;
+  return 1 - Math.pow(1 - u, TUNING.momentumVisualEase);
+}
+
 // Every speed gain is multiplied by this: good play snowballs (x1 slow, up to 1 + momentumGain).
 function momentumGainMul(speed) {
   return 1 + TUNING.momentumGain * momentum(speed);
@@ -438,5 +450,5 @@ function cometStretch(fraction, accel) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { momentum, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

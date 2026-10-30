@@ -313,6 +313,22 @@ test('momentum is 0 when slow, grows with speed and is 1 at the absolute cap', (
   }
 });
 
+test('momentum visuals: nothing when slow, clearly building by 250-300 km/s, monotonic, 1 at the cap', () => {
+  assert.strictEqual(o.momentumVisual(o.TUNING.startSpeed), 0);
+  assert.strictEqual(o.momentumVisual(2000), 0, 'no cue at 200 km/s');
+  assert.ok(o.momentumVisual(2500) > 0.15, 'cue visible at 250 km/s');
+  assert.ok(o.momentumVisual(3000) > 0.3, 'cue strong at 300 km/s');
+  assert.ok(o.momentumVisual(3000) > o.momentum(3000), 'earlier than the physics curve');
+  assert.ok(o.momentumVisual(4500) < 0.9, 'headroom left above 450 km/s');
+  assert.strictEqual(o.momentumVisual(o.TUNING.maxSpeed), 1);
+  assert.strictEqual(o.momentumVisual(1e9), 1);
+  let prev = -1;
+  for (let v = 0; v <= o.TUNING.maxSpeed; v += 100) {
+    assert.ok(o.momentumVisual(v) >= prev, 'never drops (at ' + v + ')');
+    prev = o.momentumVisual(v);
+  }
+});
+
 test('momentum multiplier: x1 slow, grows with speed, 1 + momentumGain at the cap', () => {
   assert.strictEqual(o.momentumGainMul(o.TUNING.startSpeed), 1);
   assert.ok(o.momentumGainMul(4500) > o.momentumGainMul(2400));

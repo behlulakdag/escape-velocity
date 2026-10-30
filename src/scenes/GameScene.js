@@ -170,6 +170,8 @@ class GameScene extends Phaser.Scene {
     this.mods = cardMods(this.ownedCards);
     this.cardPick = null;       // { choices, realT } while the pick is on screen
     this.pickDelay = -1;        // real seconds until the zone's card pick opens, -1 = none pending
+    this.queuedMilestone = null; // { level, chain } stamp held back while a card pick is pending
+    this.milestoneWait = 0;      // real seconds after the pick closes before it plays
     this.inputGuard = false;    // swallows the release of the finger that tapped a card
     this.shieldCharges = 0;     // Heat Shield charges left in this zone
     this.rescuesLeft = 0;       // Unbreakable
@@ -581,9 +583,33 @@ class GameScene extends Phaser.Scene {
   }
 
   // NICE! / BLAZING! / UNSTOPPABLE!: a speed bonus scaled by level plus a HUD stamp.
+  // The speed bonus lands at once; the stamp waits while a zone banner / card pick owns the screen.
   chainMilestone(level) {
-    const chain = this.perfectChain;
     this.addMomentumSpeed(milestoneSpeedBonus(level));
+    if (this.cardPickPending()) {
+      this.queuedMilestone = { level: Math.max(level, this.queuedMilestone ? this.queuedMilestone.level : 0), chain: this.perfectChain };
+      return;
+    }
+    this.playMilestone(level, this.perfectChain);
+  }
+
+  // A zone's card pick is counting down (its banner is up) or open.
+  cardPickPending() {
+    return !!this.cardPick || this.pickDelay >= 0;
+  }
+
+  // Plays a queued milestone stamp a beat after the card pick closes (the card name pops first).
+  updateQueuedMilestone(realDt) {
+    if (!this.queuedMilestone || this.isOver) return;
+    if (this.cardPickPending()) { this.milestoneWait = GameScene.MILESTONE_AFTER_PICK; return; }
+    this.milestoneWait -= realDt;
+    if (this.milestoneWait > 0) return;
+    const q = this.queuedMilestone;
+    this.queuedMilestone = null;
+    this.playMilestone(q.level, q.chain);
+  }
+
+  playMilestone(level, chain) {
     this.sfx('milestone', { level, chain });
     if (this.headless) return;
     if (this.hud.showMilestone) this.hud.showMilestone(CHAIN_MILESTONE_NAMES[level], level);
@@ -643,6 +669,7 @@ class GameScene extends Phaser.Scene {
     }
     this.updateFeelTimers(realDt);
     this.updatePickDelay(realDt);
+    this.updateQueuedMilestone(realDt);
     if (this.hitstop > 0) {
       this.hitstop -= realDt;
       this.draw();
@@ -1256,7 +1283,7 @@ class GameScene extends Phaser.Scene {
     this.look.y = Phaser.Math.Linear(this.look.y, lookY, ease);
     this.zoomKick *= Math.exp(-dt * 7);
     // Momentum pulls the camera out a little more (feel only: the anchor and nova leash ignore it).
-    this.momentumZoom = Phaser.Math.Linear(this.momentumZoom, momentum(this.speed) * TUNING.momentumZoomOut, Math.min(1, dt * 1.5));
+    this.momentumZoom = Phaser.Math.Linear(this.momentumZoom, momentumVisual(this.speed) * TUNING.momentumZoomOut, Math.min(1, dt * 1.5));
     cam.setZoom(this.baseZoom - this.momentumZoom + this.zoomKick);
     cam.scrollX = this.look.x;
     cam.scrollY = center + this.look.y - GAME_HEIGHT / 2;
@@ -1411,7 +1438,7 @@ class GameScene extends Phaser.Scene {
     g.clear();
     if (this.headless) return;
     const intensity = Phaser.Math.Clamp((speedFraction(this.speed) - 0.45) / 0.55, 0, 1);
-    const mom = momentum(this.speed);   // past 450 km/s the lines keep getting heavier
+    const mom = momentumVisual(this.speed);   // from ~250 km/s the lines keep getting heavier
     let ux = this.comet.vx;
     let uy = this.comet.vy;
     if (this.orbit) {
@@ -1629,7 +1656,7 @@ class GameScene extends Phaser.Scene {
       closeCall: this.closeCall,
       perfectPulse: Math.max(0, 1 - (this.time.now - this.perfectPulseAt) / 400),
       perfectFlash: Math.max(0, 1 - (this.time.now - this.perfectFlashAt) / 220),
-      momentum: momentum(this.speed),
+      momentum: momentumVisual(this.speed),
       zonePulse: Math.max(0, 1 - (this.time.now - this.zonePulseAt) / 600),
       intro: this.introActive,
       aimKind: assist ? (assist.angle < this.perfectAngle() ? 'perfect' : 'target') : 'none',
@@ -1769,7 +1796,7 @@ class GameScene extends Phaser.Scene {
   updateHud() {
     if (!this.hud.scoreText) return;   // HUD scene still starting
     this.hud.setStats(Math.floor(this.score), this.bestAltitude, this.speed, this.speed / 10);
-    if (this.hud.setMomentum) this.hud.setMomentum(momentum(this.speed));
+    if (this.hud.setMomentum) this.hud.setMomentum(momentumVisual(this.speed));
   }
 
   gameOver(reason) {
@@ -1832,6 +1859,7 @@ GameScene.KICK_GRACE = 0.45;
 GameScene.WIND_GRACE = 1.0;     // s after SECOND WIND / UNBREAKABLE in which a planet bump is free
 // Zone entry: real seconds between the zone banner / page turn and the card pick.
 GameScene.PICK_DELAY = 1.2;
+GameScene.MILESTONE_AFTER_PICK = 0.9;   // real s after a card pick closes before a held-back stamp plays
 // ms after any pop in which routine (low) pops are skipped.
 GameScene.LOW_POP_QUIET = 600;
 GameScene.CATCH_POP_QUIET = 4000;   // ms between catch pops (+SPEED / CLOSE ORBIT / SPEED BURST)
