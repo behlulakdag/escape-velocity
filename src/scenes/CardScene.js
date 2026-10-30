@@ -392,10 +392,14 @@ class CardScene extends Phaser.Scene {
     this.tweens.killTweensOf(entry.box);
     entry.landed = true;
     entry.box.setPosition(cardSafeX(entry.baseX, 1.07), entry.baseY).setAngle(entry.restAngle).setAlpha(1).setScale(1.07, 0.9);
+    // The squashed card is wider than its slot: lift it above its neighbours so their edges
+    // never cover its family label.
+    entry.box.setDepth(4);
   }
 
   // A press that ends without a pick (another card pressed instead) springs back.
   release(entry) {
+    entry.box.setDepth(0);
     this.tweens.add({ targets: entry.box, x: entry.baseX, scaleX: 1, scaleY: 1, duration: 160, ease: 'Back.Out' });
   }
 
