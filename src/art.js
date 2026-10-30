@@ -251,6 +251,32 @@ function artIsLightPaper(color) {
   return !artIsDark(color) && ((color >> 16) & 255) > 180;
 }
 
+// Pose of the supernova's death bite (ART.drawDeathJaws) at k = time / GameScene.DEATH_CLOSE:
+// the face rises out of the fire under the comet with its mouth gaping (k < DEATH_JAWS.open),
+// bites shut with an accelerating snap (k = 1), freezes a moment, then bursts and sinks back.
+const DEATH_JAWS = { open: 0.4, gap: 150, rise: 240, fadeIn: 0.1, squash: 0.6, freeze: 0.35, burst: 1.3, sinkAt: 1.3, sink: 0.5, sinkPx: 90 };
+function deathJawsPose(k) {
+  const J = DEATH_JAWS;
+  k = Math.max(0, k || 0);
+  const opening = Math.min(1, k / J.open);
+  const rise = 1 - (1 - opening) * (1 - opening);
+  const c = k < J.open ? 0 : Math.min(1, (k - J.open) / (1 - J.open));
+  const closed = k >= 1;
+  const gap = closed ? 0 : k < J.open ? J.gap * rise : J.gap * (1 - c * c * c);
+  const hold = Math.max(0, k - 1);
+  const sinkT = Math.min(1, Math.max(0, (hold - J.sinkAt) / J.sink));
+  return {
+    gap,
+    closed,
+    hold,
+    greed: closed ? 0 : c,
+    alpha: Math.min(1, k / J.fadeIn),
+    squash: closed ? Math.max(0, 1 - hold / J.squash) : 0,
+    burst: hold >= J.freeze ? Math.min(1, (hold - J.freeze) / J.burst) : 0,
+    dy: (1 - rise) * J.rise + sinkT * sinkT * J.sinkPx,
+  };
+}
+
 const ART = {
   // Kept for scenes that still reference the old palette names.
   outline: SKETCH.shadowInk,
@@ -1338,6 +1364,8 @@ const ART = {
 
   drawNovaFace(g, novaY, view, ctx, danger) {
     const t = ctx.time;
+    // During the death bite drawDeathJaws draws the face (eyes over its biting mouth).
+    if (ART._jawsT !== undefined && t >= ART._jawsT && t - ART._jawsT < 0.25) return;
     const bf = ART.boilFrame(t);
     const rnd = artRandom(bf * 41 + 5);
     const cometX = ctx.comet ? ctx.comet.x : (view.left + view.right) / 2;
@@ -1389,79 +1417,219 @@ const ART = {
     ART.pen(g, mouth, true, 4, SKETCH.deepRed, 1, rnd);
   },
 
-  // Death beat: the supernova's jaws snap shut over (x, y), then a crayon scribble bursts out of
-  // them. k: 0..1 while closing, past 1 during the hold (k - 1 = hold time in close-time units).
+  // Death beat: the supernova's own face rises out of the fire under (x, y) with its mouth gaping,
+  // bites shut over the comet, holds a beat, then a crayon scribble bursts out of the closed mouth.
+  // Same drawing language as drawNovaFace: cream eyes with angry brows, cream teeth with a dark
+  // line, plus an orange crayon head with a cream gel-pen edge so the face reads apart from the fire.
+  // k: 0..1 while closing (GameScene.DEATH_CLOSE), past 1 during the hold (k - 1 in close units).
   drawDeathJaws(g, x, y, k, t) {
+    ART._jawsT = t;   // drawNovaFace stands down meanwhile: one face, one mouth
+    const P = deathJawsPose(k);
     const bf = ART.boilFrame(t);
     const rnd = artRandom(bf * 59 + 11);
-    const shut = Math.min(1, k);
-    // Ease in, so the bite accelerates and lands with a snap; a tiny rebound after it lands.
-    const bite = shut * shut * shut;
-    const rebound = k > 1 ? Math.sin(Math.min(1, (k - 1) * 2.5) * Math.PI) * 10 : 0;
-    const gap = 170 * (1 - bite) + rebound;
-    const W = 150;                 // half width of the mouth
-    const lip = 0x3a0d10;          // the nova face's line color
+    const line = 0x3a0d10;          // the nova face's line color
     const tooth = 0xfff3d6;
-    for (const side of [-1, 1]) { // -1 = upper jaw, 1 = lower jaw
-      const edgeY = y + side * gap * 0.5;
-      // Jaw body: a fat crescent bulging away from the bite line, its back a flame-ish wobble.
-      const back = [];
-      const n = 14;
-      for (let i = 0; i <= n; i++) {
-        const u = i / n;
-        const bx = x - W + u * W * 2;
-        const bulge = Math.sin(u * Math.PI) * (90 + (i % 2 ? 18 * rnd() : 0));
-        back.push({ x: bx + (rnd() - 0.5) * 6, y: edgeY + side * (bulge + 18) });
-      }
-      const body = back.slice();
-      body.push({ x: x + W + 10, y: edgeY });
-      body.push({ x: x - W - 10, y: edgeY });
-      g.fillStyle(SKETCH.red, 1);
-      g.fillPoints(body.map((p) => ({ x: p.x, y: p.y + side * 10 })), true);   // crayon flame rim
-      g.fillStyle(lip, 1);
-      g.fillPoints(body, true);
-      ART.pen(g, back, false, 6, SKETCH.orange, 0.95, rnd);
-      // Zigzag teeth along the bite line, pointing at the other jaw (offset half a tooth, so the
-      // two rows interlock when they meet).
-      const nT = 6;
-      const tw = (W * 2) / nT;
-      for (let i = 0; i < nT; i++) {
-        const tx = x - W + tw * (i + (side > 0 ? 0.5 : 0));
-        if (tx + tw > x + W + 4) continue;
-        const len = 30 + (i % 2) * 8;
-        const tri = [
-          { x: tx + 3, y: edgeY },
-          { x: tx + tw * 0.5 + (rnd() - 0.5) * 4, y: edgeY - side * len },
-          { x: tx + tw - 3, y: edgeY },
-        ];
-        g.fillStyle(tooth, 1);
-        g.fillPoints(tri, true);
-        ART.pen(g, tri, true, 3, lip, 1, rnd);
-      }
-      ART.pen(g, [{ x: x - W - 10, y: edgeY }, { x: x + W + 10, y: edgeY }], false, 4, SKETCH.deepRed, 1, rnd);
-    }
-    if (k < 1) return;
-    // The snap: a crayon scribble bursting out of the closed jaws, plus a ring of ink asterisks.
-    const h = Math.min(1, (k - 1) / 1.6);
-    const grow = 1 - (1 - h) * (1 - h);
-    const fade = 1 - h * h * 0.7;
-    const cols = [SKETCH.yellow, SKETCH.orange, SKETCH.red];
-    for (let s = 0; s < 3; s++) {
-      const sr = artRandom(s * 131 + bf * 7 + 3);
+    const gel = 0xfff3d6;           // cream gel pen
+    const a = P.alpha;
+    const W = 150 * (1 + P.squash * 0.08);                 // half width of the mouth
+    const cy = y + P.dy;                                    // mouth line (comet at y)
+    const gap = P.gap;
+    const frown = 9;                                        // middle of the mouth higher than its corners
+    const s = (u) => Math.pow(Math.sin(Math.PI * u), 0.75);
+    const upper = (u) => cy - gap * s(u) - frown * Math.sin(Math.PI * u);
+    const lower = (u) => cy + gap * s(u) - frown * Math.sin(Math.PI * u);
+    const rx = 218 * (1 + P.squash * 0.1);
+    const ryTop = (gap + 168) * (1 - P.squash * 0.06);
+    const ryBot = gap * 0.6 + 150;
+
+    // Head: two polygons (above and below the mouth) so the open mouth stays a real hole and the
+    // comet shows through it until the teeth meet.
+    const N = 12;
+    const lipPts = (fn) => {
       const pts = [];
-      const loops = 26;
-      for (let i = 0; i < loops; i++) {
-        const a = i * 2.39 + sr() * 0.8 + s;
-        const r = (40 + 150 * grow) * (0.35 + sr() * 0.65);
-        pts.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r * 0.8 });
+      for (let i = 0; i <= N; i++) { const u = i / N; pts.push({ x: x - W + u * W * 2, y: fn(u) }); }
+      return pts;
+    };
+    const arc = (dir, ry) => {
+      const pts = [];
+      for (let i = 0; i <= 16; i++) {
+        const ang = dir * (i / 16) * Math.PI;   // 0 = right corner, around to the left one
+        const j = 1 + (rnd() - 0.5) * 0.07 + (i % 3 === 1 ? 0.03 : 0);
+        pts.push({ x: x + Math.cos(ang) * rx * j, y: cy + Math.sin(ang) * ry * j });
       }
-      ART.pen(g, pts, false, 9, ART.backing, 0.35 * fade, sr);
-      ART.pen(g, pts, false, 5.5 - s, cols[s], fade, sr);
+      return pts;
+    };
+    const topLip = lipPts(upper);
+    const botLip = lipPts(lower);
+    const topArc = arc(-1, ryTop);
+    const botArc = arc(1, ryBot);
+    const topPoly = topLip.concat(topArc);
+    const botPoly = botLip.concat(botArc);
+    // Crayon fill slightly off the outline (offset), like colored pencil that missed the line.
+    g.fillStyle(SKETCH.red, a);
+    g.fillPoints(botPoly.map((p) => ({ x: p.x + 5, y: p.y + 6 })), true);
+    g.fillPoints(topPoly.map((p) => ({ x: p.x + 5, y: p.y + 6 })), true);
+    g.fillStyle(SKETCH.orange, a);
+    g.fillPoints(botPoly, true);
+    g.fillPoints(topPoly, true);
+
+    // Crayon hatching on the head (red strokes, a yellow patch toward the light up-left),
+    // never inside the mouth.
+    const sp = 24;
+    for (let gx = -rx; gx < rx; gx += sp) {
+      for (let gy = -ryTop; gy < ryBot; gy += sp) {
+        const px = x + gx + (rnd() - 0.5) * 8;
+        const py = cy + gy + (rnd() - 0.5) * 8;
+        const ry = gy < 0 ? ryTop : ryBot;
+        const nx = (px - x) / (rx * 0.93);
+        const ny = (py - cy) / (ry * 0.93);
+        if (nx * nx + ny * ny > 1) continue;
+        if (Math.abs(px - x) < W + 10) {
+          const u = Phaser.Math.Clamp((px - x + W) / (W * 2), 0, 1);
+          if (py > upper(u) - 14 && py < lower(u) + 14) continue;
+        }
+        if (rnd() < 0.18) continue;
+        const lit = nx < -0.15 && ny < -0.35;
+        const len = 14 + rnd() * 10;
+        g.lineStyle(lit ? 5 : 4, lit ? SKETCH.yellow : SKETCH.red, (lit ? 0.75 : 0.5) * a);
+        g.lineBetween(px, py, px - len * 0.5, py + len);
+      }
     }
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2 + 0.4;
-      const r = 90 + 120 * grow;
-      ART.asterisk(g, x + Math.cos(a) * r, y + Math.sin(a) * r * 0.85, 10 + 6 * (1 - h), i % 2 ? SKETCH.yellow : SKETCH.orange, fade, 3, rnd);
+
+    // Throat: dense dark crayon between the lips, leaving the comet itself visible.
+    if (gap > 4) {
+      for (let px = x - W + 6; px < x + W - 4; px += 8) {
+        const u = (px - x + W) / (W * 2);
+        const top = upper(u) + 3;
+        const bot = lower(u) - 3;
+        if (bot <= top) continue;
+        const dx = px - x;
+        const hole = 46;
+        g.lineStyle(9, line, 0.93 * a);
+        if (Math.abs(dx) < hole) {
+          const h = Math.sqrt(hole * hole - dx * dx);
+          if (y - h > top) g.lineBetween(px, top, px + 3, Math.min(bot, y - h));
+          if (y + h < bot) g.lineBetween(px, Math.max(top, y + h), px + 3, bot);
+        } else {
+          g.lineBetween(px, top, px + 3, bot);
+        }
+      }
+    }
+
+    // Teeth: uneven hand-drawn triangles (sizes fixed per tooth, tips re-wobble with the boil),
+    // short enough near the corners that the rows interlock when the mouth shuts.
+    const teethRow = (fn, dir, count, seed) => {
+      const tr = artRandom(seed);
+      const ws = [];
+      let sum = 0;
+      for (let i = 0; i < count; i++) { const w = 0.6 + tr() * 0.8; ws.push(w); sum += w; }
+      let u = 0.07;
+      for (let i = 0; i < count; i++) {
+        const du = (ws[i] / sum) * 0.86;
+        const u0 = u;
+        const u1 = u + du;
+        const um = u0 + du * (0.4 + tr() * 0.2);
+        u = u1;
+        const localGap = lower(um) - upper(um);
+        const len = Math.min(20 + tr() * 26, localGap * 0.55 + 18);
+        const tri = [
+          { x: x - W + u0 * W * 2 + 2, y: fn(u0) - dir * 2 },
+          { x: x - W + um * W * 2 + (rnd() - 0.5) * 4, y: fn(um) + dir * len },
+          { x: x - W + u1 * W * 2 - 2, y: fn(u1) - dir * 2 },
+        ];
+        g.fillStyle(tooth, a);
+        g.fillPoints(tri, true);
+        ART.pen(g, tri, true, 3, line, a, rnd);
+      }
+    };
+    // Lips first (dark red crayon band), the teeth over them.
+    ART.pen(g, topLip, false, 13, SKETCH.deepRed, a, rnd);
+    ART.pen(g, botLip, false, 13, SKETCH.deepRed, a, rnd);
+    teethRow(upper, 1, 7, 4242);
+    teethRow(lower, -1, 6, 4343);
+    ART.pen(g, topLip, false, 4, gel, 0.9 * a, rnd);
+    ART.pen(g, botLip, false, 4, gel, 0.9 * a, rnd);
+
+    // Head outline: a dark pencil edge just outside (so it holds on the cream page) and the cream
+    // gel pen on top.
+    const grow = (pts, f) => pts.map((p) => ({ x: x + (p.x - x) * f, y: cy + (p.y - cy) * f }));
+    ART.pen(g, grow(topArc, 1.025), false, 4, line, 0.7 * a, rnd);
+    ART.pen(g, grow(botArc, 1.025), false, 4, line, 0.7 * a, rnd);
+    ART.pen(g, topArc, false, 6, gel, 0.95 * a, rnd);
+    ART.pen(g, botArc, false, 6, gel, 0.95 * a, rnd);
+
+    // Angry eyes above the mouth, staring at the comet; greedy and wide while biting, squeezed
+    // shut-ish with satisfaction once it has bitten.
+    const er = 30 * (1 + P.greed * 0.18);
+    const ey = upper(0.5) - 74 - P.greed * 6;
+    const squint = P.closed ? 0.45 : 1;
+    for (const side of [-1, 1]) {
+      const ex = x + side * 74;
+      const eye = ART.wobblyLoop(ex, ey, er * 1.05, er * 0.9 * squint, 10, 0.14, rnd, rnd());
+      g.fillStyle(0xfff3d6, a);
+      g.fillPoints(eye.map((p) => ({ x: p.x + 2, y: p.y + 2 })), true);
+      ART.pen(g, eye, true, 5, line, a, rnd);
+      const look = P.closed ? { x: 0, y: 0.2 } : ART.lookAt(ex, ey, x, y);
+      g.fillStyle(line, a);
+      g.fillCircle(ex + look.x * er * 0.42, ey + look.y * er * 0.42 * squint, er * 0.42 * (P.closed ? 0.8 : 1));
+      const bx0 = ex - side * er * 1.3;   // inner end, low: a scowl
+      const bx1 = ex + side * er * 1.1;
+      const by0 = ey - er * 0.95 + (P.closed ? 6 : 0);
+      const by1 = ey - er * 1.8;
+      g.lineStyle(10, line, a);
+      g.lineBetween(bx0, by0 + (rnd() - 0.5) * 3, bx1, by1 + (rnd() - 0.5) * 3);
+      g.lineStyle(4, line, 0.8 * a);
+      g.lineBetween(bx0 + side * 4, by0 - 7, bx1 - side * 6, by1 - 5);
+    }
+
+    if (!P.closed) return;
+    // The bite landed: short ink motion ticks off both mouth corners while the jaw rebounds.
+    if (P.squash > 0.05) {
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 3; i++) {
+          const ang = (i - 1) * 0.5;
+          const r0 = W + 18;
+          const cx0 = x + side * r0;
+          g.lineStyle(5, ART.ink, P.squash);
+          g.lineBetween(cx0, cy + ang * 30, cx0 + side * (22 + i * 4), cy + ang * 46);
+        }
+      }
+    }
+    if (P.burst <= 0) return;
+    // Then the bite bursts: a small crayon scribble puffs out between the lips and ink rays with
+    // asterisks fly off the head's edge (outside it, so the satisfied face stays readable).
+    const h = P.burst;
+    const spread = 1 - (1 - h) * (1 - h);
+    const fade = 1 - h * h * 0.75;
+    const cols = [SKETCH.yellow, SKETCH.orange, SKETCH.red];
+    for (let st = 0; st < 3; st++) {
+      const sr = artRandom(st * 131 + bf * 7 + 3);
+      const pts = [];
+      for (let i = 0; i < 16; i++) {
+        const ang = i * 2.39 + sr() * 0.8 + st;
+        const r = (30 + 70 * spread) * (0.4 + sr() * 0.6);
+        pts.push({ x: x + Math.cos(ang) * r * 1.5, y: cy + Math.sin(ang) * r * 0.55 });
+      }
+      ART.pen(g, pts, false, 8, line, 0.3 * fade, sr);
+      ART.pen(g, pts, false, 5 - st, cols[st], fade, sr);
+    }
+    const rays = 11;
+    for (let i = 0; i < rays; i++) {
+      const ang = -Math.PI / 2 + (i / rays) * Math.PI * 2 + (rnd() - 0.5) * 0.15;
+      const ry = Math.sin(ang) < 0 ? ryTop : ryBot;
+      const ex = Math.cos(ang) * rx;
+      const ey2 = Math.sin(ang) * ry;
+      const r0 = 1.08 + 0.25 * spread;
+      const r1 = r0 + 0.12 + 0.18 * (1 - h);
+      const col = i % 2 ? SKETCH.yellow : SKETCH.orange;
+      g.lineStyle(11, ART.backing, 0.35 * fade);
+      g.lineBetween(x + ex * r0, cy + ey2 * r0, x + ex * r1, cy + ey2 * r1);
+      g.lineStyle(6.5, col, fade);
+      g.lineBetween(x + ex * r0, cy + ey2 * r0, x + ex * r1, cy + ey2 * r1);
+      if (i % 2 === 0) {
+        const r2 = r1 + 0.12;
+        ART.asterisk(g, x + ex * r2, cy + ey2 * r2, 9 + 6 * (1 - h), cols[i % 3], fade, 3, rnd);
+      }
     }
   },
 

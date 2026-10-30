@@ -10,12 +10,34 @@ const GO_ROWS = { top: 58, step: 52 };
 const GO_GOAL_Y = 264;
 // Sound / fullscreen doodles: between the two tape strips, above the page's top edge.
 const GO_CORNER_BUTTONS = { muteX: 206, fullX: 514, y: 100 };
-// 'NEW CARD FOUND' sticky note, page-local: hangs over the page's right edge between the score and
-// the top speed flames (clear of a 6-digit score).
-const GO_NEWCARD = { x: 256, y: -166, w: 172, h: 112 };
-// Build strip under the page (strip-local coordinates). Five cards get ~127 px slots; names are
-// written at 26 px (~13 CSS px on a 360 px phone) on up to two lines.
-const GO_STRIP = { y: 914, h: 164, left: 62, right: 700, maxSlot: 150, cardY: -30, cardScale: 0.95, labelY: 6, labelSize: 26 };
+// 'NEW CARD FOUND' sticky note, page-local: hangs off the page's right edge beside the score, far
+// enough right to clear a 7-digit score (and its 'score:' label on the left), but kept on screen
+// (goNewCardX) with a 16 px gutter.
+const GO_NEWCARD = { x: 314, y: -166, w: 172, h: 112, gutter: 16, tilt: 8 };
+// Build strip under the page (game x of the slot row). The strip's paper only spans x 32..678 and
+// 'build:' plus the red margin line sit left of 66, so the slots stay inside 76..664: a label in
+// the last slot never runs off the torn edge onto the dark page. Names are written at 26 px
+// (~13 CSS px on a 360 px phone) on up to two lines, above the strip's bottom edge.
+const GO_STRIP = { y: 914, h: 164, left: 76, right: 664, maxSlot: 150, cardY: -34, cardScale: 0.95, labelY: 0, labelSize: 26, labelPad: 14 };
+
+// Slot width and the first slot's centre (strip-local x) for a build of n cards.
+function goStripSlots(n) {
+  const L = GO_STRIP;
+  const count = Math.max(1, n);
+  const slot = Math.min(L.maxSlot, (L.right - L.left) / count);
+  const first = L.left + (L.right - L.left - slot * count) / 2 + slot / 2 - GAME_WIDTH / 2;
+  return { slot, first, labelMaxW: slot - L.labelPad };
+}
+
+// Page-local x of the NEW CARDS note: GO_NEWCARD.x, or further left when the page is drawn so large
+// that the note would leave the screen (its right edge stays GO_NEWCARD.gutter from the edge).
+function goNewCardX(pageScale) {
+  const N = GO_NEWCARD;
+  const s = pageScale || 1;
+  // The note scales with the page; tilt: px its rotated corner reaches past its unrotated box.
+  const maxX = (GAME_WIDTH / 2 - N.gutter - N.tilt) / s - N.w / 2;
+  return Math.min(N.x, maxX);
+}
 
 // Card name for the narrow build slot: one word per line, and the long single words broken
 // with a hand-written hyphen, so every label fits its slot at full size (no shrinking).
@@ -216,14 +238,13 @@ class GameOverScene extends Phaser.Scene {
   showRunCards(y, scale) {
     const L = GO_STRIP;
     const ids = typeof cardGroupedOrder === 'function' ? cardGroupedOrder(this.cards) : this.cards;
-    const n = ids.length;
-    const slot = Math.min(L.maxSlot, (L.right - L.left) / n);
-    const x0 = L.left + (L.right - L.left - slot * n) / 2 - GAME_WIDTH / 2;
+    const S = goStripSlots(ids.length);
+    const slot = S.slot;
     const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(ids) : [];
     const strip = this.add.container(GAME_WIDTH / 2, y, [uiBoilImage(this, 0, 0, goStripTexture(this))]).setRotation(0.012).setScale(scale || 1);
     const build = uiInkText(this, -GAME_WIDTH / 2 + 40, 0, 'build:', { size: 28, color: UI_INK.pencilDarkHex, stroke: null, rot: -Math.PI / 2 + 0.04, boil: false });
     strip.add(build);
-    const xOf = (i) => x0 + slot / 2 + i * slot;
+    const xOf = (i) => S.first + i * slot;
     for (const family of sets) {
       const members = ids.map((id, i) => (cardById(id).family === family ? i : -1)).filter(i => i >= 0);
       if (!members.length) continue;
@@ -239,7 +260,7 @@ class GameOverScene extends Phaser.Scene {
       const name = uiInkText(this, 0, L.labelY, goCardLabel(card.name), {
         size: L.labelSize, color: UI_INK.darkHex, stroke: null, rot: 0.02, boil: false, oy: 0, lineSpacing: -7,
       });
-      name.setScale(Math.min(1, (slot - 12) / name.width));
+      name.setScale(Math.min(1, S.labelMaxW / name.width));
       parts.push(name);
       const item = this.add.container(xOf(i), 0, parts).setScale(1.6).setAlpha(0);
       strip.add(item);
@@ -351,7 +372,7 @@ class GameOverScene extends Phaser.Scene {
     if (!ids.length) return;
     const W = GO_NEWCARD.w;
     const H = GO_NEWCARD.h;
-    const sticky = this.add.container(GO_NEWCARD.x, GO_NEWCARD.y).setRotation(0.09);
+    const sticky = this.add.container(goNewCardX(card.scaleX), GO_NEWCARD.y).setRotation(0.09);
     sticky.add(uiBoilImage(this, 0, 0, uiNoteTexture(this, W, H, { paper: 0xf3dc7a, tape: 'top' })));
     const header = uiInkText(this, 0, -H / 2 + 26, ids.length > 1 ? ids.length + ' NEW CARDS!' : 'NEW CARD FOUND!', {
       size: 25, color: uiColorHex(UI_CRAYON.red), stroke: null, rot: -0.04,
