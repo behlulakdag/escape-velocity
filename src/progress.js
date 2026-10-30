@@ -19,7 +19,7 @@ const GHOST_MIN_STEP = 0.1;
 const GHOST_MAX_POINTS = 600;
 
 // Zone start altitudes (meters), same as ZONES[i].from in orbit.js (a test keeps them in sync).
-const PROGRESS_ZONE_FROM = [0, 500, 1500, 3000, 5000, 8000];
+const PROGRESS_ZONE_FROM = [0, 500, 1500, 3000, 5000, 8000, 12000, 17000, 23000, 30000, 40000];
 
 const MISSION_REWARDS = { 1: 25, 2: 50, 3: 100, 4: 150 };
 

@@ -272,16 +272,20 @@ function contrast(a, b) {
 }
 
 test('skin colors read on every zone page and keep the dark face lines readable', () => {
-  const papers = orbit.ZONES.map((z) => z.paper);
+  // Kraft, blueprint and charcoal paper sit close to the warm crayons, so art.js (PAGE_LOOKS tailEdge) draws a
+  // cream pencil edge along the tail there; the trail color itself does not need to stand out.
+  const edgedFx = ['lightspeed', 'blueprint', 'charcoal'];
   const faceInk = 0x2a2018;
   for (const s of P.SKINS) {
     const c = s.colors;
     for (const key of ['head', 'flame', 'trail']) assert.strictEqual(typeof c[key], 'number', s.id + '.' + key);
     // Face is drawn in dark ink on the head.
     assert.ok(contrast(c.head, faceInk) >= 7, s.id + ' head vs face ' + contrast(c.head, faceInk).toFixed(2));
-    for (const paper of papers) {
+    for (const zone of orbit.ZONES) {
+      const paper = zone.paper;
       if (lum(paper) > 0.5) continue;   // cream page: the art adds a dark pencil edge to tail and head
-      for (const key of ['head', 'flame', 'trail']) {
+      const keys = edgedFx.indexOf(zone.fx) >= 0 ? ['head', 'flame'] : ['head', 'flame', 'trail'];
+      for (const key of keys) {
         const k = contrast(c[key], paper);
         assert.ok(k >= 2.5, s.id + '.' + key + ' on ' + paper.toString(16) + ': ' + k.toFixed(2));
       }
