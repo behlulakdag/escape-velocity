@@ -567,3 +567,208 @@ function addFullscreenButton(scene) {
   });
   return btn;
 }
+
+// ---- progression UI: missions, coins, skins (shared by Menu / GameOver / Shop / Journal) ----
+// PROGRESS (src/progress.js) may be missing or throw; every read goes through uiProgressCall so
+// the menus still work (just without the meta layer) if it does.
+
+function uiProgressCall(fn, fallback) {
+  if (typeof PROGRESS === 'undefined' || !PROGRESS) return fallback;
+  try {
+    const value = fn(PROGRESS);
+    return value === undefined ? fallback : value;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+// 12345 -> '12.3k' so a cumulative goal ('Climb 50,000 m total') fits its row.
+function uiShortNumber(n) {
+  const v = Math.max(0, Math.floor(n || 0));
+  if (v < 10000) return String(v);
+  const k = v / 1000;
+  return (k < 100 ? (Math.floor(k * 10) / 10) : Math.floor(k)) + 'k';
+}
+
+// Progress written after a mission: '212/300'. One-shot missions (goal 1) and finished ones show none.
+function uiMissionProgressLabel(m) {
+  if (!m || m.done || !(m.goal > 1)) return '';
+  return uiShortNumber(Math.min(m.progress || 0, m.goal)) + '/' + uiShortNumber(m.goal);
+}
+
+// What the shop's big button says for the selected skin.
+// kind: 'equipped' (already worn), 'equip' (owned), 'buy' (affordable), 'short' (not enough coins).
+function uiShopAction(skin, coins) {
+  if (!skin || skin.equipped) return { kind: 'equipped', label: 'WEARING' };
+  if (skin.owned) return { kind: 'equip', label: 'EQUIP' };
+  const have = Math.max(0, Math.floor(coins || 0));
+  if (have >= skin.price) return { kind: 'buy', label: 'BUY ' + skin.price };
+  return { kind: 'short', label: 'NEED ' + (skin.price - have) + ' MORE', short: skin.price - have };
+}
+
+// Doodled coin: yellow crayon disc, dark pen rim, an inked asterisk stamped in the middle.
+function uiCoinTexture(scene) {
+  return uiSketchTexture(scene, 'ui_coin', 60, 60, (ctx, shape, jitter) => {
+    const rim = uiLoop(30, 30, 22, 21, shape, jitter, { n: 16, amp: 0.8, lop: 0.05 });
+    uiTracePath(ctx, rim.map((p) => ({ x: p.x + 2, y: p.y + 3 })), true);
+    ctx.fillStyle = 'rgba(5,6,16,0.35)';
+    ctx.fill();
+    uiHatch(ctx, rim, jitter, { color: UI_CRAYON.yellow, spacing: 3, width: 3.5, alpha: 1, gaps: 0.02, offX: 1, offY: -1 });
+    const inner = uiLoop(30, 30, 14, 13, shape, jitter, { n: 12, amp: 0.6 });
+    uiStroke(ctx, inner, jitter, { width: 2, color: 0xb06a12, closed: true, retrace: false });
+    uiStroke(ctx, rim, jitter, { width: 3.5, color: UI_INK.dark, closed: true, retrace: false });
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI + 0.3;
+      uiStroke(ctx, [{ x: 30 - Math.cos(a) * 7, y: 30 - Math.sin(a) * 7 }, { x: 30 + Math.cos(a) * 7, y: 30 + Math.sin(a) * 7 }],
+        jitter, { width: 2.5, color: 0x8a4a0a, retrace: false });
+    }
+  });
+}
+
+// Taped note: cream scrap with a drop shadow, wobbly edges, fibers, optional blue rule lines
+// (o.rules = { top, step } in note px), a red margin (o.margin = x) and tape on top.
+// o.paper: fill color (default note cream); o.tape: 'corners' (default) | 'top'.
+function uiNoteTexture(scene, w, h, o) {
+  o = o || {};
+  const pad = 22;
+  const paper = o.paper === undefined ? UI_CRAYON.note : o.paper;
+  const key = 'ui_note_' + w + 'x' + h + '_' + paper.toString(16) + (o.rules ? '_r' + o.rules.top + '-' + o.rules.step : '') +
+    (o.margin ? '_m' + o.margin : '') + '_' + (o.tape || 'corners');
+  return uiSketchTexture(scene, key, w + pad * 2, h + pad * 2, (ctx, shape, jitter) => {
+    const pts = uiWobblyRect(pad, pad, w, h, shape, jitter, 0.7);
+    uiTracePath(ctx, pts.map((p) => ({ x: p.x + 6, y: p.y + 9 })), true);
+    ctx.fillStyle = 'rgba(5,6,16,0.42)';
+    ctx.fill();
+    uiTracePath(ctx, pts, true);
+    ctx.fillStyle = uiCss(paper);
+    ctx.fill();
+    ctx.save();
+    uiTracePath(ctx, pts, true);
+    ctx.clip();
+    for (let i = 0; i < (w * h) / 2200; i++) {
+      const x = pad + shape() * w;
+      const y = pad + shape() * h;
+      const a = shape() * UI_TAU;
+      ctx.strokeStyle = 'rgba(120,95,50,' + (0.05 + shape() * 0.08) + ')';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(a) * (5 + shape() * 14), y + Math.sin(a) * (5 + shape() * 14));
+      ctx.stroke();
+    }
+    if (o.rules) {
+      ctx.strokeStyle = 'rgba(90,135,200,0.38)';
+      ctx.lineWidth = 2;
+      for (let y = o.rules.top; y < h - 6; y += o.rules.step) {
+        ctx.beginPath();
+        ctx.moveTo(pad, pad + y + (shape() - 0.5) * 2);
+        ctx.lineTo(pad + w, pad + y + (shape() - 0.5) * 2);
+        ctx.stroke();
+      }
+    }
+    if (o.margin) {
+      ctx.strokeStyle = 'rgba(214,70,70,0.48)';
+      ctx.beginPath();
+      ctx.moveTo(pad + o.margin, pad);
+      ctx.lineTo(pad + o.margin + 2, pad + h);
+      ctx.stroke();
+    }
+    ctx.restore();
+    const tapes = o.tape === 'top' ? [[pad + w / 2 + (shape() - 0.5) * 30, (shape() - 0.5) * 0.3]] : [[pad + 14, -0.62], [pad + w - 14, 0.58]];
+    for (const [tx, rot] of tapes) {
+      ctx.save();
+      ctx.translate(tx, pad + 4);
+      ctx.rotate(rot);
+      const half = Math.min(52, w * 0.18);
+      const tape = [];
+      for (let i = 0; i <= 4; i++) tape.push({ x: half + (i % 2 ? 4 : 0) + (shape() - 0.5) * 3, y: -15 + i * 7.5 });
+      for (let i = 4; i >= 0; i--) tape.push({ x: -half - (i % 2 ? 4 : 0) + (shape() - 0.5) * 3, y: -15 + i * 7.5 });
+      uiTracePath(ctx, tape, true);
+      ctx.fillStyle = 'rgba(240,232,190,0.58)';
+      ctx.fill();
+      ctx.restore();
+    }
+  });
+}
+
+// Pen checkbox for a mission row (dark ink, for cream notes). done: a green crayon tick in it.
+function uiCheckboxTexture(scene, done) {
+  return uiSketchTexture(scene, done ? 'ui_check_on' : 'ui_check_off', 48, 48, (ctx, shape, jitter) => {
+    const box = uiWobblyRect(10, 12, 26, 26, shape, jitter, 0.7);
+    uiStroke(ctx, box, jitter, { width: 3, color: UI_INK.dark, closed: true, retrace: false });
+    if (done) {
+      uiStroke(ctx, [{ x: 12, y: 24 }, { x: 21, y: 35 }, { x: 42, y: 4 }], jitter, { width: 5.5, color: 0x2f8a3a, retrace: false });
+    }
+  });
+}
+
+// Coin counter: doodled coin + hand-lettered number. Returns a container with setValue(n).
+function uiCoinCounter(scene, x, y, value, o) {
+  o = o || {};
+  const size = o.size || 38;
+  const coin = uiBoilImage(scene, 0, 0, uiCoinTexture(scene)).setScale(size / 40);
+  const num = uiInkText(scene, size * 0.66, 2, String(value), {
+    size, color: o.color || UI_INK.darkHex, stroke: o.stroke === undefined ? null : o.stroke, ox: 0, rot: -0.03,
+  });
+  const box = scene.add.container(x, y, [coin, num]);
+  box.coin = coin;
+  box.num = num;
+  box.value = value;
+  box.setValue = (n) => {
+    box.value = n;
+    num.setText(String(n));
+    return box;
+  };
+  return box;
+}
+
+// One mission line for a cream note: checkbox, short text, pencil progress, '+50' with a coin.
+// width: line width in px (row is centered on x). Returns a container with strike(duration, onDone).
+function uiMissionRow(scene, x, y, mission, width, o) {
+  o = o || {};
+  const size = o.size || 28;
+  const left = -width / 2;
+  const box = uiBoilImage(scene, left + 20, 0, uiCheckboxTexture(scene, false));
+  const coin = uiBoilImage(scene, width / 2 - 14, 0, uiCoinTexture(scene)).setScale(0.5);
+  const reward = uiInkText(scene, width / 2 - 32, 1, '+' + (mission.reward || 0), {
+    size: size - 2, color: '#9a5a08', stroke: null, ox: 1, rot: -0.03, boil: false,
+  });
+  const progressLabel = uiMissionProgressLabel(mission);
+  const progress = uiInkText(scene, reward.x - reward.width - 14, 2, progressLabel, {
+    size: size - 5, color: '#2f6fa8', stroke: null, ox: 1, rot: 0.01, boil: false,
+  });
+  const textLeft = left + 46;
+  const textRight = progress.x - (progressLabel ? progress.width : 0) - 12;
+  const text = uiInkText(scene, textLeft, 0, mission.text || '', {
+    size, color: UI_INK.darkHex, stroke: null, ox: 0, rot: -0.008, boilAmount: 0.006,
+  });
+  // Long texts are squeezed a little, never wrapped: each mission is one line on the note.
+  text.setScale(Math.min(1, (textRight - textLeft) / Math.max(1, text.width)), Math.min(1, Math.max(0.86, (textRight - textLeft) / Math.max(1, text.width))));
+  const strikeGfx = scene.add.graphics();
+  const row = scene.add.container(x, y, [box, text, progress, reward, coin, strikeGfx]);
+  row.mission = mission;
+  row.coinIcon = coin;
+  row.rewardText = reward;
+  // Red crayon scribbled through the text from left to right, like crossing a line off a list.
+  row.strike = (duration, onDone) => {
+    const x1 = textLeft - 6;
+    const x2 = Math.max(textLeft + text.width * text.scaleX, progressLabel ? progress.x : 0) + 8;
+    const state = { p: 0 };
+    const seed = uiHash(String(mission.id || mission.text || 'm')) % 997;
+    const draw = () => {
+      strikeGfx.clear();
+      uiScribbleLine(strikeGfx, x1, 4, x1 + (x2 - x1) * state.p, -1, seed, { width: 7, color: UI_CRAYON.red, amp: 2.4, passes: 2, alpha: 0.95 });
+    };
+    scene.tweens.add({
+      targets: state, p: 1, duration: duration || 320, ease: 'Quad.easeOut', onUpdate: draw,
+      onComplete: () => {
+        draw();
+        box.destroy();
+        row.addAt(uiBoilImage(scene, left + 20, 0, uiCheckboxTexture(scene, true)), 0);
+        text.setColor(UI_INK.pencilDarkHex);
+        if (onDone) onDone();
+      },
+    });
+  };
+  return row;
+}

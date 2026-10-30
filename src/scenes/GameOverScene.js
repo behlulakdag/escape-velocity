@@ -8,6 +8,9 @@ const GO_CARD = { w: 600, h: 700, pad: 34, x: GAME_WIDTH / 2, y: 548 };
 const GO_HEAD = { y: -16, labelX: -228, numX: 150, numSize: 96, unitSize: 40 };
 const GO_ROWS = { top: 58, step: 52 };
 const GO_GOAL_Y = 264;
+// 'NEW CARD FOUND' sticky note, page-local: hangs over the page's right edge between the score and
+// the top speed flames (clear of a 6-digit score).
+const GO_NEWCARD = { x: 256, y: -166, w: 172, h: 112 };
 // Build strip under the page (strip-local coordinates). Five cards get ~127 px slots; names are
 // written at 26 px (~13 CSS px on a 360 px phone) on up to two lines.
 const GO_STRIP = { y: 914, h: 164, left: 62, right: 700, maxSlot: 150, cardY: -30, cardScale: 0.95, labelY: 6, labelSize: 26 };
@@ -17,6 +20,60 @@ const GO_STRIP = { y: 914, h: 164, left: 62, right: 700, maxSlot: 150, cardY: -3
 const GO_LABEL_BREAKS = { Aerodynamic: 'Aero-\ndynamic', Afterburner: 'After-\nburner', Shockwave: 'Shock-\nwave', Overdrive: 'Over-\ndrive', Slingshot: 'Sling-\nshot' };
 function goCardLabel(name) {
   return GO_LABEL_BREAKS[name] || name.split(' ').join('\n');
+}
+
+// With the meta layer (PROGRESS) the page shares the screen with a missions note, so the page
+// is scaled to fit above it and RETRY / MENU sit side by side at a fixed spot (same place every
+// run, so the thumb learns it). Page-local content keeps its coordinates; only the container scales.
+const GO_META = {
+  pageTop: 172, pageH: 640, pageImageY: -30,     // compact page spans local -350..290 (no goal line)
+  noteW: 640, noteH: 214, noteBottom: 1058, rowTop: 86, rowStep: 50, rowW: 600,
+  stripScale: 0.86, stripOverlap: 14,
+  buttonsY: 1132,
+  retry: { x: 262, w: 400, h: 128, font: '68px' },
+  menu: { x: 592, w: 200, h: 110, font: '44px' },
+};
+
+// Where everything goes. hasBuild: the run picked cards (build strip); hasMeta: PROGRESS loaded.
+function goLayout(hasBuild, hasMeta) {
+  const cx = GAME_WIDTH / 2;
+  if (!hasMeta) {
+    return {
+      meta: false, pageY: hasBuild ? GO_CARD.y - 22 : GO_CARD.y, pageScale: 1, pageH: GO_CARD.h, pageImageY: 0,
+      stripY: GO_STRIP.y, stripScale: 1,
+      retry: { x: cx, y: hasBuild ? 1062 : 1002, w: 460, h: hasBuild ? 124 : 140, font: '72px' },
+      menu: { x: cx, y: hasBuild ? 1182 : 1145, w: 320, h: 100, font: '48px' },
+    };
+  }
+  const M = GO_META;
+  const noteTop = M.noteBottom - M.noteH;
+  const stripH = GO_STRIP.h * M.stripScale;
+  const stripY = noteTop - stripH / 2 + 8;
+  const pageBottom = hasBuild ? stripY - stripH / 2 + M.stripOverlap : noteTop - 4;
+  const pageTopLocal = -GO_CARD.h / 2;
+  const pageBottomLocal = M.pageImageY + M.pageH / 2;
+  const pageScale = Math.min(1, (pageBottom - M.pageTop) / (pageBottomLocal - pageTopLocal));
+  return {
+    meta: true, pageY: M.pageTop - pageTopLocal * pageScale, pageScale, pageH: M.pageH, pageImageY: M.pageImageY,
+    stripY, stripScale: M.stripScale, noteY: noteTop + M.noteH / 2,
+    retry: Object.assign({ y: M.buttonsY }, M.retry),
+    menu: Object.assign({ y: M.buttonsY }, M.menu),
+  };
+}
+
+// Mission rows the game over note starts with, and what each becomes: the missions finished this
+// run first (crossed out, then replaced by the next from the pool), then the ones still going.
+// progress: PROGRESS.endRun() result (or null); active: PROGRESS.activeMissions() after it.
+function goMissionPlan(progress, active) {
+  const res = progress || {};
+  const completed = Array.isArray(res.completed) ? res.completed : [];
+  const fresh = Array.isArray(res.newMissions) ? res.newMissions : [];
+  const freshIds = fresh.map((m) => m.id);
+  const rows = completed.map((m, i) => ({ mission: m, done: true, replaceWith: fresh[i] || null }));
+  for (const m of active || []) if (freshIds.indexOf(m.id) < 0) rows.push({ mission: m, done: false, replaceWith: null });
+  // More new missions than finished ones (e.g. a short list topped up): they simply appear.
+  for (let i = completed.length; i < fresh.length; i++) rows.push({ mission: fresh[i], done: false, replaceWith: null, isNew: true });
+  return rows.slice(0, 3);
 }
 
 function goNumber(value) {
@@ -47,6 +104,7 @@ class GameOverScene extends Phaser.Scene {
     this.secondWind = !!data.secondWind;   // the run's one-time SECOND WIND rescue was used
     const zone = goNumber(data.zoneIndex);
     this.zoneIndex = zone !== undefined ? Phaser.Math.Clamp(Math.round(zone), 0, ZONES.length - 1) : undefined;
+    this.progress = data.progress && typeof data.progress === 'object' ? data.progress : null;   // PROGRESS.endRun() result
   }
 
   create() {
@@ -58,9 +116,11 @@ class GameOverScene extends Phaser.Scene {
     uiScatterStars(this, [[70, 120], [640, 940], [80, 1180], [650, 1230]]);
 
     // A card build adds a strip under the page, so the page sits a little higher then.
-    const pageY = this.cards.length ? GO_CARD.y - 22 : GO_CARD.y;
-    const card = this.add.container(GO_CARD.x, pageY + 40).setRotation(-0.018).setAlpha(0);
-    card.add(uiBoilImage(this, 0, 0, goCardTexture(this)));
+    const hasBuild = this.cards.length > 0;
+    const lay = goLayout(hasBuild, typeof PROGRESS !== 'undefined');
+    const pageY = lay.pageY;
+    const card = this.add.container(GO_CARD.x, pageY + 40).setRotation(-0.018).setAlpha(0).setScale(lay.pageScale);
+    card.add(uiBoilImage(this, 0, lay.pageImageY, goCardTexture(this, lay.pageH, lay.pageImageY)));
     // The page slaps down onto the sketchbook.
     this.tweens.add({ targets: card, y: pageY, alpha: 1, duration: 260, ease: 'Back.Out' });
 
@@ -117,20 +177,26 @@ class GameOverScene extends Phaser.Scene {
       const last = Math.max(0, this.statRows().length - 1);
       card.add(uiInkText(this, 22, this.rowY(last), '(second wind used)', { size: 25, color: '#2f6fa8', stroke: null, rot: -0.04, boil: false }));
     }
-    const goal = uiInkText(this, 10, GO_GOAL_Y, this.nextGoal(), { size: 31, color: '#b4441a', stroke: null, rot: -0.025 });
-    goal.setScale(Math.min(1, 480 / goal.width));
-    card.add(goal);
+    // With missions on screen they are the next goals, so the page's own 'Next:' line is left out.
+    if (!lay.meta) {
+      const goal = uiInkText(this, 10, GO_GOAL_Y, this.nextGoal(), { size: 31, color: '#b4441a', stroke: null, rot: -0.025 });
+      goal.setScale(Math.min(1, 480 / goal.width));
+      card.add(goal);
+    }
 
     const retry = () => this.scene.start('Game', { skipIntro: true });   // instant restart: no intro
     // With a card build the strip sits under the page, so the buttons shift down a little.
-    const hasBuild = this.cards.length > 0;
-    makeButton(this, cx, hasBuild ? 1062 : 1002, 'RETRY', retry, {
-      width: 460, height: hasBuild ? 124 : 140, fontSize: '72px', color: UI_CRAYON.yellow,
+    makeButton(this, lay.retry.x, lay.retry.y, 'RETRY', retry, {
+      width: lay.retry.w, height: lay.retry.h, fontSize: lay.retry.font, color: UI_CRAYON.yellow,
     }).setRotation(0.02);
-    makeButton(this, cx, hasBuild ? 1182 : 1145, 'MENU', () => this.scene.start('Menu'), {
-      color: UI_CRAYON.blue, width: 320, height: 100, fontSize: '48px',
+    makeButton(this, lay.menu.x, lay.menu.y, 'MENU', () => this.scene.start('Menu'), {
+      color: UI_CRAYON.blue, width: lay.menu.w, height: lay.menu.h, fontSize: lay.menu.font,
     }).setRotation(-0.025);
-    if (hasBuild) this.showRunCards(GO_STRIP.y);
+    if (hasBuild) this.showRunCards(lay.stripY, lay.stripScale);
+    if (lay.meta) {
+      this.showMissions(lay);
+      this.showNewCards(card);
+    }
     makeMuteButton(this, 92, 116);
     addFullscreenButton(this);
     this.input.keyboard.on('keydown-SPACE', retry);
@@ -141,14 +207,14 @@ class GameOverScene extends Phaser.Scene {
   // (wrapped to two lines, never below ~22 game px = 11 CSS px on a 360 px phone). Each family's
   // cards sit together; a completed set gets one gold crayon loop round the group.
   // Shown at once (the strip slaps down with the page), cards stamped on one after another.
-  showRunCards(y) {
+  showRunCards(y, scale) {
     const L = GO_STRIP;
     const ids = typeof cardGroupedOrder === 'function' ? cardGroupedOrder(this.cards) : this.cards;
     const n = ids.length;
     const slot = Math.min(L.maxSlot, (L.right - L.left) / n);
     const x0 = L.left + (L.right - L.left - slot * n) / 2 - GAME_WIDTH / 2;
     const sets = typeof activeSetBonuses === 'function' ? activeSetBonuses(ids) : [];
-    const strip = this.add.container(GAME_WIDTH / 2, y, [uiBoilImage(this, 0, 0, goStripTexture(this))]).setRotation(0.012);
+    const strip = this.add.container(GAME_WIDTH / 2, y, [uiBoilImage(this, 0, 0, goStripTexture(this))]).setRotation(0.012).setScale(scale || 1);
     const build = uiInkText(this, -GAME_WIDTH / 2 + 40, 0, 'build:', { size: 28, color: UI_INK.pencilDarkHex, stroke: null, rot: -Math.PI / 2 + 0.04, boil: false });
     strip.add(build);
     const xOf = (i) => x0 + slot / 2 + i * slot;
@@ -181,6 +247,132 @@ class GameOverScene extends Phaser.Scene {
     });
     strip.setY(y + 30).setAlpha(0);
     this.tweens.add({ targets: strip, y, alpha: 1, delay: 120, duration: 240, ease: 'Back.Out' });
+  }
+
+  // Missions note under the page: this run's finished missions get crossed out in red crayon one
+  // by one, each paying its coins into the purse (count-up), then slide away for the next ones.
+  // Everything here is decoration on a timer: RETRY works from the first frame.
+  showMissions(lay) {
+    const M = GO_META;
+    const res = this.progress || {};
+    const active = uiProgressCall((P) => P.activeMissions(), []);
+    const plan = goMissionPlan(this.progress, active);
+    const totalNow = goNumber(res.coinsTotal) !== undefined ? res.coinsTotal : uiProgressCall((P) => P.coins(), 0);
+    const earned = goNumber(res.coinsEarned) || 0;
+    let shown = Math.max(0, totalNow - earned);
+    const note = this.add.container(GAME_WIDTH / 2, lay.noteY).setRotation(0.008);
+    note.add(uiBoilImage(this, 0, 0, uiNoteTexture(this, M.noteW, M.noteH, { rules: { top: 66, step: M.rowStep }, margin: 40 })));
+    note.add(uiInkText(this, -M.noteW / 2 + 58, -M.noteH / 2 + 32, 'missions', {
+      size: 30, color: uiColorHex(0xb4441a), stroke: null, ox: 0, rot: -0.04,
+    }));
+    const purse = uiCoinCounter(this, M.noteW / 2 - 150, -M.noteH / 2 + 32, shown, { size: 36 });
+    note.add(purse);
+    const rowY = (i) => -M.noteH / 2 + M.rowTop + i * M.rowStep;
+    const rows = plan.map((p, i) => {
+      const row = uiMissionRow(this, 0, rowY(i), p.mission, M.rowW, { size: 28 });
+      note.add(row);
+      if (p.isNew) this.markNewRow(note, row);
+      return row;
+    });
+    if (!plan.length) note.add(uiInkText(this, 0, 10, 'all missions done. legend!', { size: 32, color: UI_INK.darkHex, stroke: null }));
+    note.setY(lay.noteY + 40).setAlpha(0);
+    this.tweens.add({ targets: note, y: lay.noteY, alpha: 1, delay: 160, duration: 260, ease: 'Back.Out' });
+
+    const done = plan.map((p, i) => (p.done ? i : -1)).filter((i) => i >= 0);
+    const start = 760;
+    const step = 520;
+    done.forEach((i, k) => {
+      this.time.delayedCall(start + k * step, () => {
+        rows[i].strike(300, () => {
+          this.game.events.emit('sfx', 'perfect', { chain: k + 2 });
+          this.payCoins(note, rows[i], purse, plan[i].mission.reward || 0, () => shown, (v) => { shown = v; });
+        });
+      });
+    });
+    if (!done.length) return;
+    // Then the crossed-out lines slide off and the next missions slide in.
+    this.time.delayedCall(start + done.length * step + 650, () => {
+      done.forEach((i, k) => {
+        const next = plan[i].replaceWith;
+        if (!next) return;
+        const old = rows[i];
+        this.tweens.add({ targets: old, x: -GAME_WIDTH, alpha: 0, delay: k * 140, duration: 260, ease: 'Quad.In', onComplete: () => old.destroy() });
+        const row = uiMissionRow(this, GAME_WIDTH, rowY(i), next, M.rowW, { size: 28 });
+        note.add(row);
+        this.tweens.add({
+          targets: row, x: 0, delay: 200 + k * 140, duration: 300, ease: 'Back.Out',
+          onComplete: () => this.markNewRow(note, row),
+        });
+      });
+      this.game.events.emit('sfx', 'pageturn', {});
+      // Settle the purse on the saved total in case a tween was cut short.
+      this.time.delayedCall(700, () => { if (purse.active) purse.setValue(totalNow); });
+    });
+  }
+
+  // A coin hops from the mission's reward to the purse, which counts up and punches.
+  payCoins(note, row, purse, amount, getShown, setShown) {
+    const coin = uiBoilImage(this, row.x + GO_META.rowW / 2 - 14, row.y, uiCoinTexture(this)).setScale(0.6);
+    note.add(coin);
+    this.tweens.add({
+      targets: coin, x: purse.x, y: purse.y, scale: 0.9, duration: 360, ease: 'Cubic.easeIn',
+      onComplete: () => {
+        coin.destroy();
+        const from = getShown();
+        const to = from + amount;
+        setShown(to);
+        const c = { v: from };
+        this.tweens.add({ targets: c, v: to, duration: 380, onUpdate: () => purse.setValue(Math.floor(c.v)), onComplete: () => purse.setValue(to) });
+        purse.setScale(1.3);
+        this.tweens.add({ targets: purse, scale: 1, duration: 260, ease: 'Back.Out' });
+      },
+    });
+  }
+
+  // A small red crayon asterisk in the margin marks a mission that just arrived.
+  markNewRow(note, row) {
+    if (!row.active) return;
+    const star = uiBoilImage(this, -GO_META.noteW / 2 + 18, row.y, 'ui_star').setTint(UI_CRAYON.red).setScale(0);
+    note.add(star);
+    this.tweens.add({ targets: star, scale: 0.75, duration: 200, ease: 'Back.Out' });
+    row.setScale(1.06);
+    this.tweens.add({ targets: row, scale: 1, duration: 220, ease: 'Back.Out' });
+  }
+
+  // Cards seen for the first time this run: a yellow sticky note slapped on the page's corner.
+  showNewCards(card) {
+    const ids = ((this.progress && this.progress.newlyDiscovered) || []).filter((id) => typeof cardById === 'function' && cardById(id));
+    if (!ids.length) return;
+    const W = GO_NEWCARD.w;
+    const H = GO_NEWCARD.h;
+    const sticky = this.add.container(GO_NEWCARD.x, GO_NEWCARD.y).setRotation(0.09);
+    sticky.add(uiBoilImage(this, 0, 0, uiNoteTexture(this, W, H, { paper: 0xf3dc7a, tape: 'top' })));
+    const header = uiInkText(this, 0, -H / 2 + 26, ids.length > 1 ? ids.length + ' NEW CARDS!' : 'NEW CARD FOUND!', {
+      size: 25, color: uiColorHex(UI_CRAYON.red), stroke: null, rot: -0.04,
+    });
+    header.setScale(Math.min(1, (W - 16) / header.width));
+    sticky.add(header);
+    if (ids.length === 1) {
+      const c = cardById(ids[0]);
+      sticky.add(cardMakeMini(this, -52, 18, c.id, 0.56));
+      const name = uiInkText(this, -22, 18, c.name.split(' ').join('\n'), { size: 25, color: UI_INK.darkHex, stroke: null, ox: 0, rot: 0.02, lineSpacing: -6 });
+      name.setScale(Math.min(1, 100 / name.width));
+      sticky.add(name);
+    } else {
+      const shown = ids.slice(0, 3);
+      shown.forEach((id, i) => sticky.add(cardMakeMini(this, (i - (shown.length - 1) / 2) * 44 - (ids.length > 3 ? 12 : 0), 18, id, 0.52)));
+      if (ids.length > shown.length) sticky.add(uiInkText(this, W / 2 - 20, 22, '+' + (ids.length - shown.length), { size: 24, color: UI_INK.darkHex, stroke: null }));
+    }
+    card.add(sticky);
+    sticky.setScale(1.6).setAlpha(0);
+    this.tweens.add({
+      targets: sticky, scale: 1, alpha: 1, delay: 950, duration: 200, ease: 'Quad.In',
+      onStart: () => this.game.events.emit('sfx', 'cardopen', {}),
+      onComplete: () => {
+        sticky.setScale(1.08, 0.9);
+        this.tweens.add({ targets: sticky, scaleX: 1, scaleY: 1, duration: 200, ease: 'Back.Out' });
+      },
+    });
   }
 
   // Stat row y on the card: under the top speed headline, or one line higher without it.
@@ -283,11 +475,15 @@ class GameOverScene extends Phaser.Scene {
 
 // Notebook page: binder holes, red margin, blue rule lines, tape on both top corners, and a
 // torn bottom edge singed orange/red by the supernova.
-function goCardTexture(scene) {
-  const { w, h, pad } = GO_CARD;
+// pageH / yOff: page height and its center in card-local y (the compact meta page is shorter at
+// the bottom); the rule lines stay on the stat rows either way.
+function goCardTexture(scene, pageH, yOff) {
+  const { w, pad } = GO_CARD;
+  const h = pageH || GO_CARD.h;
+  const off = yOff || 0;
   const W = w + pad * 2;
   const H = h + pad * 2;
-  return uiSketchTexture(scene, 'go_card', W, H, (ctx, shape, jitter) => {
+  return uiSketchTexture(scene, h === GO_CARD.h && !off ? 'go_card' : 'go_card_' + h + '_' + off, W, H, (ctx, shape, jitter) => {
     const page = [];
     page.push({ x: pad + (shape() - 0.5) * 4, y: pad + (shape() - 0.5) * 4 });
     page.push({ x: pad + w + (shape() - 0.5) * 4, y: pad + (shape() - 0.5) * 4 });
@@ -319,10 +515,11 @@ function goCardTexture(scene) {
       ctx.stroke();
     }
     // Rule lines line up with the stat rows (card-local y = GO_ROWS.top + k * step + 24).
-    const toTex = (localY) => localY + h / 2 + pad;
+    const toTex = (localY) => localY - off + h / 2 + pad;
     ctx.lineWidth = 2;
     for (let k = -5; k <= 4; k++) {
       const y = toTex(GO_ROWS.top + k * GO_ROWS.step + 24);
+      if (y < pad + 4 || y > pad + h - 30) continue;
       ctx.strokeStyle = 'rgba(90,135,200,0.42)';
       ctx.beginPath();
       ctx.moveTo(pad, y + (shape() - 0.5) * 2);

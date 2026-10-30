@@ -154,3 +154,109 @@ test('the zone banner is fully faded before the card header shows', () => {
   assert.ok(hud.HUD_BANNER.fadeMs < hud.HUD_BANNER.clearMs);
   assert.ok(hud.HUD_BANNER.clearMs <= 200, 'the header must not feel late');
 });
+
+// ---- meta UI: missions / shop / journal / game over layout (pure helpers) ----
+function loadMetaUi() {
+  const context = vm.createContext({ Phaser: { Scene: class {} }, console });
+  for (const file of ['src/config.js', 'src/utils.js', 'src/cards.js', 'src/cardart.js', 'src/scenes/MenuScene.js',
+    'src/scenes/GameOverScene.js', 'src/scenes/ShopScene.js', 'src/scenes/JournalScene.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
+  }
+  return vm.runInContext('({ uiMissionProgressLabel, uiShortNumber, uiShopAction, uiProgressCall, goLayout, goMissionPlan, GO_META, GO_CARD, GO_STRIP, shopTilePositions, SHOP_LAYOUT, journalSlots, journalFoundCount, CARDS, MENU_LAYOUT, GAME_WIDTH, GAME_HEIGHT })', context);
+}
+const meta = loadMetaUi();
+
+test('mission progress reads like 212/300, big goals shortened, none for one-shot or done', () => {
+  assert.strictEqual(meta.uiMissionProgressLabel({ progress: 212, goal: 300 }), '212/300');
+  assert.strictEqual(meta.uiMissionProgressLabel({ progress: 999, goal: 300 }), '300/300');
+  assert.strictEqual(meta.uiMissionProgressLabel({ progress: 12345, goal: 50000 }), '12.3k/50k');
+  assert.strictEqual(meta.uiMissionProgressLabel({ progress: 0, goal: 1 }), '');
+  assert.strictEqual(meta.uiMissionProgressLabel({ progress: 5, goal: 5, done: true }), '');
+  assert.strictEqual(meta.uiMissionProgressLabel(null), '');
+});
+
+test('shop button: wearing / equip / buy / need N more', () => {
+  const skin = (o) => Object.assign({ id: 'ice', price: 100, owned: false, equipped: false }, o);
+  assert.strictEqual(meta.uiShopAction(skin({ owned: true, equipped: true }), 0).kind, 'equipped');
+  assert.strictEqual(meta.uiShopAction(skin({ owned: true }), 0).kind, 'equip');
+  assert.deepStrictEqual(Object.assign({}, meta.uiShopAction(skin(), 100)), { kind: 'buy', label: 'BUY 100' });
+  const short = meta.uiShopAction(skin(), 60);
+  assert.strictEqual(short.kind, 'short');
+  assert.strictEqual(short.label, 'NEED 40 MORE');
+});
+
+test('PROGRESS calls fall back when it is missing or throws', () => {
+  assert.strictEqual(meta.uiProgressCall(() => 5, 0), 0, 'PROGRESS is not loaded in this context');
+});
+
+test('game over mission plan: finished first (each with its replacement), then the ones still going', () => {
+  const m = (id) => ({ id, text: id, progress: 0, goal: 1, reward: 25 });
+  const res = { completed: [m('a'), m('b')], newMissions: [m('d'), m('e')] };
+  const active = [m('c'), m('d'), m('e')];
+  const plan = meta.goMissionPlan(res, active);
+  assert.deepStrictEqual(Array.from(plan.map((r) => r.mission.id)), ['a', 'b', 'c']);
+  assert.deepStrictEqual(Array.from(plan.map((r) => r.done)), [true, true, false]);
+  assert.deepStrictEqual(Array.from(plan.map((r) => r.replaceWith && r.replaceWith.id)), ['d', 'e', null]);
+  // No endRun result (e.g. storage blocked before): just the active list, nothing animated.
+  assert.deepStrictEqual(Array.from(meta.goMissionPlan(null, active).map((r) => r.done)), [false, false, false]);
+  // Pool ran dry: a finished mission without a replacement stays crossed out.
+  assert.strictEqual(meta.goMissionPlan({ completed: [m('z')], newMissions: [] }, []).length, 1);
+});
+
+test('game over layout fits the 720x1280 page and keeps RETRY big and clear', () => {
+  for (const hasBuild of [false, true]) {
+    for (const hasMeta of [false, true]) {
+      const L = meta.goLayout(hasBuild, hasMeta);
+      assert.ok(L.retry.h >= 100 && L.menu.h >= 100, 'touch targets');
+      assert.ok(L.retry.w >= 380, 'RETRY stays the big button');
+      assert.ok(L.retry.y + L.retry.h / 2 <= meta.GAME_HEIGHT - 60, 'clear of the bottom edge');
+      if (!hasMeta) continue;
+      const pageTop = L.pageY - (meta.GO_CARD.h / 2) * L.pageScale;
+      assert.ok(pageTop >= 168, 'page below the mute / fullscreen buttons');
+      const noteTop = L.noteY - meta.GO_META.noteH / 2;
+      const noteBottom = L.noteY + meta.GO_META.noteH / 2;
+      assert.ok(noteBottom < L.retry.y - L.retry.h / 2, 'missions note above the buttons');
+      if (hasBuild) assert.ok(L.stripY + (meta.GO_STRIP.h * L.stripScale) / 2 <= noteTop + 20, 'strip sits on the note top');
+      const pageBottom = L.pageY + (meta.GO_META.pageImageY + meta.GO_META.pageH / 2) * L.pageScale;
+      assert.ok(pageBottom <= (hasBuild ? L.stripY : noteTop) + 4, 'page ends above the strip / note');
+      assert.ok(L.pageScale >= 0.85, 'page text stays readable on a 360 px phone');
+      // RETRY and MENU side by side without overlapping.
+      assert.ok(L.retry.x + L.retry.w / 2 < L.menu.x - L.menu.w / 2);
+      assert.ok(L.menu.x + L.menu.w / 2 <= meta.GAME_WIDTH - 10);
+    }
+  }
+});
+
+test('shop tiles stay on screen and do not overlap', () => {
+  const L = meta.SHOP_LAYOUT;
+  const spots = meta.shopTilePositions(7);
+  for (const s of spots) {
+    assert.ok(s.x - L.tileW / 2 >= 0 && s.x + L.tileW / 2 <= meta.GAME_WIDTH);
+    assert.ok(s.y + L.tileH / 2 < L.actionY - L.actionH / 2);
+  }
+  for (let i = 0; i < spots.length; i++) {
+    for (let j = i + 1; j < spots.length; j++) {
+      const a = spots[i];
+      const b = spots[j];
+      assert.ok(Math.abs(a.x - b.x) >= L.tileW || Math.abs(a.y - b.y) >= L.tileH, i + ' vs ' + j);
+    }
+  }
+  assert.ok(L.tileH >= 100 && L.actionH >= 100, 'touch targets');
+});
+
+test('journal: 12 slots in family rows x rarity columns, found count ignores junk', () => {
+  const slots = meta.journalSlots(meta.CARDS);
+  assert.strictEqual(slots.length, 12);
+  const keys = new Set(slots.map((s) => s.row + ',' + s.col));
+  assert.strictEqual(keys.size, 12);
+  assert.strictEqual(meta.journalFoundCount(['well', 'well', 'nope', 'sling'], meta.CARDS), 2);
+  assert.strictEqual(meta.journalFoundCount(undefined, meta.CARDS), 0);
+});
+
+test('menu: PLAY, the missions note and SHOP / JOURNAL stack without overlapping', () => {
+  const L = meta.MENU_LAYOUT;
+  assert.ok(L.noteY + L.noteH / 2 < L.playY - 65);
+  assert.ok(L.playY + 65 < L.metaY - L.metaH / 2);
+  assert.ok(L.metaY + L.metaH / 2 <= meta.GAME_HEIGHT - 60);
+  assert.ok(L.metaH >= 100);
+});

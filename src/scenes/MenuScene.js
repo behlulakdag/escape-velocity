@@ -2,6 +2,14 @@
 // planet (the core verb: orbit, then fling), the supernova peeking from the bottom edge.
 // Everything static is a pre-rendered boil texture (see utils.js); only the comet's dashed
 // trail is drawn per frame.
+// Vertical plan of the menu (game px). Title, orbit doodle, how-to line, missions note, PLAY,
+// then SHOP / JOURNAL; everything clear of the top corner buttons and ~65 px off the bottom.
+const MENU_LAYOUT = {
+  bestY: 104, titleY: 190, orbitY: 556, orbitR: 128, howY: 722,
+  noteY: 864, noteW: 620, noteH: 200,
+  playY: 1032, metaY: 1166, metaW: 280, metaH: 100, metaX: [200, 520],
+};
+
 class MenuScene extends Phaser.Scene {
   constructor() {
     super('Menu');
@@ -11,34 +19,43 @@ class MenuScene extends Phaser.Scene {
     const cx = GAME_WIDTH / 2;
     uiAddPaper(this, 0);
     uiMakeDoodles(this);
-    uiScatterStars(this, [[80, 330], [655, 250], [610, 720], [70, 600], [655, 990], [110, 960], [250, 520]]);
+    uiScatterStars(this, [[80, 330], [655, 250], [630, 700], [60, 560], [665, 1000], [60, 1010], [250, 470]]);
 
     // Supernova peeking in at the bottom, behind everything else.
     this.nova = uiBoilImage(this, cx, GAME_HEIGHT - 62, 'ui_nova').setScale(0.8);
     this.tweens.add({ targets: this.nova, y: GAME_HEIGHT - 74, yoyo: true, repeat: -1, duration: 1300, ease: 'Sine.easeInOut' });
 
-    this.hero = { x: cx, y: 650 };
-    uiBoilImage(this, 605, 500, 'ui_planet_green');
-    uiBoilImage(this, 100, 790, 'ui_planet_orange');
-    uiBoilImage(this, this.hero.x, this.hero.y, 'ui_planet_ring');
+    const L = MENU_LAYOUT;
+    this.hero = { x: cx, y: L.orbitY };
+    uiBoilImage(this, 618, L.orbitY - 70, 'ui_planet_green').setScale(0.85);
+    uiBoilImage(this, 96, L.orbitY + 60, 'ui_planet_orange').setScale(0.8);
+    uiBoilImage(this, this.hero.x, this.hero.y, 'ui_planet_ring').setScale(0.74);
 
     this.trailGfx = this.add.graphics();
-    this.comet = uiBoilImage(this, cx, 520, 'ui_comet').setScale(0.8);
+    this.comet = uiBoilImage(this, cx, L.orbitY - L.orbitR, 'ui_comet').setScale(0.7);
     this.trail = [];
     this.orbitAngle = -Math.PI / 2;
 
     this.titleLetters = [
-      ...uiTitleWord(this, 'ESCAPE', 200, 96, UI_INK.creamHex, uiColorHex(UI_CRAYON.orange), 0),
-      ...uiTitleWord(this, 'VELOCITY', 310, 92, uiColorHex(UI_CRAYON.yellow), uiColorHex(UI_CRAYON.red), 6),
+      ...uiTitleWord(this, 'ESCAPE', L.titleY, 96, UI_INK.creamHex, uiColorHex(UI_CRAYON.orange), 0),
+      ...uiTitleWord(this, 'VELOCITY', L.titleY + 106, 92, uiColorHex(UI_CRAYON.yellow), uiColorHex(UI_CRAYON.red), 6),
     ];
-    const underline = uiBoilImage(this, cx + 10, 372, 'ui_underline').setTint(UI_CRAYON.orange).setRotation(-0.02);
+    const underline = uiBoilImage(this, cx + 10, L.titleY + 166, 'ui_underline').setTint(UI_CRAYON.orange).setRotation(-0.02);
     underline.setScale(0, 1);
     this.tweens.add({ targets: underline, scaleX: 1, duration: 380, delay: 700, ease: 'Quad.Out' });
-    uiInkText(this, cx + 30, 430, 'speed is your life', { size: 36, color: uiColorHex(UI_CRAYON.pink), rot: -0.04 });
+    uiInkText(this, cx + 30, L.titleY + 218, 'speed is your life', { size: 36, color: uiColorHex(UI_CRAYON.pink), rot: -0.04 });
+
+    const best = loadHighScore();
+    if (best > 0) {
+      uiInkText(this, cx, L.bestY, 'best: ' + best, { size: 34, color: UI_INK.pencilHex, stroke: null, rot: 0.03 });
+    }
+    uiInkText(this, cx, L.howY, 'hold near a planet to orbit,\nlet go to fling. outrun the supernova!', {
+      size: 27, rot: -0.015, strokeW: 5, lineSpacing: 2,
+    }).setDepth(5);
 
     // Fresh data object so a previous scene.start's data (e.g. skipIntro from RETRY) never leaks in.
     const startGame = () => this.scene.start('Game', {});
-    const play = makeButton(this, cx, 900, 'PLAY', startGame, {
+    const play = makeButton(this, cx, L.playY, 'PLAY', startGame, {
       width: 440, height: 130, fontSize: '68px', color: UI_CRAYON.yellow,
     });
     play.setRotation(-0.025);
@@ -51,18 +68,53 @@ class MenuScene extends Phaser.Scene {
       },
     });
 
-    const best = loadHighScore();
-    if (best > 0) {
-      uiInkText(this, cx - 6, 1000, 'best: ' + best, { size: 38, color: UI_INK.pencilHex, stroke: null, rot: 0.03 });
+    if (typeof PROGRESS !== 'undefined') {
+      this.showMissions();
+      this.showMetaButtons();
     }
-    // Kept ~140 px above the bottom edge: browser bars / home indicators cover the last few px on phones.
-    uiInkText(this, cx, 1068, 'hold near a planet to orbit,\nlet go to fling. outrun the supernova!', {
-      size: 28, rot: -0.015, strokeW: 5, lineSpacing: 4,
-    }).setDepth(5);
 
     makeMuteButton(this, 92, 116);
     addFullscreenButton(this);
     this.input.keyboard.on('keydown-SPACE', startGame);
+  }
+
+  // Taped note with the 3 active missions (progress in blue pencil) and the coin purse.
+  showMissions() {
+    const L = MENU_LAYOUT;
+    const missions = uiProgressCall((P) => P.activeMissions(), []);
+    const coins = uiProgressCall((P) => P.coins(), 0);
+    const note = this.add.container(GAME_WIDTH / 2, L.noteY).setRotation(0.012);
+    note.add(uiBoilImage(this, 0, 0, uiNoteTexture(this, L.noteW, L.noteH, { rules: { top: 58, step: 46 }, margin: 40 })));
+    note.add(uiInkText(this, -L.noteW / 2 + 58, -L.noteH / 2 + 30, 'missions', {
+      size: 30, color: uiColorHex(0xb4441a), stroke: null, ox: 0, rot: -0.04,
+    }));
+    note.add(uiCoinCounter(this, L.noteW / 2 - 130, -L.noteH / 2 + 30, coins, { size: 34 }));
+    if (!missions.length) {
+      note.add(uiInkText(this, 10, 20, 'all missions done. legend!', { size: 30, color: UI_INK.darkHex, stroke: null, rot: -0.02 }));
+    }
+    missions.slice(0, 3).forEach((m, i) => {
+      note.add(uiMissionRow(this, 8, -L.noteH / 2 + 82 + i * 46, m, L.noteW - 44, { size: 27 }));
+    });
+    note.setY(L.noteY + 24).setAlpha(0);
+    this.tweens.add({ targets: note, y: L.noteY, alpha: 1, duration: 260, delay: 380, ease: 'Back.Out' });
+  }
+
+  // SHOP and JOURNAL under PLAY: smaller and in cooler crayons so PLAY stays the obvious tap.
+  showMetaButtons() {
+    const L = MENU_LAYOUT;
+    const shop = makeButton(this, L.metaX[0], L.metaY, 'SHOP', () => this.scene.start('Shop'), {
+      width: L.metaW, height: L.metaH, fontSize: '44px', color: UI_CRAYON.green,
+    }).setRotation(0.02);
+    const coin = uiBoilImage(this, -L.metaW / 2 + 40, -2, uiCoinTexture(this)).setScale(0.8);
+    shop.add(coin);
+    const journal = makeButton(this, L.metaX[1], L.metaY, 'JOURNAL', () => this.scene.start('Journal'), {
+      width: L.metaW, height: L.metaH, fontSize: '44px', color: UI_CRAYON.blue,
+    }).setRotation(-0.02);
+    const found = uiProgressCall((P) => P.discovered(), []).filter((id) => typeof cardById !== 'function' || cardById(id)).length;
+    const total = typeof CARDS !== 'undefined' ? CARDS.length : 12;
+    journal.add(uiInkText(this, L.metaW / 2 - 14, -L.metaH / 2 - 4, found + '/' + total, {
+      size: 28, color: UI_INK.creamHex, stroke: UI_INK.darkHex, strokeW: 5, rot: 0.14,
+    }));
   }
 
   update(time, delta) {
@@ -71,7 +123,7 @@ class MenuScene extends Phaser.Scene {
 
     // Comet loops the planet on a squashed orbit; the dashed trail is the only per-frame drawing.
     this.orbitAngle += (delta / 1000) * 2.1;
-    const orbitR = 178;
+    const orbitR = MENU_LAYOUT.orbitR;
     const x = this.hero.x + Math.cos(this.orbitAngle) * orbitR;
     const y = this.hero.y + Math.sin(this.orbitAngle) * orbitR * 0.86;
     this.comet.setPosition(x, y).setRotation(this.orbitAngle + Math.PI / 2);
