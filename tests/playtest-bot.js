@@ -39,6 +39,9 @@
 // (crawl rescues called / with a planet in reach within 1.2 s / caught within 2 s), hudShare (median share of
 // frames with a planet or its orbit ring under the bottom-corner HUD blocks). Date.now follows the step clock.
 // playtestSummary(styles, runsEach, maxSeconds) - maxSeconds defaults to 600 for expert, 240 otherwise.
+// playtestTargets(runsEach, groups, only) - the balance target suite in one call: groups 'normal' (fresh
+// starts, all styles), 'late9k' / 'late9kNoCards' (simStart at 9000 m), 'long' (anyAssist / expert, 600 s);
+// only = limit to these styles. Keep each call under ~40 s of page time (e.g. 15 runs of the long styles).
 (() => {
   let clock = performance.now();
   // Date.now follows the step clock while stepping, so anything timed by it matches the simulated time.
@@ -428,6 +431,30 @@
     game.scene.stop('Game');
     game.scene.start('Menu');
     step();
+    return out;
+  };
+
+  // Balance targets in one call (see PROGRESS.md for the numbers they must hit). groups: any of 'normal'
+  // (fresh starts), 'late9k' (9000 m, full speed, Wall Kick + Aerodynamic + 3 random cards), 'late9kNoCards'
+  // (9000 m, 300 km/s, no cards), 'long' (600 s cap); only: limit to these styles. Returns compact rows.
+  window.playtestTargets = (runsEach, groups, only) => {
+    const n = runsEach || 30;
+    const out = {};
+    const keys = ['medianSeconds', 'seconds', 'reached500', 'reached40k', 'died60', 'wallHitsPerMin', 'pinballs', 'collapses', 'crawlRescue', 'medianAlt'];
+    const run = (name, styles, max, start) => {
+      if (groups && groups.indexOf(name) < 0) return;
+      const list = only ? styles.filter((st) => only.indexOf(st) >= 0) : styles;
+      if (!list.length) return;
+      if (start) window.simStart = start; else delete window.simStart;
+      try {
+        const r = window.playtestSummary(list, n, max);
+        list.forEach((st) => { const o = {}; keys.forEach((k) => { o[k] = r[st][k]; }); out[name + ':' + st] = o; });
+      } finally { delete window.simStart; }
+    };
+    run('normal', ['rhythmFast', 'idle', 'newbie', 'confused', 'mid', 'careful', 'masher', 'instant']);
+    run('late9k', ['instant', 'masher', 'rhythmFast'], 240, { altitude: 9000, speed: 8000, cards: ['wallkick', 'aero'], randomCards: 3, seconds: 75 });
+    run('late9kNoCards', ['instant', 'masher'], 240, { altitude: 9000, speed: 3000 });
+    run('long', ['anyAssist', 'expert'], 600);
     return out;
   };
 })();

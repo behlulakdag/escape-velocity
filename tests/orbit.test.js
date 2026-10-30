@@ -463,10 +463,10 @@ test('orbit gain tapers off near the top speed', () => {
 });
 
 test('wall bounces cost more at high speed; Wall Kick is limited and never pushes to the cap', () => {
-  assert.ok(Math.abs(o.wallBounceKeepAt(0) - o.TUNING.wallBounceKeep) < 1e-9);
+  assert.ok(Math.abs(o.wallBounceKeepAt(0) - o.TUNING.wallBounceKeepSlow) < 1e-9);
   assert.ok(o.wallBounceKeepAt(8000) < o.wallBounceKeepAt(3000));
-  assert.ok(o.wallBounceKeepAt(8000) <= 0.9);
-  assert.strictEqual(o.wallBounceKeepAt(4500), o.TUNING.wallBounceKeep, 'early game unchanged');
+  assert.ok(o.wallBounceKeepAt(8000) <= 0.85);
+  assert.strictEqual(o.wallBounceKeepAt(4500), o.TUNING.wallBounceKeep, 'below 450 km/s no high-speed loss');
   assert.strictEqual(o.wallKickAllowed(0), true);
   assert.strictEqual(o.wallKickAllowed(1), true);
   assert.strictEqual(o.wallKickAllowed(2), false);
@@ -691,6 +691,23 @@ test('warpVelocity keepClimbing: a climbing comet is never warped into a dive', 
   }
 });
 
+test('warpVelocity keepClimbing: a climb never leaves the core near-flat when the other turn climbs steeper', () => {
+  const turn = o.TUNING.blackHoleWarp;
+  for (let k = 1; k < 40; k++) {
+    const a = -Math.PI + (k / 40) * Math.PI;
+    const vx = Math.cos(a) * 1000;
+    const vy = Math.sin(a) * 1000;
+    for (const hx of [-30, 0, 30]) {
+      const w = o.warpVelocity(hx, -10, 0, 0, vx, vy, true);
+      const steepest = Math.min(vx * Math.sin(turn) + vy * Math.cos(turn), vx * Math.sin(-turn) + vy * Math.cos(-turn));
+      assert.ok(w.vy <= -o.TUNING.warpMinClimbShare * 1000 + 1e-6 || Math.abs(w.vy - steepest) < 1e-6, a.toFixed(2) + ' ' + hx);
+    }
+  }
+  // Up-left at 60 degrees with the hole on the side that would flatten it: it turns up-right instead.
+  const w = o.warpVelocity(-50, 0, 0, 0, -500, -866, true);
+  assert.ok(w.vy < -500, String(w.vy));
+});
+
 test('guidedTutorialStep: two planets of HOLD -> full lap -> LET GO, then NICE! and done', () => {
   const step = (st, ev) => o.guidedTutorialStep(st, ev);
   assert.strictEqual(o.TUNING.guidedRounds, 2);
@@ -793,55 +810,76 @@ test('aimAtPlanet: optional passGap puts the pass point that far off the surface
   assert.ok(o.TUNING.guidedPassGap < o.TUNING.grabRange * 0.5);
 });
 
-test('wallBounceVelocity: a deflection that flips vx, keeps speed, turns it up and inward', () => {
+test('wallBounceVelocity: a plain mirror, vx flips and vy is unchanged (a fall keeps falling)', () => {
   const sp = 3600;
-  const vxCap = o.TUNING.wallCrossWidth / o.TUNING.wallCrossSeconds;
-  // Nearly sideways climb into the right wall: comes back mostly upward, still climbing.
+  // Nearly sideways climb into the right wall: comes back sideways, same small climb.
   let w = o.wallBounceVelocity(sp * 0.98, -sp * Math.sqrt(1 - 0.98 * 0.98), sp);
-  assert.ok(w.vx < 0);
-  assert.ok(Math.abs(w.vx) <= Math.min(o.TUNING.wallVxShare * sp, vxCap) + 1e-6);
-  assert.ok(w.vy < 0, 'still climbing');
-  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - sp) < 1e-6);
-  // Exactly sideways (vy 0) counts as a climb.
-  w = o.wallBounceVelocity(-sp, 0, sp);
-  assert.ok(w.vx > 0 && w.vy < 0);
-  // A flat flight drifting slightly down comes off the wall climbing, not diving...
-  w = o.wallBounceVelocity(sp, sp * 0.1, sp);
-  assert.ok(w.vy < 0 && Math.abs(w.vx) <= vxCap + 1e-6);
-  // ...so does a slow, shallow fall...
-  w = o.wallBounceVelocity(300, 150, Math.hypot(300, 150));
-  assert.ok(w.vx < 0 && w.vy < 0 && Math.abs(Math.hypot(w.vx, w.vy) - Math.hypot(300, 150)) < 1e-6);
-  // ...and so does a steep fall: never a dive off a wall (capped too).
+  assert.ok(Math.abs(w.vx + sp * 0.98) < 1e-6);
+  assert.ok(Math.abs(w.vy + sp * Math.sqrt(1 - 0.98 * 0.98)) < 1e-6);
+  // A fall stays a fall (no free climb off the wall): the player has to aim.
   w = o.wallBounceVelocity(sp * 0.75, sp * Math.sqrt(1 - 0.75 * 0.75), sp);
-  assert.ok(w.vy < 0 && Math.abs(w.vx) <= vxCap + 1e-6);
+  assert.ok(w.vx < 0 && w.vy > 0);
+  assert.ok(Math.abs(w.vy - sp * Math.sqrt(1 - 0.75 * 0.75)) < 1e-6);
   w = o.wallBounceVelocity(-300, 1000, Math.hypot(300, 1000));
-  assert.ok(Math.abs(w.vx - 300) < 1e-6 && Math.abs(w.vy + 1000) < 1e-6, 'a slow steep fall is mirrored up');
-  // A steep bounce is only mirrored.
-  w = o.wallBounceVelocity(300, -1000, Math.hypot(300, 1000));
-  assert.ok(Math.abs(w.vx + 300) < 1e-6 && Math.abs(w.vy + 1000) < 1e-6);
-  // A grazing hit leaves the wall with at least wallMinVxShare of the speed sideways (up to the cap), climbing.
+  assert.ok(Math.abs(w.vx - 300) < 1e-6 && Math.abs(w.vy - 1000) < 1e-6);
+  // Exactly sideways stays sideways (no upward redirect).
+  w = o.wallBounceVelocity(-sp, 0, sp);
+  assert.ok(Math.abs(w.vx - sp) < 1e-6 && Math.abs(w.vy) < 1e-6);
+  // Speed is kept (the caller takes the wall loss), rescaled to `speed`.
+  w = o.wallBounceVelocity(300, -400, 1000);
+  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - 1000) < 1e-6 && w.vx < 0 && w.vy < 0);
+  // A grazing hit leaves the wall with at least wallMinVxShare of the speed sideways, keeping its vertical way.
   w = o.wallBounceVelocity(-2, -1000, 1000);
   assert.ok(w.vx >= o.TUNING.wallMinVxShare * 1000 - 1e-6 && w.vy < 0);
   assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - 1000) < 1e-6);
+  w = o.wallBounceVelocity(2, 1000, 1000);
+  assert.ok(w.vx <= -o.TUNING.wallMinVxShare * 1000 + 1e-6 && w.vy > 0, 'a grazing fall still falls');
 });
 
-test('wallBounceVelocity: after a wall hit the opposite wall is >= wallCrossSeconds away at any speed', () => {
+test('wallKickVelocity (Wall Kick only): turns up and inward, opposite wall >= wallCrossSeconds away', () => {
   for (const sp of [800, 1500, 2918, 4500, 8000]) {
-    for (const a of [0, 0.3, 0.8, 1.2]) {
-      const w = o.wallBounceVelocity(sp * Math.cos(a), -sp * Math.sin(a), sp);
+    for (const a of [-1.2, -0.3, 0, 0.3, 0.8, 1.2]) {
+      const w = o.wallKickVelocity(sp * Math.cos(a), -sp * Math.sin(a), sp);
       const crossing = o.TUNING.wallCrossWidth / Math.max(1e-9, Math.abs(w.vx));
       assert.ok(crossing >= o.TUNING.wallCrossSeconds - 1e-9, sp + ' ' + a + ': ' + crossing);
-      assert.ok(w.vy < 0, 'the rest of the speed climbs');
+      assert.ok(w.vy < 0, 'a kick always climbs');
+      assert.ok(w.vx < 0, 'and leaves the wall');
       assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - sp) < 1e-6);
     }
   }
 });
 
-test('wall hits keep a big fling alive: 4 hits from 2918 px/s keep > 80% of it', () => {
+test('wall hits cost ~7% at speed, a little less when slow; 4 hits from 2918 px/s keep > 70%', () => {
+  assert.ok(Math.abs(o.wallBounceKeepAt(3000) - 0.93) < 1e-9);
+  assert.ok(Math.abs(o.wallBounceKeepAt(500) - o.TUNING.wallBounceKeepSlow) < 1e-9);
+  assert.ok(o.wallBounceKeepAt(1400) < o.wallBounceKeepAt(800) && o.wallBounceKeepAt(1400) > o.wallBounceKeepAt(2000));
   let v = 2918;
   for (let i = 0; i < 4; i++) v *= o.wallBounceKeepAt(v);
-  assert.ok(v > 2918 * 0.8, String(v));
-  assert.ok(o.wallBounceKeepAt(2000) >= 0.95 - 1e-9);
+  assert.ok(v > 2918 * 0.7 && v < 2918 * 0.8, String(v));
+});
+
+test('wall -> planet: within the window the comet slides round the planet along the tangent nearest its heading', () => {
+  assert.strictEqual(o.wallPlanetSlideActive(0), true);
+  assert.strictEqual(o.wallPlanetSlideActive(0.59), true);
+  assert.strictEqual(o.wallPlanetSlideActive(0.6), false);
+  assert.strictEqual(o.wallPlanetSlideActive(1e9), false);
+  assert.ok(o.WALL_PLANET_SLIDE.keep > 0.9 && o.WALL_PLANET_SLIDE.keep < 1, 'a small loss, not the -30% bump');
+  // Comet below-left of the planet (normal points down-left), flying up-right into it.
+  const n = { x: -Math.SQRT1_2, y: Math.SQRT1_2 };
+  const v = o.wallPlanetSlide(600, -800, n.x, n.y);
+  assert.ok(Math.abs(v.vx * n.x + v.vy * n.y) < 1e-6, 'tangent: no speed into the planet');
+  assert.ok(Math.abs(Math.hypot(v.vx, v.vy) - 1000) < 1e-6);
+  assert.ok(v.vx * 600 + v.vy * -800 > 0, 'the tangent closest to where it was going');
+  // Head-on into the side of a planet: still slides off, never reverses.
+  const h = o.wallPlanetSlide(-1000, -10, 1, 0);
+  assert.ok(Math.abs(h.vx) < 1e-6 && h.vy < 0);
+});
+
+test('routine catch pops only during the first 30 s of a run', () => {
+  assert.strictEqual(o.routineCatchPopAllowed(0), true);
+  assert.strictEqual(o.routineCatchPopAllowed(29.9), true);
+  assert.strictEqual(o.routineCatchPopAllowed(30), false);
+  assert.strictEqual(o.routineCatchPopAllowed(200), false);
 });
 
 test('crawlRescueStep: 1 s crawling with nothing in reach calls one rescue, then cools down', () => {

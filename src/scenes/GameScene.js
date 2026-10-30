@@ -181,6 +181,7 @@ class GameScene extends Phaser.Scene {
       this.game.events.off('cards:picked', this.onCardPicked);
       this.closeCardScene();
     });
+    this.isPaused = false;      // PauseScene is up (pauseGame / resumeGame); the music reads it too
     this.sfx('start');
     if (this.headless || data.skipIntro) this.launch(); else this.startIntro();
   }
@@ -222,6 +223,8 @@ class GameScene extends Phaser.Scene {
     this.procPops = {};         // card id -> proc pops written this run (cardProcPop)
     this.wallKickPopShown = false;
     this.lastWallAt = -1e9;     // run s of the last side-wall hit (wallBounceVelocity)
+    this.flightNo = 0;          // flings so far this run (a black hole warps each flight once)
+    this.slideRumbleOn = false; // a planet is sliding into reach (applySlideRumble)
     this.crawlT = 0;            // crawl rescue timer (crawlRescueStep)
     this.lastFlungFrom = null;  // planet of the last fling (not 'in reach' for the crawl rescue)
     this.hudPage = -1;          // page index the HUD was last told about (hud.setPage)
@@ -240,6 +243,34 @@ class GameScene extends Phaser.Scene {
     this.isHolding = true;
     if (!wasHolding && this.guided && this.guided.waiting === 'hold') this.guidedEvent({ pressed: true });
   }
+
+  // ---------- pause (PauseScene calls pauseGame() when it opens, resumeGame() after its countdown) ----------
+
+  // Freezes the run where it is: Phaser's scene pause stops update(), this scene's clock, tweens and camera
+  // effects, so the world, the supernova, slow motion and every timer resume exactly where they were.
+  // Returns true when the run is now paused (false: nothing to pause, e.g. the run is over).
+  pauseGame() {
+    if (this.headless || this.isOver || this.deathT >= 0) return false;
+    if (this.isPaused) return true;
+    this.isPaused = true;
+    this.slideRumbleOn = false;
+    this.scene.pause();
+    return true;
+  }
+
+  resumeGame() {
+    if (!this.isPaused) return;
+    this.isPaused = false;
+    // A finger that lifted while paused never sent its pointerup here: only a finger still down holds.
+    // (An orbit is kept either way; it flings on the next release.)
+    const ptrs = (this.input && this.input.manager && this.input.manager.pointers) || [];
+    this.isHolding = ptrs.some((p) => p && p.isDown) && this.isHolding;
+    this.scene.resume();
+  }
+
+  // Auto-pause (page hidden / focus lost) is wired once, in HudScene.wireAutoPause (Phaser's game 'hidden' /
+  // 'blur' events), with the same rules: in play only, not during the tutorial's frozen wait. A second set of
+  // listeners here would launch PauseScene twice in one tick.
 
   // ---------- meta progression (src/progress.js): missions, skins, journal ----------
 
@@ -642,7 +673,7 @@ class GameScene extends Phaser.Scene {
     this.shieldCharges = this.mods.heatShieldCharges;
     if (!this.headless) {
       this.turnPage(this.zoneIndex);
-      this.hudCall('showBanner', zoneAt(this.zoneIndex).name, 'SPEED LIMIT ' + Math.round(this.speedCap() / 10) + ' km/s');
+      this.hudCall('showBanner', zoneAt(this.zoneIndex).name, 'NOW UP TO ' + Math.round(this.speedCap() / 10) + ' km/s');
     }
   }
 
@@ -853,6 +884,7 @@ class GameScene extends Phaser.Scene {
 
   // Slides planets with a drift toward their slide spot (crawl rescue / card pick), at planetDriftSpeed.
   updatePlanetDrift(dt) {
+    let sliding = false;
     for (const p of this.planets) {
       if (!p.drift) continue;
       // Caught (or already passed: it must not keep sliding down behind the comet toward the wave).
@@ -867,6 +899,54 @@ class GameScene extends Phaser.Scene {
       if (d <= step) { p.x = spot.x; p.y = spot.y; p.drift = null; continue; }
       p.x += (dx / d) * step;
       p.y += (dy / d) * step;
+      // Heading of the slide (the ink speed lines trail behind it) and a low rumble once per slide.
+      p.drift.ux = dx / d;
+      p.drift.uy = dy / d;
+      if (!p.drift.rumbled) { p.drift.rumbled = true; this.sfx('rumble'); }
+      sliding = true;
+    }
+    // A gentle continuous shake while a planet is sliding in; it stops the frame it settles (applySlideRumble).
+    this.slideRumbleOn = sliding;
+  }
+
+  // Slide rumble: a small jitter on the camera scroll (re-set from the look-ahead every frame, so it never
+  // accumulates). Not a camera shake effect: a running shake would swallow the real impact shakes meanwhile.
+  applySlideRumble() {
+    if (!this.slideRumbleOn || this.headless) return;
+    const cam = this.cameras.main;
+    const a = GameScene.SLIDE_RUMBLE * GAME_WIDTH / Math.max(0.1, cam.zoom);
+    cam.scrollX += (Math.random() * 2 - 1) * a;
+    cam.scrollY += (Math.random() * 2 - 1) * a;
+  }
+
+  // Dashed ink speed lines trailing a planet that slides into reach (10 fps boil, like the rest of the ink).
+  drawSlideLines(g) {
+    const boil = Math.floor(this.time.now / 100);
+    const ink = ART.ink !== undefined ? ART.ink : 0xf4ead0;
+    for (const p of this.planets) {
+      if (!p.drift || p.drift.ux === undefined) continue;
+      const ux = p.drift.ux;
+      const uy = p.drift.uy;
+      // Perpendicular to the slide: the lines fan across the planet's back.
+      const px = -uy;
+      const py = ux;
+      const rnd = artRandom(boil * 7 + Math.round(p.radius * 13));
+      for (let i = 0; i < 4; i++) {
+        const off = (i - 1.5) * p.radius * 0.55 + (rnd() - 0.5) * 10;
+        const start = p.radius * (0.9 + rnd() * 0.25);
+        const len = 60 + rnd() * 70 + (i % 2) * 30;
+        const sx = p.x - ux * start + px * off;
+        const sy = p.y - uy * start + py * off;
+        g.lineStyle(3 + (i % 2), ink, 0.75);
+        // Dashes of uneven length, drawn by hand.
+        let t = 0;
+        while (t < len) {
+          const dash = 14 + rnd() * 10;
+          const e = Math.min(len, t + dash);
+          g.lineBetween(sx - ux * t, sy - uy * t, sx - ux * e, sy - uy * e);
+          t = e + 9;
+        }
+      }
     }
   }
 
@@ -1142,6 +1222,7 @@ class GameScene extends Phaser.Scene {
   // never scores a PERFECT and does not touch isHolding (the finger may still be down).
   fling(overspeed) {
     this.lastFlungFrom = this.orbitPlanet;   // crawl rescue: the planet just left does not count as 'in reach'
+    this.flightNo = (this.flightNo || 0) + 1; // black holes warp a flight once each (applyBlackHoles)
     const v = tangentVelocity(this.orbit, this.speed);
     // A guided tutorial LET GO: steered close past the next planet, with a speed kick on the way.
     const guidedFling = !!this.guidedForce && !overspeed;
@@ -1207,6 +1288,12 @@ class GameScene extends Phaser.Scene {
       // The last one is stamped NICE! instead (a pop would only queue behind it).
       if (this.guided) this.popText('+SPEED', '#5eff8f', { size: 34, duration: 600 });
     }
+    // An orbit ring can reach past a side wall: a release out there hit the wall on the very first frame, and
+    // that hit ends the steer, so an aimed fling flew off along its raw tangent (often down into the wave).
+    // The comet is put back in the field and turned off the wall here instead: not a wall hit, the steer stays.
+    const wallR = TUNING.cometRadius;
+    if ((this.comet.x < wallR && this.comet.vx < 0) || (this.comet.x > GAME_WIDTH - wallR && this.comet.vx > 0)) this.comet.vx = -this.comet.vx;
+    this.comet.x = Phaser.Math.Clamp(this.comet.x, wallR, GAME_WIDTH - wallR);
     const kick = speedFraction(this.speed);
     this.sfx('release', { speedFraction: kick });
     this.cameras.main.shake(120, 0.004 + kick * 0.01);
@@ -1440,8 +1527,14 @@ class GameScene extends Phaser.Scene {
       const len = Math.hypot(this.comet.vx, this.comet.vy) || 1;
       this.comet.vx = (this.comet.vx / len) * this.speed;
       this.comet.vy = (this.comet.vy / len) * this.speed;
-      // A steer whose point is already behind the comet ends (a long one would otherwise turn it round).
-      if (this.homing && (this.homing.x - this.comet.x) * this.comet.vx + (this.homing.y - this.comet.y) * this.comet.vy <= 0) this.homing = null;
+      // A steer whose point the comet has already passed ends (a long one would otherwise turn it round).
+      // Passed = it was ahead and is behind now: a wide learning assist starts with its point behind the
+      // tangent, and ending that one at once sent the release off along its raw (often falling) tangent.
+      if (this.homing) {
+        const ahead = (this.homing.x - this.comet.x) * this.comet.vx + (this.homing.y - this.comet.y) * this.comet.vy > 0;
+        if (ahead) this.homing.wasAhead = true;
+        else if (this.homing.wasAhead) this.homing = null;
+      }
       if (this.homing) {
         const h = steerToward(this.comet.vx, this.comet.vy, this.homing.x - this.comet.x, this.homing.y - this.comet.y, (this.homing.turn || TUNING.homingTurn) * dt);
         this.comet.vx = h.vx;
@@ -1464,6 +1557,7 @@ class GameScene extends Phaser.Scene {
     this.updateCrawlRescue(dt);
 
     this.updateCamera(dt);
+    this.applySlideRumble();
     this.reportCometScreen();
     this.speed = Math.max(this.speed, TUNING.minSpeed);
     if (this.speed > this.topSpeed) this.topSpeed = this.speed;
@@ -1552,7 +1646,7 @@ class GameScene extends Phaser.Scene {
     this.zoneIndex = index;
     this.reportProgress('zone', index);
     this.zonePulseAt = this.time.now;
-    this.hudCall('showBanner', zoneAt(index).name, 'SPEED LIMIT ' + Math.round(this.speedCap() / 10) + ' km/s');
+    this.hudCall('showBanner', zoneAt(index).name, 'NOW UP TO ' + Math.round(this.speedCap() / 10) + ' km/s');
     this.sfx('zone', { index });
     this.turnPage(index);
     this.shieldCharges = this.mods.heatShieldCharges;   // Heat Shield recharges every zone
@@ -1740,11 +1834,13 @@ class GameScene extends Phaser.Scene {
       // (each bounce costing speed: the 3600 -> 250 px/s collapse): a wall hit ends any steer.
       this.homing = null;
       this.lastWallAt = this.elapsed;
-      const w = wallBounceVelocity(c.vx, c.vy, this.speed);
+      // Wall Kick (a couple of times per aimed flight) is the only wall that turns a flight upward; every
+      // other hit is a plain mirror, so a bad fling that was falling keeps falling.
+      const kick = this.mods.wallKick && wallKickAllowed(this.wallKicksUsed);
+      const w = kick ? wallKickVelocity(c.vx, c.vy, this.speed) : wallBounceVelocity(c.vx, c.vy, this.speed);
       c.vx = w.vx;
       c.vy = w.vy;
-      // Wall Kick only works a couple of times per flight; after that it is a plain deflection.
-      if (this.mods.wallKick && wallKickAllowed(this.wallKicksUsed)) return this.wallKick();
+      if (kick) return this.wallKick();
       this.sfx('wall');
       this.speed *= wallBounceKeepAt(this.speed);
       this.cameras.main.shake(90, 0.006);
@@ -1765,7 +1861,7 @@ class GameScene extends Phaser.Scene {
     }
     // Same sideways cap as a plain bounce (no wall-to-wall pinball at speed).
     this.addSpeed(wallKickGain(this.speed, this.speedCap(), CARD_TUNING.wallKickBonus));
-    const capped = wallBounceVelocity(-ux, uy, this.speed);
+    const capped = wallKickVelocity(-ux, uy, this.speed);
     ux = capped.vx / this.speed;
     uy = capped.vy / this.speed;
     this.homing = null;
@@ -1834,10 +1930,13 @@ class GameScene extends Phaser.Scene {
       }
       // Not solid: flying through the core turns your path instead of hurting you.
       const inside = dist < TUNING.blackHoleRadius + TUNING.cometRadius;
-      if (inside && !h.cometInside && !h.warped) {
-        // Late (from ESCAPE VELOCITY) a warp never turns a climb into a dive: at those speeds the dive is
-        // over before any warning can be read. Early it still can, and there is time to grab a planet.
-        const w = warpVelocity(h.x, h.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, lateShare(this.bestAltitude) > 0);
+      // One warp per hole per flight: with mirror walls a sideways warp bounced straight back into the same
+      // core, and the second warp turned the climb into a dive into the wave.
+      if (inside && !h.cometInside && !h.warped && h.warpFlight !== this.flightNo) {
+        h.warpFlight = this.flightNo;
+        // A warp never turns a climb into a dive or a flat flight (warpVelocity keepClimbing): with mirror
+        // side walls that flight ping-pongs down into the wave before a planet can be grabbed.
+        const w = warpVelocity(h.x, h.y, this.comet.x, this.comet.y, this.comet.vx, this.comet.vy, true);
         this.comet.vx = w.vx;
         this.comet.vy = w.vy;
         h.warped = true;
@@ -1864,18 +1963,36 @@ class GameScene extends Phaser.Scene {
           this.startScrape(p, nx, ny, minDist);
           return;
         }
-        const dot = this.comet.vx * nx + this.comet.vy * ny;
-        this.comet.vx -= 2 * dot * nx;
-        this.comet.vy -= 2 * dot * ny;
         this.comet.x = p.x + nx * (minDist + 2);
         this.comet.y = p.y + ny * (minDist + 2);
         p.wobble = 0.7;
+        // Right after a side wall the comet slides round the planet (a small loss) instead of a -30% bump.
+        // (The learning window keeps its own soft bounce, which never knocks a learner down.)
+        if (!this.learning && this.kickGraceT <= 0 && wallPlanetSlideActive(this.elapsed - this.lastWallAt)) return this.wallPlanetGlance(nx, ny, p);
+        const dot = this.comet.vx * nx + this.comet.vy * ny;
+        this.comet.vx -= 2 * dot * nx;
+        this.comet.vy -= 2 * dot * ny;
         // A Wall Kick that sends you straight into a planet stays a bonus: the bump is free.
         if (this.kickGraceT > 0) return;
         this.planetBump(nx, ny, p);
         return;
       }
     }
+  }
+
+  // Planet touched within WALL_PLANET_SLIDE.window s of a side wall: the comet glances off along the surface
+  // tangent nearest its heading and keeps WALL_PLANET_SLIDE.keep of its speed (no chain break, no loss pop).
+  wallPlanetGlance(nx, ny, planet) {
+    const c = this.comet;
+    const v = wallPlanetSlide(c.vx, c.vy, nx, ny);
+    this.homing = null;
+    if (!this.learning) this.speed = Math.max(TUNING.minSpeed, this.speed * WALL_PLANET_SLIDE.keep);
+    c.vx = v.vx;
+    c.vy = v.vy;
+    planet.wobble = 0.5;
+    this.jellyT = 0;
+    this.sfx('wall');
+    this.burst(c.x, c.y, 0xf4ead0, 5, 80);
   }
 
   // Catch grace: touching a planet without holding first slides the comet along its surface
@@ -1889,6 +2006,8 @@ class GameScene extends Phaser.Scene {
     this.scrape = {
       planet, angle: Math.atan2(ny, nx), radius: minDist,
       dir: cross < 0 ? -1 : 1, time: TUNING.catchGrace, vx: c.vx, vy: c.vy,
+      // Touched right after a side wall: if no hold comes, it glances off (wallPlanetGlance), not a bump.
+      afterWall: !this.learning && this.kickGraceT <= 0 && wallPlanetSlideActive(this.elapsed - this.lastWallAt),
     };
     this.homing = null;
     planet.wobble = 0.4;
@@ -1908,6 +2027,13 @@ class GameScene extends Phaser.Scene {
     this.scrape = null;
     const nx = Math.cos(s.angle);
     const ny = Math.sin(s.angle);
+    if (s.afterWall) {
+      this.comet.vx = s.vx;
+      this.comet.vy = s.vy;
+      this.comet.x += nx * 2;
+      this.comet.y += ny * 2;
+      return this.wallPlanetGlance(nx, ny, s.planet);
+    }
     const dot = s.vx * nx + s.vy * ny;
     this.comet.vx = dot < 0 ? s.vx - 2 * dot * nx : s.vx;
     this.comet.vy = dot < 0 ? s.vy - 2 * dot * ny : s.vy;
@@ -1995,12 +2121,14 @@ class GameScene extends Phaser.Scene {
     else if (early || now - this.lastCatchPopAt > GameScene.CATCH_POP_QUIET) {
       // Catches happen every second or two: name the gain only now and then, the speedometer
       // and speed lines carry it the rest of the time. CLOSE ORBIT! at most once per CLOSE_POP_GAP.
+      // Past routineCatchPopsUntil s into the run the readout says it alone (routineCatchPopAllowed).
       this.lastCatchPopAt = now;
-      if (close && popGapOk(this.lastClosePopAt, now, GameScene.CLOSE_POP_GAP)) {
+      const routine = routineCatchPopAllowed(this.elapsed);
+      if (close && routine && popGapOk(this.lastClosePopAt, now, GameScene.CLOSE_POP_GAP)) {
         this.lastClosePopAt = now;
         this.popText('CLOSE ORBIT! +SPEED', '#ffe14d');
       } else if (this.mods.catchBurst > 0) this.cardProcPop('orbitset', 'SPEED BURST!', CARD_FAMILIES.orbit.color, { low: true });
-      else this.popText('+SPEED', '#5eff8f', { low: true });
+      else if (routine) this.popText('+SPEED', '#5eff8f', { low: true });
     }
     this.sfx('grab', { close });
     this.burst(c.x, c.y, 0xffffff, 6);
@@ -2620,6 +2748,7 @@ class GameScene extends Phaser.Scene {
     this.drawBestMarker(view);
     const grab = this.isHolding ? null : this.nearestGrabbablePlanet();
     for (const h of this.blackHoles) ART.drawBlackHole(g, h, ctx);
+    this.drawSlideLines(g);
     for (const p of this.planets) {
       const isTarget = !!(assist && assist.planet === p);
       p.mood = p === this.orbitPlanet ? 'orbit' : isTarget ? 'target' : p === grab ? 'near' : 'idle';
@@ -2843,6 +2972,7 @@ GameScene.REACH_SECONDS = 1;
 GameScene.REACH_AHEAD_COS = 0.35;   // ~70 degrees either side of the flight direction
 GameScene.SLIDE_LEAD_SECONDS = 0.35;
 GameScene.AIM_MARGIN = TUNING.cometRadius + 20;   // px a steer's point stays inside the side walls
+GameScene.SLIDE_RUMBLE = 0.0025;      // share of the screen width the camera jitters while a planet slides into reach
 GameScene.SLIDE_MAX_SPEED = 1200;   // px/s: a card pick slides a planet in only for a comet slower than this
 GameScene.SLIDE_CLEARANCE = 160;    // px kept between a slid planet and any other
 GameScene.CLOSE_POP_GAP = 6000;     // ms: CLOSE ORBIT! +SPEED at most this often

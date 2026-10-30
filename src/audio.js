@@ -35,6 +35,7 @@
 //   shield {}              Heat Shield absorbs a hit: soft bell
 //   shockwave {}           Shockwave card: low boom pushing outward
 //   rescue {}              Unbreakable set bonus: heavy rescue riser
+//   rumble {}              a planet slides into reach (crawl rescue / card pick): short, quiet low rumble
 // Unknown event names are ignored.
 //
 // Music follows the game by polling game.scene.keys.Game each scheduler tick:
@@ -57,6 +58,7 @@ const AUDIO = (() => {
   const DUCK_HOLD = 0.35;              // seconds held down before recovering
   const DUCK_RECOVER_TC = 0.45;        // time constant of the recovery (~2.2 s to full)
   const SLOWMO_DUCK = 0.6;             // music multiplier during close-call slow motion
+  const PAUSE_DUCK = 0.35;             // music multiplier while the run is paused (the calm groove, quieter)
   const DRONE_MAX = 0.25;              // danger drone (routed through the music bus)
   // Smoothing time constants (seconds) so tempo/brightness glide instead of jumping.
   const INTENSITY_TAU = 0.6;
@@ -93,7 +95,7 @@ const AUDIO = (() => {
   let schedulerId = null;
   let nextStepTime = 0;
   let step = 0;                 // 16th-note counter
-  let mode = 'menu';            // 'menu' | 'intro' | 'game' | 'over'
+  let mode = 'menu';            // 'menu' | 'intro' | 'game' | 'over' | 'paused'
   let bpm = 92;
   let intensity = 0;            // smoothed speed fraction
   let danger = 0;               // smoothed danger
@@ -547,6 +549,12 @@ const AUDIO = (() => {
       noise({ filter: 'lowpass', cutoff: 2500, cutoffEnd: 100, dur: 0.8, gain: 0.28 });
       noise({ filter: 'bandpass', cutoff: 3000, cutoffEnd: 300, dur: 0.5, gain: 0.1, q: 2 });
     },
+    // A planet sliding into reach: a short, quiet ground rumble (filtered noise over a low sine), no click.
+    rumble() {
+      noise({ filter: 'lowpass', cutoff: 170, cutoffEnd: 80, dur: 0.5, gain: 0.16, attack: 0.06, q: 3 });
+      tone({ type: 'sine', freq: 52, freqEnd: 38, dur: 0.45, gain: 0.1, attack: 0.05 });
+      tone({ type: 'triangle', freq: 78, freqEnd: 60, dur: 0.3, gain: 0.03, attack: 0.04, delay: 0.05 });
+    },
     // Unbreakable: heavier than second wind, with an A power chord at the top of the climb.
     rescue() {
       tone({ type: 'sine', freq: 110, freqEnd: 35, dur: 0.4, gain: 0.42 });
@@ -588,7 +596,7 @@ const AUDIO = (() => {
   function updateMusicLevel(now) {
     if (!musicBus) return;
     const sinceDuck = now - duck.at;
-    let target = MUSIC_LEVEL * (slowMo ? SLOWMO_DUCK : 1);
+    let target = MUSIC_LEVEL * (slowMo ? SLOWMO_DUCK : 1) * (mode === 'paused' ? PAUSE_DUCK : 1);
     let tc = 0.25;
     if (sinceDuck >= 0 && sinceDuck < duck.hold) { target = Math.min(target, duck.level); tc = 0.04; }
     else if (sinceDuck >= 0 && sinceDuck < duck.hold + 5 * duck.recover) tc = duck.recover;
@@ -607,6 +615,8 @@ const AUDIO = (() => {
     try {
       const gs = gameRef.scene.keys && gameRef.scene.keys.Game;
       const over = gameRef.scene.keys && gameRef.scene.keys.GameOver;
+      // A paused run (PauseScene over it: GameScene.pauseGame) plays the calm groove, ducked, no drone.
+      if (gs && gs.isPaused && !gs.isOver) { res.mode = 'paused'; return res; }
       if (gs && gameRef.scene.isActive('Game')) {
         if (gs.isOver) { res.mode = 'over'; return res; }
         res.mode = introActive ? 'intro' : 'game';
@@ -671,7 +681,7 @@ const AUDIO = (() => {
     const chord = PROGRESSION[bar % PROGRESSION.length];
     const bus = musicFilter;
     const gameOn = mode === 'game';
-    const calm = mode === 'menu' || mode === 'over';
+    const calm = mode === 'menu' || mode === 'over' || mode === 'paused';
     // Density switches use hysteresis and only change on a bar line, so a speed burst
     // never flips the groove mid-phrase or back and forth.
     if (pos === 0) {

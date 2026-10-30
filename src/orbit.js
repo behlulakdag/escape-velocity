@@ -31,10 +31,12 @@ const TUNING = {
   orbitSettleSpeed: 220,  // px/s the orbit radius eases out to minOrbitGap after a too-close grab
   homingTurn: 2.6,        // rad/s an assisted release curves toward its target
   homingTime: 0.45,       // seconds the release keeps curving
-  // A wall hit is a DEFLECTION, not a penalty: it keeps almost all the speed and turns it up the screen
-  // (wallBounceVelocity), with |vx| capped so the next wall is >= wallCrossSeconds away. At 0.8 a fast
-  // fling crossed the 720 px page in 0.3 s and died in 2-4 wall hits (2900 -> 1800 px/s).
-  wallBounceKeep: 0.95,   // speed kept after bouncing off a side wall...
+  // A wall hit is a plain MIRROR (wallBounceVelocity: vx flips, vy unchanged): a fling that was falling keeps
+  // falling, so the player has to aim. (Turning every hit up and inward made blind tapping climb forever.)
+  wallBounceKeep: 0.93,   // speed kept after bouncing off a side wall from wallKeepFullFrom up...
+  wallBounceKeepSlow: 0.96, // ...and at or below wallKeepSlowUnder (a slow comet is not punished twice)
+  wallKeepSlowUnder: 800,
+  wallKeepFullFrom: 2000,
   wallBounceHighLoss: 0.1, // ...minus up to this at the absolute cap (see highSpeedShare)
   wallKicksPerFling: 2,   // Wall Kick works this many times per flight after an aimed fling (an unaimed one gets none)
   wallKickNearCap: 0.85,  // a kick adds no speed once the comet is this close to its speed cap
@@ -118,7 +120,8 @@ const TUNING = {
   guidedAimAngle: 0.3,     // rad: after the lap, LET GO shows once the tangent points this close to the target
   guidedPassGap: 50,       // px off the target's surface a guided fling passes (well inside the grab zone)
   guidedFlingBoost: 220,   // px/s added by a guided fling (it visibly accelerates to the next planet)
-  // Side-wall bounces (wallBounceVelocity): no sideways crawl, no dive out of a climb, no pinball.
+  warpMinClimbShare: 0.5, // a black-hole warp leaves a climbing comet at least 30 degrees above flat (warpVelocity)
+  // Wall Kick bounces (wallKickVelocity, the card only): no sideways crawl, no dive out of a climb, no pinball.
   wallVxShare: 0.6,
   wallCrossWidth: 664,     // px between the walls the comet's center can travel (720 - 2 x cometRadius)...
   wallCrossSeconds: 1,     // ...and the s a crossing takes at least after a wall hit (|vx| cap)
@@ -255,9 +258,31 @@ function highSpeedDrag(speed, decayMul, noDecay) {
   return TUNING.dragMax * share * (decayMul === undefined ? 1 : decayMul);
 }
 
-// Speed kept after a plain side-wall bounce: wallBounceKeep up to 450 km/s, minus up to wallBounceHighLoss at the cap.
+// Speed kept after a plain side-wall bounce: wallBounceKeepSlow for a slow comet, easing to wallBounceKeep by
+// wallKeepFullFrom, then minus up to wallBounceHighLoss at the cap.
 function wallBounceKeepAt(speed) {
-  return TUNING.wallBounceKeep - TUNING.wallBounceHighLoss * highSpeedShare(speed);
+  const v = Math.max(0, speed || 0);
+  const t = Math.max(0, Math.min(1, (v - TUNING.wallKeepSlowUnder) / (TUNING.wallKeepFullFrom - TUNING.wallKeepSlowUnder)));
+  const base = TUNING.wallBounceKeepSlow + (TUNING.wallBounceKeep - TUNING.wallBounceKeepSlow) * t;
+  return base - TUNING.wallBounceHighLoss * highSpeedShare(v);
+}
+
+// A planet touched this soon (s) after a side-wall hit is slid round (wallPlanetSlide) instead of bumped:
+// the mirrored exit runs straight into planets standing in the edge column, and a -30% bump there read as
+// a second penalty for the same wall.
+const WALL_PLANET_SLIDE = { window: 0.6, keep: 0.95 };
+function wallPlanetSlideActive(sinceWall) {
+  return sinceWall >= 0 && sinceWall < WALL_PLANET_SLIDE.window;
+}
+
+// Velocity that slides a comet round a planet it touched (unit normal nx, ny from the planet center to the
+// comet): the surface tangent closest to its current heading, same speed (the caller takes the loss).
+function wallPlanetSlide(vx, vy, nx, ny) {
+  const sp = Math.hypot(vx, vy);
+  let tx = -ny;
+  let ty = nx;
+  if (tx * vx + ty * vy < 0) { tx = -tx; ty = -ty; }
+  return { vx: tx * sp, vy: ty * sp };
 }
 
 // Wall Kick: whether the next wall hit of this flight is still a kick (kicksUsed since the last aimed fling).
@@ -541,7 +566,16 @@ function warpVelocity(hx, hy, x, y, vx, vy, keepClimbing) {
   };
   const turn = (cross < 0 ? -1 : 1) * TUNING.blackHoleWarp;
   const w = rotate(turn);
-  if (keepClimbing && vy < 0 && w.vy > 0) return rotate(-turn);
+  if (!keepClimbing || vy >= 0) return w;
+  // A climb never comes out of the core as a dive, nor as a near-flat flight (flatter than
+  // warpMinClimbShare of the speed): with mirror walls that flat flight ping-pongs wall to wall, the hole's
+  // pull bends it down, and it is in the wave within a second. The turn goes the other way instead, when
+  // that way climbs more steeply.
+  const sp = Math.hypot(vx, vy);
+  if (w.vy > -TUNING.warpMinClimbShare * sp) {
+    const other = rotate(-turn);
+    if (other.vy < w.vy) return other;
+  }
   return w;
 }
 
@@ -796,13 +830,28 @@ function guidedAimLinedUp(x, y, dirX, dirY, tx, ty, maxAngle) {
   return Math.acos(cos) <= (maxAngle === undefined ? TUNING.guidedAimAngle : maxAngle);
 }
 
-// Side-wall bounce (a deflection): vx flips and the flight is turned up and inward, so a fast climb never
-// becomes a crawl across the page or a dive, and the comet cannot pinball wall to wall at speed:
-// |vx| <= wallVxShare x speed, and never more than wallCrossWidth / wallCrossSeconds, so the opposite wall
-// is at least wallCrossSeconds away; the rest of the speed goes into climbing. A fall comes off the wall as a
-// climb too (mirrored up): with the |vx| cap a steep fall used to leave the wall as a near-vertical dive into
-// the wave (random flings died of it). Returns the new { vx, vy } at `speed`.
+// Side-wall bounce: a plain mirror. vx flips, vy is unchanged (a fall keeps falling, a climb keeps climbing),
+// at `speed`. Only a grazing hit (|vx| under wallMinVxShare of the speed) is pushed off the wall to that
+// share, keeping the sign of vy, or it would slide along the wall ticking it every frame. Returns { vx, vy }.
 function wallBounceVelocity(vx, vy, speed) {
+  const sp = Math.max(1, speed || Math.hypot(vx, vy));
+  const len = Math.hypot(vx, vy) || 1;
+  let nvx = (-vx / len) * sp;
+  let nvy = (vy / len) * sp;
+  const minVx = TUNING.wallMinVxShare * sp;
+  if (Math.abs(nvx) < minVx) {
+    nvx = (nvx === 0 ? Math.sign(-vx) || 1 : Math.sign(nvx)) * minVx;
+    nvy = (nvy > 0 ? 1 : -1) * Math.sqrt(sp * sp - minVx * minVx);
+  }
+  return { vx: nvx, vy: nvy };
+}
+
+// Wall Kick bounce (the card, after an aimed fling only; the only wall that turns a flight upward): vx flips
+// and the flight is turned up and inward, so a kick never becomes a crawl across the page or a dive, and
+// cannot pinball wall to wall at speed: |vx| <= wallVxShare x speed, and never more than
+// wallCrossWidth / wallCrossSeconds, so the opposite wall is at least wallCrossSeconds away; the rest of the
+// speed goes into climbing. Returns the new { vx, vy } at `speed`.
+function wallKickVelocity(vx, vy, speed) {
   const sp = Math.max(1, speed || Math.hypot(vx, vy));
   const maxVx = Math.min(TUNING.wallVxShare * sp, TUNING.wallCrossWidth / TUNING.wallCrossSeconds);
   const len = Math.hypot(vx, vy) || 1;
@@ -889,7 +938,12 @@ function flightDecayShare(speed) {
 
 // Pop gates. Loss pops ('-30% SPEED', '-15% SPEED'...) are one family: one per lossPopGapMs whatever the
 // number. Any pop: at most one new pop per popMinGapMs, unless it outranks the last one (priority).
-const POP_GATES = { lossPopGapMs: 2000, popMinGapMs: 250 };
+const POP_GATES = { lossPopGapMs: 2000, popMinGapMs: 250, routineCatchPopsUntil: 30 };
+// The routine catch pops ('+SPEED', 'CLOSE ORBIT! +SPEED') only during the first routineCatchPopsUntil s of
+// a run (runSeconds): by then the km/s readout has taught it, and the pops are clutter.
+function routineCatchPopAllowed(runSeconds) {
+  return (runSeconds || 0) < POP_GATES.routineCatchPopsUntil;
+}
 function isLossPop(label) {
   return /^-\d+% SPEED$/.test(label || '');
 }
@@ -1038,5 +1092,5 @@ function nextMachTier(stampedTier, mach) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { flightDecayShare, isLossPop, popAdmitted, POP_GATES, passPointInField, guidedFlingBlocked, guidedAimLinedUp, wallBounceVelocity, crawlRescueStep, popGapOk, novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { routineCatchPopAllowed, wallKickVelocity, wallPlanetSlide, wallPlanetSlideActive, WALL_PLANET_SLIDE, flightDecayShare, isLossPop, popAdmitted, POP_GATES, passPointInField, guidedFlingBlocked, guidedAimLinedUp, wallBounceVelocity, crawlRescueStep, popGapOk, novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }
