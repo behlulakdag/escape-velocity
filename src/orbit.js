@@ -24,8 +24,10 @@ const TUNING = {
   orbitSettleSpeed: 220,  // px/s the orbit radius eases out to minOrbitGap after a too-close grab
   homingTurn: 2.6,        // rad/s an assisted release curves toward its target
   homingTime: 0.45,       // seconds the release keeps curving
-  wallBounceKeep: 0.92,   // speed kept after bouncing off a side wall...
-  wallBounceHighLoss: 0.22, // ...minus up to this at the absolute cap (see highSpeedShare): no wall pinball
+  // A wall bounce no longer turns a climb sideways or into a dive (wallBounceVelocity), so it costs a little
+  // more speed instead: hugging the walls is never better than catching planets.
+  wallBounceKeep: 0.8,    // speed kept after bouncing off a side wall...
+  wallBounceHighLoss: 0.15, // ...minus up to this at the absolute cap (see highSpeedShare)
   wallKicksPerFling: 2,   // Wall Kick works this many times per flight after an aimed fling (an unaimed one gets none)
   wallKickNearCap: 0.85,  // a kick adds no speed once the comet is this close to its speed cap
   // HIGH-SPEED DRAG: in flight, extra decay that grows with speed so a cap you did not earn bleeds away.
@@ -67,8 +69,9 @@ const TUNING = {
   novaPerPage: 150,       // ...then every new page past ESCAPE VELOCITY raises the top speed by this...
   novaMaxLate: 2250,      // ...up to this (a clean 'release on green' climb stays a little faster, so BEYOND is reachable)
   novaHardCap: 2250,      // px/s: the wave never goes faster than this, upgrade cards (+5% each) included...
-  novaBeyondPerPage: 800, // ...until BEYOND: from there top speed and cap rise by this per endless page (10,000 m)...
-  novaBeyondMax: 2000,    // ...by at most this, so a strong run has an end instead of a stable loop
+  novaBeyondPerPage: 1000, // ...until BEYOND: from there top speed and cap rise by this per endless page (10,000 m)...
+  novaBeyondMax: 3000,    // ...by at most this, so a strong run has an end instead of a stable loop (the walls no
+                          // longer end runs by pinballing, so the wave has to: ~4-5 min for a strong run)
   novaLateRamp: 0.01,     // extra px/s per meter past ESCAPE VELOCITY (small: the time ramp already reaches the top speed)
   lateHazardPerPage: 0.06, // asteroid / black hole chance added per page past ESCAPE VELOCITY
   maxAsteroidChance: 0.8,
@@ -99,6 +102,25 @@ const TUNING = {
   guidedEaseIn: 0.25,
   guidedEaseOut: 0.2,
   guidedHoldLead: 60,      // px before a planet's grab zone where the HOLD step starts (the ease-in carries the comet on)
+  guidedRounds: 2,         // planets the guided tutorial walks through (HOLD -> full lap -> LET GO on each)
+  guidedLap: Math.PI * 2 - 0.05, // rad of orbit before LET GO may show (one full revolution)
+  guidedAimAngle: 0.3,     // rad: after the lap, LET GO shows once the tangent points this close to the target
+  guidedPassGap: 50,       // px off the target's surface a guided fling passes (well inside the grab zone)
+  guidedFlingBoost: 220,   // px/s added by a guided fling (it visibly accelerates to the next planet)
+  // Side-wall bounces (wallBounceVelocity): no sideways crawl, no dive out of a climb, no pinball.
+  wallVxShare: 0.6,
+  wallVxMax: 1500,
+  wallVxMaxRepeat: 1000,
+  wallRepeatWindow: 1,
+  wallMinVxShare: 0.15,    // ...and leaves the wall with at least this share of its speed sideways
+  wallFallShare: 0.5,      // a bounce only stays a fall when the comet was falling this steeply (vy / speed)
+  // Crawl rescue (crawlRescueStep): crawling this slow with no planet in reach this long -> one drifts in.
+  crawlSpeed: 600,
+  crawlSeconds: 1,
+  crawlCooldown: 2,
+  planetDriftSpeed: 1500,  // px/s a rescued planet slides into reach
+  pickSteerSeconds: 1.5,   // s a fling after a card pick is steered onto a grabbable planet
+  pickSteerTurn: 3,        // rad/s of that steer
   tutorialLetGoAfter: 1.2, // s in an orbit with only the wide assist before LET GO shows anyway...
   letGoEta: 2,             // ...or at once when the wave is less than this many s away...
   letGoGap: 1000,          // ...or less than this many px below the comet
@@ -224,7 +246,7 @@ function highSpeedDrag(speed, decayMul, noDecay) {
   return TUNING.dragMax * share * (decayMul === undefined ? 1 : decayMul);
 }
 
-// Speed kept after a plain side-wall bounce: 0.92 up to 450 km/s, 0.70 at the cap, so pinballing never pays.
+// Speed kept after a plain side-wall bounce: wallBounceKeep up to 450 km/s, minus up to wallBounceHighLoss at the cap.
 function wallBounceKeepAt(speed) {
   return TUNING.wallBounceKeep - TUNING.wallBounceHighLoss * highSpeedShare(speed);
 }
@@ -653,7 +675,8 @@ function novaOrbitEta(o) {
 
 // Aim at one planet whatever the angle: the pass point beside it (assistPassGap off its surface) on the side
 // closest to the flight direction. Same shape as pickAssistTarget, plus wide: true. null when already inside.
-function aimAtPlanet(x, y, dirX, dirY, planet) {
+// passGap (optional): px off the surface instead of assistPassGap (the guided / rescue flings pass closer).
+function aimAtPlanet(x, y, dirX, dirY, planet, passGap) {
   if (!planet) return null;
   const len = Math.hypot(dirX, dirY) || 1;
   const ux = dirX / len;
@@ -661,7 +684,7 @@ function aimAtPlanet(x, y, dirX, dirY, planet) {
   const dx = planet.x - x;
   const dy = planet.y - y;
   const dist = Math.hypot(dx, dy);
-  const passDist = planet.radius + TUNING.assistPassGap;
+  const passDist = planet.radius + (passGap === undefined ? TUNING.assistPassGap : passGap);
   if (dist <= passDist) return null;
   let best = null;
   for (const side of [1, -1]) {
@@ -691,45 +714,129 @@ function pickTutorialTarget(x, y, dirX, dirY, planets, exclude, fromY) {
   return aimAtPlanet(x, y, dirX, dirY, nextPlanetAboveY(planets, exclude, fromY));
 }
 
-// Guided first-run tutorial, as a pure state machine. st = { phase, waiting }:
-//   phase 'hold'  -> step 1 not done yet; 'letgo' -> step 2 not done yet; 'done' -> finished for good.
+// Guided first-run tutorial, as a pure state machine (TUNING.guidedRounds planets, the same steps on each).
+// st = { phase, round, waiting }:
+//   phase 'hold' -> the next planet's HOLD step is still to come; 'lap' -> latched: the planet carries the comet
+//   round a full lap (a release does not fling yet), then LET GO; 'done' -> finished for good.
+//   round   -> 1..guidedRounds: which planet of the tutorial this is.
 //   waiting ''    -> playing normally; 'hold' / 'letgo' -> that step is up and the game waits for the player.
-// ev = { holding, orbiting, reachable (a grabbable planet just came near), letGoReady (the orbit's aim lines
-// up with the next planet, see tutorialLetGo), pressed, released (this frame's input edges) }.
+// ev = { holding, orbiting, reachable (a grabbable planet just came near), lapDone (one full revolution since
+// the latch), aimReady (the tangent lines up with the target planet, see guidedAimLinedUp), pressed, released
+// (this frame's input edges) }.
 // Returns { st, action }, action one of:
-//   'showHold'  start step 1 (slow motion, HOLD);        'latch'  step 1 answered: latch the planet now
-//   'showLetGo' start step 2 (slow motion, LET GO);      'nice'   step 2 answered: steered fling + NICE!, done
-//   'steer'     an early release before step 2: steer the fling to the next planet (step 2 waits for the next orbit)
-//   'cancel'    a waiting step lost its reason (the orbit ended some other way): hide it
+//   'showHold'  HOLD step (slow motion);           'latch'  HOLD answered: latch the planet now (the lap starts)
+//   'lap'       an orbit began some other way: the lap starts now (and a HOLD step still up goes away)
+//   'showLetGo' after the lap, LET GO (slow motion)
+//   'fling'     LET GO answered on an early round: steered, accelerating fling to the next planet (next round)
+//   'nice'      LET GO answered on the last round: steered fling + NICE!, done for good
+//   'cancel'    the orbit ended some other way (overspeed): the step goes, this round starts over
 //   null        nothing to do.
-// Step 1 is skipped when the player is already holding (or already orbiting) when it would show.
 function guidedTutorialStep(st, ev) {
-  const s = { phase: st && st.phase ? st.phase : 'hold', waiting: st && st.waiting ? st.waiting : '' };
+  const s = {
+    phase: st && st.phase ? st.phase : 'hold',
+    round: st && st.round ? st.round : 1,
+    waiting: st && st.waiting ? st.waiting : '',
+  };
   const e = ev || {};
   const out = (action) => ({ st: s, action: action || null });
   if (s.phase === 'done') { s.waiting = ''; return out(null); }
   if (s.waiting === 'hold') {
-    if (e.pressed) { s.phase = 'letgo'; s.waiting = ''; return out('latch'); }
-    if (e.orbiting) { s.phase = 'letgo'; s.waiting = ''; return out('cancel'); }
+    if (e.pressed) { s.phase = 'lap'; s.waiting = ''; return out('latch'); }
+    if (e.orbiting) { s.phase = 'lap'; s.waiting = ''; return out('lap'); }
     return out(null);
   }
   if (s.waiting === 'letgo') {
-    if (e.released) { s.phase = 'done'; s.waiting = ''; return out('nice'); }
-    if (!e.orbiting) { s.waiting = ''; return out('cancel'); }
+    if (e.released) {
+      s.waiting = '';
+      if (s.round >= TUNING.guidedRounds) { s.phase = 'done'; return out('nice'); }
+      s.round++;
+      s.phase = 'hold';
+      return out('fling');
+    }
+    if (!e.orbiting) { s.waiting = ''; s.phase = 'hold'; return out('cancel'); }
     return out(null);
   }
   if (s.phase === 'hold') {
-    if (!e.orbiting && !(e.reachable && e.holding)) {
-      if (!e.reachable) return out(null);
-      s.waiting = 'hold';
-      return out('showHold');
-    }
-    s.phase = 'letgo';   // step 1 skipped: on to step 2 (an early release this frame is still steered)
+    if (e.orbiting) { s.phase = 'lap'; return out('lap'); }
+    if (e.reachable && !e.holding) { s.waiting = 'hold'; return out('showHold'); }
+    return out(null);
   }
-  // phase 'letgo', nothing waiting
-  if (e.orbiting && e.released) return out('steer');
-  if (e.orbiting && e.holding && e.letGoReady) { s.waiting = 'letgo'; return out('showLetGo'); }
+  // phase 'lap', nothing waiting
+  if (!e.orbiting) { s.phase = 'hold'; return out('cancel'); }
+  if (e.lapDone && e.aimReady) { s.waiting = 'letgo'; return out('showLetGo'); }
   return out(null);
+}
+
+// While the guided tutorial holds an orbit (its lap, before LET GO is up) a release does not fling: the
+// planet keeps the comet for the full lap. st: the guidedTutorialStep state (null = no tutorial).
+function guidedFlingBlocked(st) {
+  return !!st && st.phase !== 'done' && st.waiting !== 'letgo';
+}
+
+// Whether the flight direction (dirX, dirY) from (x, y) points at (tx, ty) within maxAngle rad
+// (default TUNING.guidedAimAngle): the guided LET GO waits for this after the lap.
+function guidedAimLinedUp(x, y, dirX, dirY, tx, ty, maxAngle) {
+  const dx = tx - x;
+  const dy = ty - y;
+  const l = Math.hypot(dx, dy) * Math.hypot(dirX, dirY);
+  if (!(l > 0)) return false;
+  const cos = Math.max(-1, Math.min(1, (dx * dirX + dy * dirY) / l));
+  return Math.acos(cos) <= (maxAngle === undefined ? TUNING.guidedAimAngle : maxAngle);
+}
+
+// Side-wall bounce: vx flips, and a mostly sideways bounce is turned up the screen, so a fast climb never
+// becomes a crawl across the page or a dive, and the comet cannot pinball wall to wall at speed:
+// |vx| <= wallVxShare x speed, and never more than wallVxMax (wallVxMaxRepeat when the last wall hit was
+// under wallRepeatWindow s ago). The vertical part this adds goes UP, unless the comet was already falling
+// steeply (vy > wallFallShare x speed): a flat flight (a warp, a bump) must not come off the wall as a dive.
+// sinceLastHit: s since the previous wall hit (Infinity = none). Returns the new { vx, vy } at `speed`.
+function wallBounceVelocity(vx, vy, speed, sinceLastHit) {
+  const sp = Math.max(1, speed || Math.hypot(vx, vy));
+  const repeat = (sinceLastHit === undefined ? Infinity : sinceLastHit) < TUNING.wallRepeatWindow;
+  const maxVx = Math.min(TUNING.wallVxShare * sp, repeat ? TUNING.wallVxMaxRepeat : TUNING.wallVxMax);
+  const len = Math.hypot(vx, vy) || 1;
+  let nvx = (-vx / len) * sp;
+  let nvy = (vy / len) * sp;
+  if (Math.abs(nvx) > maxVx) {
+    nvx = Math.sign(nvx) * maxVx;
+    nvy = (vy / len > TUNING.wallFallShare ? 1 : -1) * Math.sqrt(sp * sp - maxVx * maxVx);
+  }
+  // A grazing hit leaves the wall for real (a comet sliding up it would otherwise tick it every few frames).
+  const minVx = Math.min(maxVx, TUNING.wallMinVxShare * sp);
+  if (Math.abs(nvx) < minVx) {
+    nvx = (nvx === 0 ? Math.sign(-vx) || 1 : Math.sign(nvx)) * minVx;
+    nvy = (nvy > 0 ? 1 : -1) * Math.sqrt(sp * sp - minVx * minVx);
+  }
+  return { vx: nvx, vy: nvy };
+}
+
+// Crawl rescue timer: t counts the s the comet has been crawling (speed < crawlSpeed) in free flight with no
+// grabbable planet in reach; past crawlSeconds the next planet drifts into reach (rescue), and the timer
+// restarts at -crawlCooldown (counting back up to 0) so it is not called again at once. Returns { t, rescue }.
+function crawlRescueStep(t, speed, planetInReach, dt) {
+  const d = Math.max(0, dt || 0);
+  let n = t || 0;
+  if (n < 0) n = Math.min(0, n + d);
+  else n = speed < TUNING.crawlSpeed && !planetInReach ? n + d : 0;
+  if (n > TUNING.crawlSeconds) return { t: -TUNING.crawlCooldown, rescue: true };
+  return { t: n, rescue: false };
+}
+
+// A steer's pass point (ax, ay) beside planet, kept inside the side walls (margin px in from 0 / worldWidth):
+// a point past a wall is swapped for the one on the planet's other side (mirrored through its center, or
+// only across it in x when sameHeight), and clamped as a last resort. Clamping alone would pull the point
+// into the planet (a bump); keeping it would steer the comet into the wall again after every bounce.
+function passPointInField(ax, ay, planet, worldWidth, margin, sameHeight) {
+  const inside = (x) => x >= margin && x <= worldWidth - margin;
+  if (inside(ax) || !planet) return { x: ax, y: ay };
+  const mx = 2 * planet.x - ax;
+  if (inside(mx)) return { x: mx, y: sameHeight ? ay : 2 * planet.y - ay };
+  return { x: Math.max(margin, Math.min(worldWidth - margin, ax)), y: ay };
+}
+
+// Pop rate limit: a pop sent at lastAt (ms) may repeat at now (ms) only after gapMs.
+function popGapOk(lastAt, now, gapMs) {
+  return now - (lastAt === undefined ? -Infinity : lastAt) >= gapMs;
 }
 
 // Guided tutorial slow motion: progress p (0 = normal time, 1 = full slow motion) after realDt s, rising
@@ -896,5 +1003,5 @@ function nextMachTier(stampedTier, mach) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
+  module.exports = { passPointInField, guidedFlingBlocked, guidedAimLinedUp, wallBounceVelocity, crawlRescueStep, popGapOk, novaBeyondExtra, assistCoyoteTime, novaOrbitEta, perfectAngleAt, learnExitFactor, learningWindowOpen, tutorialLetGo, guidedTutorialStep, guidedSlowProgress, guidedSlowScale, parseGuidedTutorialDone, aimAtPlanet, nextPlanetAboveY, lateShare, orbitNovaMul, novaCalmFactor, novaSpeedFor, novaEtaSeconds, pickTutorialTarget, highSpeedShare, novaLeashFor, orbitSpinCap, zoneAt, pagesPastEscape, hazardChances, tutorialActive, parseTutorialState, TUTORIAL_RUNS, TUTORIAL_GOOD_CYCLES, ENDLESS_PAGE_METERS, ESCAPE_ZONE_INDEX, romanNumeral, orbitTaper, highSpeedDrag, wallBounceKeepAt, wallKickAllowed, wallKickGain, MACH_TIERS, machNumber, nextMachTier, momentum, momentumVisual, momentumGainMul, novaMaxForAltitude, planetHitKeep, secondWindAllowed, CHAIN_MILESTONE_NAMES, chainMilestoneLevel, milestoneSpeedBonus, maxSpeedForAltitude, grabRangeForSpeed, canGrabPlanet, overspeedFling, autoCatchAllowed, FEEL, perfectChainBonus, closeCallStep, slowMoScale, cometStretch, TUNING, orbitCloseness, novaSpeed, steerToward, PLANET_SIZES, ZONES, zoneIndexForAltitude, speedMultiplier, blackHolePull, warpVelocity, startOrbit, pickAssistTarget, speedAfterHit, nextPlanetLayout, orbitStep, tangentVelocity, flightDecay, speedFraction, speedColor, lerpColor };
 }

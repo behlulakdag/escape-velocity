@@ -13,11 +13,13 @@
 // anyAssist = strong policy: grabs early (any grabbable planet), releases on the first green/gold aim after 150 ms.
 // FIRST RUN (simulated: the scene gets { simTutorial: true }: the guided HOLD / LET GO tutorial and the learner
 // help, never touching real storage):
-// newbie = follows the guided tutorial: presses 250-450 ms after the HOLD step starts waiting, lets go 250-450 ms
-//   after the LET GO step starts waiting (reads scene.tutorialWaiting; the world is stopped meanwhile). After
-//   the tutorial (no more prompts) it plays what it was shown, slowly (before it, it holds an orbit until told): holds 250-450 ms after a planet comes
-//   within ~110 px of its surface, lets go on the first green aim once 250-450 ms into the orbit, or after 3 s;
-//   it gives up a hold that caught nothing after 1.5 s.
+// newbie = follows the guided tutorial (two planets: HOLD -> the planet carries it a full lap -> LET GO, then
+//   the same on the second planet, then NICE!): presses 250-450 ms after a HOLD step starts waiting, lets go
+//   250-450 ms after a LET GO step starts waiting (reads scene.tutorialWaiting; the world is stopped meanwhile;
+//   a LET GO with the finger already up gets a tap). While the tutorial runs it never presses or lets go on its
+//   own (it waits to be told). After it, it plays what it was shown, slowly: holds 250-450 ms after a planet
+//   comes within ~110 px of its surface, lets go on the first green aim once 250-450 ms into the orbit, or
+//   after 3 s; it gives up a hold that caught nothing after 1.5 s.
 // confused = first run (guided tutorial on), taps the screen at random like the masher.
 // instant = grabs the nearest grabbable planet and lets go the very next frame (autopilot exploit check).
 // rhythmFast = blind rhythm tapping: holds 180 ms, lets go for 180 ms, forever, ignoring the screen.
@@ -66,6 +68,7 @@
     s.gameOver = function (r) { reason = r; return proto.gameOver.call(this, r); };
     // Headless GameScene picks a random card itself on zone entry (no CardScene); log when.
     let firstPickAt = null;
+    let tutorialDoneAt = null;   // run s the guided tutorial finished (NICE!), null = not finished
     let rescues = 0;
     let lastPickAt = -1e9;
     s.pickCard = function (id, granted) {
@@ -78,6 +81,38 @@
     s.rescueFromNova = function () { rescues++; return proto.rescueFromNova.call(this); };
     s.secondWind = function () { secondWinds++; return proto.secondWind.call(this); };
     s.chainMilestone = function (level) { milestones++; return proto.chainMilestone.call(this, level); };
+    // Speed collapses (the speed readout falls > 60% within 0.5 s with no planet / asteroid hit in that
+    // window), wall pinball (>= 3 side-wall hits within 1 s, one count per burst: pinballs = with no orbit in
+    // between, i.e. the comet bouncing wall to wall by itself; pinballsAny = also counting orbit -> fling -> wall).
+    let lastHitAt = -1e9;
+    s.loseSpeed = function (keep) { hits++; lastHitAt = this.elapsed; return proto.loseSpeed.call(this, keep); };
+    const wallHits = [];
+    let freeHits = [];        // wall hits since the last catch
+    let pinballs = 0;
+    let pinballsAny = 0;
+    let pinballUntil = -1;
+    let pinballAnyUntil = -1;
+    s.latch = function (planet, auto) { freeHits = []; return proto.latch.call(this, planet, auto); };
+    s.bounceWalls = function () {
+      const before = this.comet.vx;
+      const r = proto.bounceWalls.call(this);
+      if (before !== 0 && Math.sign(before) !== Math.sign(this.comet.vx)) {
+        wallHits.push(this.elapsed);
+        freeHits.push(this.elapsed);
+        const recentAny = wallHits.filter((t) => this.elapsed - t <= 1);
+        if (recentAny.length >= 3 && this.elapsed > pinballAnyUntil) { pinballsAny++; pinballAnyUntil = this.elapsed + 1; }
+        const recent = freeHits.filter((t) => this.elapsed - t <= 1);
+        if (recent.length >= 3 && this.elapsed > pinballUntil) {
+          pinballs++;
+          pinballUntil = this.elapsed + 1;
+          if (window.simPinballLog) window.simPinballLog.push({ style, t: Math.round(this.elapsed * 100) / 100, speed: Math.round(this.speed), x: Math.round(this.comet.x), vx: Math.round(this.comet.vx), vy: Math.round(this.comet.vy), holes: this.blackHoles.length, homing: !!this.homing });
+        }
+      }
+      return r;
+    };
+    const speedHist = [];     // [elapsed, speed] over the last 0.5 s
+    let collapses = 0;
+    let collapseUntil = -1;
     // window.simNoCards = true runs the base game without cards, for comparison.
     if (window.simNoCards) s.openCardPick = function () {};
     // window.simForceCards = ['spin', ...] picks those cards in order instead of random ones (A/B a build).
@@ -92,7 +127,6 @@
     s.popText = function (label, color, opts) {
       if (label === 'CLOSE CALL!') closeCalls++;
       if (label === 'WARP!') warps++;
-      if (label.startsWith('-')) hits++;
       return proto.popText.call(this, label, color, opts);
     };
     let left = null;
@@ -130,7 +164,7 @@
           reactMs -= 16.67;
           if (reactMs < 0) {
             if (waiting === 'hold' && !s.isHolding) s.pressHold();
-            else if (waiting === 'letgo' && s.isHolding) s.releaseHold();
+            else if (waiting === 'letgo') { if (s.isHolding) s.releaseHold(); else s.pressHold(); }
           }
         } else if (!s.orbit) {
           orbitMs = 0;
@@ -140,7 +174,7 @@
             if (p === left || p === s.noGrabPlanet) continue;
             if (s.distanceTo(p) - p.radius < 110 && p.y < s.comet.y + 60) { near = p; break; }
           }
-          if (near && !s.isHolding && nearMs < 0) nearMs = 250 + Math.random() * 200;
+          if (near && !s.isHolding && nearMs < 0 && !s.guided) nearMs = 250 + Math.random() * 200;
           if (nearMs >= 0) {
             nearMs -= 16.67;
             if (nearMs < 0 && !s.isHolding) s.pressHold();
@@ -153,12 +187,10 @@
           nearMs = -1;
           holdNoOrbit = 0;
           orbitMs += 16.67;
-          // Settles into the orbit for 250-450 ms, then lets go on the green aim it was shown (once the tutorial
-          // is over: until then it waits to be told), or after 3 s anyway (the tutorial then steers this release
-          // and shows LET GO on the next orbit).
+          // Settles into the orbit for 250-450 ms, then lets go on the green aim it was shown, or after 3 s
+          // anyway (once the tutorial is over: until then it waits to be told).
           if (greenMs < 0) greenMs = 250 + Math.random() * 200;
-          const told = !s.guided;
-          if (s.isHolding && !(s.guided && s.guided.waiting) && ((told && orbitMs > greenMs && s.currentAssist()) || orbitMs > 3000)) s.releaseHold();
+          if (s.isHolding && !s.guided && ((orbitMs > greenMs && s.currentAssist()) || orbitMs > 3000)) s.releaseHold();
         }
       } else if (style === 'rhythmFast') {
         mashHold -= 16.67;
@@ -231,8 +263,20 @@
         if (eta < 0.8) lateEta08++;
       }
       if (!s.isOver) deathOrbiting = !!s.orbit;
+      if (simTutorial && tutorialDoneAt === null && !s.guided) tutorialDoneAt = Math.round(s.elapsed * 10) / 10;
       maxSpeed = Math.max(maxSpeed, s.speed);
       if (frames > 60) speeds.push(s.speed);
+      speedHist.push([s.elapsed, s.speed]);
+      while (speedHist.length && s.elapsed - speedHist[0][0] > 0.5) speedHist.shift();
+      if (!s.isOver && s.elapsed > collapseUntil && s.elapsed - lastHitAt > 0.5) {
+        const top = Math.max(...speedHist.map((h) => h[1]));
+        if (s.speed < top * 0.4) {
+          collapses++;
+          collapseUntil = s.elapsed + 0.5;
+          // window.simCollapseLog = [] collects each collapse with what was going on (debugging).
+          if (window.simCollapseLog) window.simCollapseLog.push({ style, t: Math.round(s.elapsed * 100) / 100, from: Math.round(top), to: Math.round(s.speed), orbit: !!s.orbit, alt: s.bestAltitude, walls: wallHits.filter((w) => s.elapsed - w <= 0.5).length, cards: s.ownedCards.join(',') });
+        }
+      }
     }
     // Phaser reuses the last start data when none is passed: do not leak headless into real play.
     s.sys.settings.data = {};
@@ -244,12 +288,18 @@
     delete s.onPerfect;
     delete s.chainMilestone;
     delete s.openCardPick;
+    delete s.loseSpeed;
+    delete s.bounceWalls;
+    delete s.latch;
     speeds.sort((a, b) => a - b);
     const kms = (q) => (speeds.length ? Math.round(speeds[Math.floor(q * (speeds.length - 1))] / 10) : 0);
     const warnBeforeDeath = reason === 'SUPERNOVA!' ? (warnSince >= 0 ? Math.round((s.elapsed - warnSince) * 100) / 100 : -1) : null;
     const lateVisible = lateFrames ? Math.round((lateSeen / lateFrames) * 100) / 100 : null;
     const pickDeath = reason === 'SUPERNOVA!' && s.elapsed - lastPickAt <= 1.5 ? Math.round((s.elapsed - lastPickAt) * 100) / 100 : null;
-    return { pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
+    const pickDeath10 = !!reason && lastPickAt > 0 && s.elapsed - lastPickAt <= 10;
+    // ...and of those, the ones that died crawling (< 80 km/s): the 'nothing to grab after a pick' death.
+    const pickCrawlDeath = pickDeath10 && s.speed < 800;
+    return { pinballsAny, pickCrawlDeath, tutorialDoneAt, collapses, pinballs, wallHits: wallHits.length, pickDeath10, pickDeath, deathOrbiting, lateEta08: lateFrames ? Math.round((lateEta08 / lateFrames) * 100) / 100 : null, warnBeforeDeath, lateVisible, ownCatches: s.ownCatches || 0, minKms: kms(0), medKms: kms(0.5), maxKms: kms(1), zone: s.zoneIndex, style, reason, seconds: Math.round(frames / 60), alt: s.bestAltitude, score: Math.floor(s.score), maxSpeed: Math.round(maxSpeed), perfects, maxChain, closeCalls, warps, hits, cards: s.ownedCards.slice(), firstPickAt, rescues, secondWinds, milestones };
   };
 
   window.playtestSummary = (styles, runsEach, maxSeconds) => {
@@ -290,6 +340,16 @@
         lateEta08: median(runs.filter((r) => r.lateEta08 !== null).map((r) => r.lateEta08)),
         warnList: runs.filter((r) => r.warnBeforeDeath !== null).map((r) => r.warnBeforeDeath).sort((a, b) => a - b).join(','),
         pickDeaths: runs.filter((r) => r.pickDeath !== null).length,
+        // Deaths within 10 s after a card pick, speed collapses and wall pinball bursts (totals over the runs).
+        pickDeaths10: runs.filter((r) => r.pickDeath10).length,
+        pickCrawlDeaths: runs.filter((r) => r.pickCrawlDeath).length,
+        // First runs: how many finished the guided tutorial, and the median run s it took.
+        tutorialDone: runs.filter((r) => r.tutorialDoneAt !== null).length + '/' + runs.length,
+        tutorialAt: median(runs.filter((r) => r.tutorialDoneAt !== null).map((r) => r.tutorialDoneAt)),
+        collapses: runs.reduce((n, r) => n + r.collapses, 0),
+        pinballs: runs.reduce((n, r) => n + r.pinballs, 0),
+        pinballsAny: runs.reduce((n, r) => n + r.pinballsAny, 0),
+        wallHits: runs.reduce((n, r) => n + r.wallHits, 0),
         orbitDeaths: runs.filter((r) => r.reason && r.deathOrbiting).length + '/' + runs.filter((r) => r.reason).length,
         alts: runs.map((r) => r.alt).sort((a, b) => a - b).join(','),
       };

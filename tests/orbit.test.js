@@ -691,73 +691,166 @@ test('warpVelocity keepClimbing: a climbing comet is never warped into a dive', 
   }
 });
 
-test('guidedTutorialStep: HOLD waits for a press, then LET GO waits for a release, then done', () => {
+test('guidedTutorialStep: two planets of HOLD -> full lap -> LET GO, then NICE! and done', () => {
   const step = (st, ev) => o.guidedTutorialStep(st, ev);
+  assert.strictEqual(o.TUNING.guidedRounds, 2);
   let r = step(null, {});
-  assert.deepStrictEqual(r.st, { phase: 'hold', waiting: '' });
+  assert.deepStrictEqual(r.st, { phase: 'hold', round: 1, waiting: '' });
   assert.strictEqual(r.action, null);
-  r = step(r.st, { reachable: true });
-  assert.strictEqual(r.action, 'showHold');
-  assert.strictEqual(r.st.waiting, 'hold');
-  // No timeout: it keeps waiting, whatever else happens, until the press.
-  for (let i = 0; i < 1000; i++) {
-    r = step(r.st, { reachable: i % 2 === 0, released: i % 3 === 0 });
-    assert.strictEqual(r.action, null);
+  for (let round = 1; round <= 2; round++) {
+    r = step(r.st, { reachable: true });
+    assert.strictEqual(r.action, 'showHold');
     assert.strictEqual(r.st.waiting, 'hold');
-  }
-  r = step(r.st, { pressed: true, holding: true });
-  assert.strictEqual(r.action, 'latch');
-  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
-  // Orbiting and holding, but the aim does not line up yet: nothing.
-  r = step(r.st, { orbiting: true, holding: true, letGoReady: false });
-  assert.strictEqual(r.action, null);
-  r = step(r.st, { orbiting: true, holding: true, letGoReady: true });
-  assert.strictEqual(r.action, 'showLetGo');
-  assert.strictEqual(r.st.waiting, 'letgo');
-  for (let i = 0; i < 500; i++) {
-    r = step(r.st, { orbiting: true, holding: true, letGoReady: i % 2 === 0, pressed: true });
+    // No timeout: it keeps waiting, whatever else happens, until the press.
+    for (let i = 0; i < 300; i++) {
+      r = step(r.st, { reachable: i % 2 === 0, released: i % 3 === 0 });
+      assert.strictEqual(r.action, null);
+      assert.strictEqual(r.st.waiting, 'hold');
+    }
+    r = step(r.st, { pressed: true, holding: true });
+    assert.strictEqual(r.action, 'latch');
+    assert.deepStrictEqual(r.st, { phase: 'lap', round, waiting: '' });
+    // The lap: no LET GO before one full revolution, even with the aim lined up; a release is ignored.
+    for (let i = 0; i < 100; i++) {
+      r = step(r.st, { orbiting: true, holding: i % 2 === 0, aimReady: true, lapDone: false, released: i % 5 === 0 });
+      assert.strictEqual(r.action, null);
+      assert.strictEqual(r.st.phase, 'lap');
+      assert.strictEqual(o.guidedFlingBlocked(r.st), true);
+    }
+    // Lap done, aim not lined up yet: still nothing.
+    r = step(r.st, { orbiting: true, holding: true, lapDone: true, aimReady: false });
     assert.strictEqual(r.action, null);
+    r = step(r.st, { orbiting: true, holding: true, lapDone: true, aimReady: true });
+    assert.strictEqual(r.action, 'showLetGo');
+    assert.strictEqual(r.st.waiting, 'letgo');
+    assert.strictEqual(o.guidedFlingBlocked(r.st), false);
+    for (let i = 0; i < 100; i++) {
+      r = step(r.st, { orbiting: true, holding: true, lapDone: true, aimReady: i % 2 === 0, pressed: true });
+      assert.strictEqual(r.action, null);
+    }
+    r = step(r.st, { orbiting: true, released: true });
+    if (round === 1) {
+      assert.strictEqual(r.action, 'fling');
+      assert.deepStrictEqual(r.st, { phase: 'hold', round: 2, waiting: '' });
+    } else {
+      assert.strictEqual(r.action, 'nice');
+      assert.deepStrictEqual(r.st, { phase: 'done', round: 2, waiting: '' });
+    }
   }
-  r = step(r.st, { orbiting: true, released: true });
-  assert.strictEqual(r.action, 'nice');
-  assert.deepStrictEqual(r.st, { phase: 'done', waiting: '' });
-  // Done for good.
-  for (const ev of [{ reachable: true }, { orbiting: true, holding: true, letGoReady: true }, { orbiting: true, released: true }]) {
+  assert.strictEqual(o.guidedFlingBlocked(r.st), false);
+  for (const ev of [{ reachable: true }, { orbiting: true, holding: true, lapDone: true, aimReady: true }, { orbiting: true, released: true }]) {
     r = step(r.st, ev);
     assert.strictEqual(r.action, null);
     assert.strictEqual(r.st.waiting, '');
   }
 });
 
-test('guidedTutorialStep: already holding skips step 1; an early release is steered, LET GO comes next orbit', () => {
-  let r = o.guidedTutorialStep({ phase: 'hold', waiting: '' }, { reachable: true, holding: true });
+test('guidedTutorialStep: an orbit begun on its own starts the lap; a lost orbit restarts the round', () => {
+  // Already holding when the planet comes near: no HOLD step, the player latches by themselves...
+  let r = o.guidedTutorialStep({ phase: 'hold', round: 1, waiting: '' }, { reachable: true, holding: true });
   assert.strictEqual(r.action, null);
-  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
-  // An orbit begun some other way also skips step 1, and a release in that same frame is still steered.
-  r = o.guidedTutorialStep({ phase: 'hold', waiting: '' }, { orbiting: true, released: true });
-  assert.strictEqual(r.action, 'steer');
-  assert.strictEqual(r.st.phase, 'letgo');
-  // Early release (before the aim lined up): steered, step 2 still pending.
-  r = o.guidedTutorialStep({ phase: 'letgo', waiting: '' }, { orbiting: true, released: true });
-  assert.strictEqual(r.action, 'steer');
-  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
-  // Next orbit: it shows.
-  r = o.guidedTutorialStep(r.st, { orbiting: true, holding: true, letGoReady: true });
-  assert.strictEqual(r.action, 'showLetGo');
-  // A waiting step whose reason ended (no orbit any more) is cancelled, not finished.
-  r = o.guidedTutorialStep(r.st, { orbiting: false });
+  assert.strictEqual(r.st.phase, 'hold');
+  // ...and that orbit starts the lap.
+  r = o.guidedTutorialStep(r.st, { orbiting: true, holding: true });
+  assert.strictEqual(r.action, 'lap');
+  assert.deepStrictEqual(r.st, { phase: 'lap', round: 1, waiting: '' });
+  // A HOLD step still up when an orbit starts some other way: it goes, the lap starts.
+  r = o.guidedTutorialStep({ phase: 'hold', round: 2, waiting: 'hold' }, { orbiting: true });
+  assert.strictEqual(r.action, 'lap');
+  assert.deepStrictEqual(r.st, { phase: 'lap', round: 2, waiting: '' });
+  // The orbit ends some other way (overspeed) during the lap or with LET GO up: the round starts over.
+  r = o.guidedTutorialStep({ phase: 'lap', round: 2, waiting: '' }, { orbiting: false });
   assert.strictEqual(r.action, 'cancel');
-  assert.deepStrictEqual(r.st, { phase: 'letgo', waiting: '' });
-  r = o.guidedTutorialStep({ phase: 'hold', waiting: 'hold' }, { orbiting: true });
+  assert.deepStrictEqual(r.st, { phase: 'hold', round: 2, waiting: '' });
+  r = o.guidedTutorialStep({ phase: 'lap', round: 1, waiting: 'letgo' }, { orbiting: false });
   assert.strictEqual(r.action, 'cancel');
-  assert.strictEqual(r.st.phase, 'letgo');
-  // Not holding in an orbit: no LET GO (nothing to let go of).
-  r = o.guidedTutorialStep({ phase: 'letgo', waiting: '' }, { orbiting: true, holding: false, letGoReady: true });
-  assert.strictEqual(r.action, null);
-  // The input state is not mutated.
+  assert.deepStrictEqual(r.st, { phase: 'hold', round: 1, waiting: '' });
+  // Old saved shape (no round) reads as round 1; the input state is not mutated.
   const st = { phase: 'hold', waiting: '' };
-  o.guidedTutorialStep(st, { reachable: true });
+  r = o.guidedTutorialStep(st, { reachable: true });
+  assert.strictEqual(r.st.round, 1);
   assert.deepStrictEqual(st, { phase: 'hold', waiting: '' });
+  assert.strictEqual(o.guidedFlingBlocked(null), false);
+  assert.strictEqual(o.guidedFlingBlocked({ phase: 'hold', waiting: '' }), true);
+});
+
+test('guidedAimLinedUp: the tangent points at the target within guidedAimAngle', () => {
+  assert.strictEqual(o.guidedAimLinedUp(0, 0, 0, -1, 0, -500), true);
+  assert.strictEqual(o.guidedAimLinedUp(0, 0, 0, -1, 500 * Math.tan(o.TUNING.guidedAimAngle * 0.9), -500), true);
+  assert.strictEqual(o.guidedAimLinedUp(0, 0, 0, -1, 500 * Math.tan(o.TUNING.guidedAimAngle * 1.1), -500), false);
+  assert.strictEqual(o.guidedAimLinedUp(0, 0, 0, 1, 0, -500), false);
+  assert.strictEqual(o.guidedAimLinedUp(0, 0, 0, 0, 0, -500), false);
+  assert.strictEqual(o.guidedAimLinedUp(5, 5, 1, 0, 5, 5), false);
+});
+
+test('aimAtPlanet: optional passGap puts the pass point that far off the surface', () => {
+  const p = { x: 0, y: -600, radius: 60 };
+  const a = o.aimAtPlanet(0, 0, 0, -1, p, o.TUNING.guidedPassGap);
+  assert.ok(Math.abs(Math.hypot(a.aimX - p.x, a.aimY - p.y) - (p.radius + o.TUNING.guidedPassGap)) < 1e-6);
+  const b = o.aimAtPlanet(0, 0, 0, -1, p);
+  assert.ok(Math.abs(Math.hypot(b.aimX - p.x, b.aimY - p.y) - (p.radius + o.TUNING.assistPassGap)) < 1e-6);
+  // The guided pass is inside the grab zone with room to spare.
+  assert.ok(o.TUNING.guidedPassGap < o.TUNING.grabRange * 0.5);
+});
+
+test('wallBounceVelocity: flips vx, keeps speed, caps the sideways share, keeps a climb climbing', () => {
+  const sp = 3600;
+  // Nearly sideways climb into the right wall: comes back mostly upward, still climbing.
+  let w = o.wallBounceVelocity(sp * 0.98, -sp * Math.sqrt(1 - 0.98 * 0.98), sp, Infinity);
+  assert.ok(w.vx < 0);
+  assert.ok(Math.abs(w.vx) <= Math.min(o.TUNING.wallVxShare * sp, o.TUNING.wallVxMax) + 1e-6);
+  assert.ok(w.vy < 0, 'still climbing');
+  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - sp) < 1e-6);
+  // Exactly sideways (vy 0) counts as a climb.
+  w = o.wallBounceVelocity(-sp, 0, sp, Infinity);
+  assert.ok(w.vx > 0 && w.vy < 0);
+  // A flat flight drifting slightly down comes off the wall climbing, not diving...
+  w = o.wallBounceVelocity(sp, sp * 0.1, sp, Infinity);
+  assert.ok(w.vy < 0 && Math.abs(w.vx) <= o.TUNING.wallVxMax + 1e-6);
+  // ...a comet already falling steeply keeps falling (no free lift), capped too.
+  w = o.wallBounceVelocity(sp * 0.75, sp * Math.sqrt(1 - 0.75 * 0.75), sp, Infinity);
+  assert.ok(w.vy > 0 && Math.abs(w.vx) <= o.TUNING.wallVxMax + 1e-6);
+  // A steep bounce is only mirrored.
+  w = o.wallBounceVelocity(300, -1000, Math.hypot(300, 1000), Infinity);
+  assert.ok(Math.abs(w.vx + 300) < 1e-6 && Math.abs(w.vy + 1000) < 1e-6);
+  // A grazing hit leaves the wall with at least wallMinVxShare of the speed sideways, still climbing.
+  w = o.wallBounceVelocity(-2, -sp, sp, Infinity);
+  assert.ok(w.vx >= o.TUNING.wallMinVxShare * sp - 1e-6 && w.vy < 0);
+  assert.ok(Math.abs(Math.hypot(w.vx, w.vy) - sp) < 1e-6);
+  // A repeat hit within wallRepeatWindow gets the tighter cap.
+  w = o.wallBounceVelocity(sp, -10, sp, o.TUNING.wallRepeatWindow / 2);
+  assert.ok(Math.abs(w.vx) <= o.TUNING.wallVxMaxRepeat + 1e-6);
+  // At any speed the crossing between walls (720 - 2 x comet radius) after a repeat hit takes >= 0.6 s,
+  // so 3 wall hits can never come within 1 s at full speed.
+  const cross = (720 - 2 * o.TUNING.cometRadius) / o.TUNING.wallVxMaxRepeat;
+  const first = (720 - 2 * o.TUNING.cometRadius) / o.TUNING.wallVxMax;
+  assert.ok(first + cross > 1, String(first + cross));
+});
+
+test('crawlRescueStep: 1 s crawling with nothing in reach calls one rescue, then cools down', () => {
+  let t = 0;
+  let rescues = 0;
+  for (let i = 0; i < 60 * 5; i++) {
+    const r = o.crawlRescueStep(t, 300, false, 1 / 60);
+    t = r.t;
+    if (r.rescue) { rescues++; assert.ok(i / 60 > o.TUNING.crawlSeconds - 0.05, String(i)); }
+  }
+  // 5 s of crawling: first at ~1 s, the next one cooldown + 1 s later (~4 s).
+  assert.strictEqual(rescues, 2);
+  // Fast, or a planet in reach: the timer resets.
+  assert.strictEqual(o.crawlRescueStep(0.9, 2000, false, 0.2).t, 0);
+  assert.strictEqual(o.crawlRescueStep(0.9, 300, true, 0.2).rescue, false);
+  assert.strictEqual(o.crawlRescueStep(0.9, 300, false, 0.2).rescue, true);
+  // Cooling down counts back up to 0 whatever happens.
+  assert.ok(o.crawlRescueStep(-1, 300, false, 0.5).t === -0.5);
+  assert.ok(o.crawlRescueStep(-0.2, 3000, true, 0.5).t === 0);
+});
+
+test('popGapOk: a pop repeats only after its gap', () => {
+  assert.strictEqual(o.popGapOk(-1e9, 0, 1500), true);
+  assert.strictEqual(o.popGapOk(undefined, 0, 1500), true);
+  assert.strictEqual(o.popGapOk(1000, 2000, 1500), false);
+  assert.strictEqual(o.popGapOk(1000, 2500, 1500), true);
 });
 
 test('guided slow motion: eases down to the slow scale in guidedEaseIn, back up in guidedEaseOut', () => {
@@ -811,4 +904,18 @@ test('aimAtPlanet: the pass point beside the planet nearest the flight direction
   const far = { x: 0, y: -1200, radius: 60 };
   assert.strictEqual(o.nextPlanetAboveY([far, low, next], low, low.y), next);
   assert.strictEqual(o.nextPlanetAboveY([low], low, low.y), null);
+});
+
+test('passPointInField: a pass point past a side wall swaps to the planet\'s other side', () => {
+  const planet = { x: 150, y: -600, radius: 85 };
+  // Inside: unchanged.
+  assert.deepStrictEqual(o.passPointInField(400, -600, planet, 720, 48), { x: 400, y: -600 });
+  // Past the left wall: mirrored through the center (the other side, same pass distance).
+  const a = o.passPointInField(-50, -640, planet, 720, 48);
+  assert.deepStrictEqual(a, { x: 350, y: -560 });
+  assert.ok(Math.abs(Math.hypot(a.x - planet.x, a.y - planet.y) - Math.hypot(-50 - planet.x, -640 - planet.y)) < 1e-9);
+  // sameHeight: only across in x.
+  assert.deepStrictEqual(o.passPointInField(-50, -700, planet, 720, 48, true), { x: 350, y: -700 });
+  // Both sides out (cannot happen on the real field): clamped.
+  assert.deepStrictEqual(o.passPointInField(-500, -600, { x: 360, y: -600 }, 720, 48), { x: 48, y: -600 });
 });

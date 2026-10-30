@@ -197,3 +197,12 @@ test('cardPickReady: only in free flight while climbing; tutorial run 1 waits fo
   assert.ok(c.cardPickReady(Object.assign({}, first, { meters: 1500, seconds: 25 })));
   assert.ok(c.CARD_TUNING.pickNovaHold >= 1.5);
 });
+
+test('cardProcPopAllowed: a proc pop is written the first procPopsPerRun times of a run only', () => {
+  assert.strictEqual(c.CARD_TUNING.procPopsPerRun, 2);
+  assert.strictEqual(c.cardProcPopAllowed(0), true);
+  assert.strictEqual(c.cardProcPopAllowed(undefined), true);
+  assert.strictEqual(c.cardProcPopAllowed(1), true);
+  assert.strictEqual(c.cardProcPopAllowed(2), false);
+  assert.strictEqual(c.cardProcPopAllowed(50), false);
+});

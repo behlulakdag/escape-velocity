@@ -62,7 +62,14 @@ const CARD_TUNING = {
   firstRunPickMeters: 1500,   // tutorial run 1: the first pick waits for HYPERSONIC...
   firstRunPickSeconds: 25,    // ...and 25 s into the run, whichever is later
   pickGap: 4,                 // real s between two queued picks
+  procPopsPerRun: 2,          // a card's proc pop (SLINGSHOT!, WALL KICK!...) is written this many times per run
 };
+
+// Whether a card's proc pop is written out (shownBefore = times it was already written this run); after
+// procPopsPerRun times only the card's icon flash and a small ink asterisk mark it (no repeating words).
+function cardProcPopAllowed(shownBefore) {
+  return (shownBefore || 0) < CARD_TUNING.procPopsPerRun;
+}
 
 // Whether a queued card pick may open now. A pick opened mid-orbit leaves the comet spinning with no
 // finger and no prompt, and the down swing feeds it to the wave, so picks only open in free flight while
@@ -149,5 +156,5 @@ function cardMods(ownedIds) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardPickReady, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
+  module.exports = { cardProcPopAllowed, CARD_FAMILIES, CARDS, SET_BONUSES, RARITY_WEIGHT, CARD_TUNING, cardPickReady, cardById, drawCardChoices, familyCounts, activeSetBonuses, cardMods };
 }
