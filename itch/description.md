@@ -2,6 +2,8 @@
 
 **You are a comet. A supernova is eating the sky behind you. Go faster.**
 
+**Hold to grab a planet. Let go to fling. Outrun the supernova.**
+
 **Drawn like a sketchbook, not generated:** gel-pen ink, crayon hatching and a new paper page for every zone.
 
 **Speed is your life, your score and your way out.** The faster you go, the faster you gain - experts break 600-800 km/s.
