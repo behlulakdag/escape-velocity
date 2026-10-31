@@ -374,6 +374,9 @@ const HUD_BAND_LIFT = 56;
 const HUD_SPEED = { x: 166, y: GAME_HEIGHT - 150 - HUD_BAND_LIFT, lineY: GAME_HEIGHT - 116 - HUD_BAND_LIFT, minLine: 50, maxLine: 214, size: 44 };
 const HUD_PANEL = { left: 24, right: 320, top: HUD_SPEED.y - 56, bottom: HUD_SPEED.lineY + 50 };
 const HUD_BADGE = { x: GAME_WIDTH - 86, y: HUD_SPEED.y + 6, size: 40, scaleX: 0.5, scaleY: 0.62 };
+// Multiplier stamp: the first time a run reaches x2..x5 the number slams down big in the middle of the screen,
+// holds a beat, then shrinks and flies into the multiplier note bottom-right (ms; y is the screen center line).
+const HUD_MULT_STAMP = { size: 150, y: 540, dodgeY: 760, cometDodge: 200, inMs: 220, holdMs: 520, flyMs: 380, endScale: 0.28 };
 const HUD_BADGE_PANEL = { left: HUD_BADGE.x - 62, right: HUD_BADGE.x + 62, top: HUD_BADGE.y - 62, bottom: HUD_BADGE.y + 62 };
 // Corner blocks' alpha while the comet (or a planet) is under them.
 // planet: no step back at all. The blocks sit on opaque paper and planets simply pass behind
@@ -1270,6 +1273,7 @@ class HudScene extends Phaser.Scene {
     this.shownSpeed = 0;
     this.speedFrac = 0;
     this.lastMultiplier = 1;
+    this.multStampMax = 1;     // highest multiplier already stamped big this run
     this.chain = 0;
     this.popLine = null;      // the one pop on screen (or null)
     this.popQueue = [];       // high pops waiting for the current high pop's minimum hold
@@ -2567,8 +2571,33 @@ class HudScene extends Phaser.Scene {
       this.badgeText.setText('x' + level);
       this.lastMultiplier = level;
       this.badgeCircle.setTint(this.levelTint(level));
-      if (level > previousLevel) this.bump(this.badge, 1.5);
+      if (level > previousLevel) {
+        if (level > this.multStampMax) {
+          this.multStampMax = level;
+          this.stampMultiplier(level);
+        } else this.bump(this.badge, 1.5);
+      }
     }
+  }
+
+  // A new best multiplier this run: big crayon 'xN' in the middle, then it flies into the note bottom-right.
+  // A banner, card pick or tutorial step owns the screen: then only the note bumps, as before.
+  stampMultiplier(level) {
+    if (this.bigMomentBusy()) { this.bump(this.badge, 1.5); return; }
+    const S = HUD_MULT_STAMP;
+    if (this.multStamp) { this.tweens.killTweensOf(this.multStamp); this.multStamp.destroy(); }
+    const nearComet = this.comet && Math.abs(this.comet.y - S.y) < S.cometDodge;
+    const y = nearComet ? S.dodgeY : S.y;
+    const stamp = uiTitleText(this, GAME_WIDTH / 2, y, 'x' + level, {
+      size: S.size, color: UI_INK.creamHex, shadowColor: uiColorHex(this.levelTint(level)), rot: -0.08,
+    }).setScale(0.2).setAlpha(0);
+    this.multStamp = stamp;
+    const done = () => { if (this.multStamp === stamp) this.multStamp = null; stamp.destroy(); this.bump(this.badge, 1.6); };
+    this.tweens.add({ targets: stamp, scale: 1, alpha: 1, duration: S.inMs, ease: 'Back.Out' });
+    this.tweens.add({
+      targets: stamp, x: HUD_BADGE.x, y: HUD_BADGE.y, scale: S.endScale, alpha: 0.6,
+      delay: S.inMs + S.holdMs, duration: S.flyMs, ease: 'Cubic.In', onComplete: done,
+    });
   }
 
   // Comet position in screen space (GameScene, every frame). Near the bottom band the band
@@ -2991,6 +3020,7 @@ class HudScene extends Phaser.Scene {
   // Run ended: drop the live pop and anything queued, so no 'UNBREAKABLE!' or 'CLOSE CALL!'
   // hangs over the death animation reading as "you were saved".
   clearPops() {
+    if (this.multStamp) { this.tweens.killTweensOf(this.multStamp); this.multStamp.destroy(); this.multStamp = null; }
     this.popQueue.length = 0;
     this.popWait = [];
     this.setBonusWait = [];
@@ -3058,6 +3088,9 @@ class HudScene extends Phaser.Scene {
     if (this.setBonusLayer && this.setBonusLayer.active) out.push({ top: this.setBonusLayer.y - 140, bottom: this.setBonusLayer.y + 130 });
     const m = this.milestone;
     if (!skipMilestone && m && m.active && m.alpha > 0.1) out.push({ top: m.y - m.halfH, bottom: m.y + m.halfH });
+    // The big multiplier stamp while it is still in the middle (pops find another line).
+    const ms = this.multStamp;
+    if (ms && ms.active && ms.y < HUD_BADGE.y - 120) out.push({ top: ms.y - 110, bottom: ms.y + 110 });
     return out;
   }
 
