@@ -852,7 +852,8 @@ function uiCoinCounter(scene, x, y, value, o) {
 }
 
 // One mission line for a cream note: checkbox, short text, pencil progress, '+50' with a coin.
-// width: line width in px (row is centered on x). Returns a container with strike(duration, onDone).
+// width: line width in px (row is centered on x). o: size, progressSize (pencil label, default size - 5),
+// fresh, runStats. Returns a container with strike(duration, onDone).
 function uiMissionRow(scene, x, y, mission, width, o) {
   o = o || {};
   const size = o.size || 28;
@@ -864,7 +865,7 @@ function uiMissionRow(scene, x, y, mission, width, o) {
   });
   const progressLabel = uiMissionRowLabel(mission, o.fresh, o.runStats);
   const progress = uiInkText(scene, reward.x - reward.width - 14, 2, progressLabel, {
-    size: size - 5, color: '#2f6fa8', stroke: null, ox: 1, rot: 0.01, boil: false,
+    size: o.progressSize || size - 5, color: '#2f6fa8', stroke: null, ox: 1, rot: 0.01, boil: false,
   });
   const textLeft = left + 46;
   const textRight = progress.x - (progressLabel ? progress.width : 0) - 12;

@@ -84,9 +84,9 @@ test('the NEW CARDS note stays on screen and right of a 7-digit score', () => {
 });
 
 // The rotated 'build:' was clipped by the strip's torn left edge (paper starts at game x 32).
-// Its text box is ~33 px tall at 28 px (measured in the browser); 36 leaves room for the boil.
+// Its text box is 40 px tall at 34 px (measured in the browser); 44 leaves a little slack.
 test("rotated 'build:' sits on the paper, left of every card name, for 1..12 cards", () => {
-  const span = m.goBuildLabelSpan(36);
+  const span = m.goBuildLabelSpan(44);
   assert.ok(span.left >= 32 + 2, 'letter tops clear the torn left edge: ' + span.left);
   for (let n = 1; n <= 12; n++) {
     const s = m.goStripSlots(n);

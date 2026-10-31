@@ -12,15 +12,17 @@ const GO_GOAL_Y = 264;
 const GO_CORNER_BUTTONS = { muteX: 206, fullX: 514, y: 100 };
 // 'NEW CARD FOUND' sticky note, page-local: hangs off the page's right edge beside the score, far
 // enough right to clear a 7-digit score (and its 'score:' label on the left), but kept on screen
-// (goNewCardX) with a 16 px gutter.
-const GO_NEWCARD = { x: 314, y: -166, w: 172, h: 112, gutter: 16, tilt: 8 };
+// (goNewCardX) with a 16 px gutter. The header is written on two lines ('3 NEW / CARDS!') so it
+// can be big (36 px) without widening the note over the score; the note grows down instead.
+const GO_NEWCARD = { x: 314, y: -148, w: 172, h: 148, gutter: 16, tilt: 8, headSize: 36, nameSize: 28 };
 // Build strip under the page (game x of the slot row). The strip's paper only spans x 32..678 and
 // 'build:' plus the red margin line sit left of 72, so the slots stay inside 76..664: a label in
-// the last slot never runs off the torn edge onto the dark page. Names are written at 26 px
-// (~13 CSS px on a 360 px phone) on up to two lines, above the strip's bottom edge.
-// buildX: game x of the rotated 'build:' (its ~33 px line height becomes its width), so its letter
+// the last slot never runs off the torn edge onto the dark page. Names are written at 32 px
+// (~14 CSS px at 375 px wide, inside the 0.86 meta strip) on up to two tightly spaced lines,
+// lifted (labelY, cardY) so the second line stays above the strip's bottom edge.
+// buildX: game x of the rotated 'build:' (its ~40 px line height becomes its width), so its letter
 // tops clear the torn left edge at 32 and its baseline stays left of the first slot.
-const GO_STRIP = { y: 914, h: 164, left: 76, right: 664, maxSlot: 150, cardY: -34, cardScale: 0.95, labelY: 0, labelSize: 26, labelPad: 14, buildX: 54, buildSize: 28 };
+const GO_STRIP = { y: 914, h: 164, left: 76, right: 664, maxSlot: 150, cardY: -40, cardScale: 0.95, labelY: -7, labelSize: 32, labelLineSpacing: -11, labelPad: 14, buildX: 56, buildSize: 34 };
 
 // Left / right game x of the rotated 'build:' label for a text box lineHeight px tall (its width
 // once turned up the margin), at the strip's own scale 1.
@@ -61,6 +63,7 @@ function goCardLabel(name) {
 const GO_META = {
   pageTop: 172, pageH: 640, pageImageY: -30,     // compact page spans local -350..290 (no goal line)
   noteW: 640, noteH: 214, noteBottom: 1058, rowTop: 86, rowStep: 50, rowW: 600,
+  progressSize: 27,   // 'next run' / '3/5' after each mission: the menu's 22 px was too small here
   stripScale: 0.86, stripOverlap: 14,
   buttonsY: 1132,
   retry: { x: 262, w: 400, h: 128, font: '68px' },
@@ -211,7 +214,7 @@ class GameOverScene extends Phaser.Scene {
     if (this.secondWind) {
       // Pencil aside in the gap of the last stat row (between its label and value).
       const last = Math.max(0, this.statRows().length - 1);
-      card.add(uiInkText(this, 22, this.rowY(last), '(second wind used)', { size: 25, color: '#2f6fa8', stroke: null, rot: -0.04, boil: false }));
+      card.add(uiInkText(this, 22, this.rowY(last), '(second wind used)', { size: 30, color: '#2f6fa8', stroke: null, rot: -0.04, boil: false }));
     }
     // With missions on screen they are the next goals, so the page's own 'Next:' line is left out.
     if (!lay.meta) {
@@ -267,9 +270,12 @@ class GameOverScene extends Phaser.Scene {
       const card = cardById(id);
       const parts = [cardMakeMini(this, 0, L.cardY, id, L.cardScale)];
       const name = uiInkText(this, 0, L.labelY, goCardLabel(card.name), {
-        size: L.labelSize, color: UI_INK.darkHex, stroke: null, rot: 0.02, boil: false, oy: 0, lineSpacing: -7,
+        size: L.labelSize, color: UI_INK.darkHex, stroke: null, rot: 0.02, boil: false, oy: 0, lineSpacing: L.labelLineSpacing,
       });
-      name.setScale(Math.min(1, S.labelMaxW / name.width));
+      // Too wide for a narrow slot (6+ cards): squeeze the letters sideways but keep most of their
+      // height, so 'Chain Reaction' stays as readable as 'Tail Armor'.
+      const fit = Math.min(1, S.labelMaxW / name.width);
+      name.setScale(fit, Math.max(fit, 0.9));
       parts.push(name);
       const item = this.add.container(xOf(i), 0, parts).setScale(1.6).setAlpha(0);
       strip.add(item);
@@ -314,7 +320,7 @@ class GameOverScene extends Phaser.Scene {
     note.add(purse);
     const rowY = (i) => -M.noteH / 2 + M.rowTop + i * M.rowStep;
     const rows = plan.map((p, i) => {
-      const row = uiMissionRow(this, 0, rowY(i), p.mission, M.rowW, { size: 28, fresh: !!p.isNew, runStats: this.runStats() });
+      const row = uiMissionRow(this, 0, rowY(i), p.mission, M.rowW, { size: 28, progressSize: M.progressSize, fresh: !!p.isNew, runStats: this.runStats() });
       note.add(row);
       if (p.isNew) this.markNewRow(note, row);
       return row;
@@ -342,7 +348,7 @@ class GameOverScene extends Phaser.Scene {
         if (!next) return;
         const old = rows[i];
         this.tweens.add({ targets: old, x: -GAME_WIDTH, alpha: 0, delay: k * 140, duration: 260, ease: 'Quad.In', onComplete: () => old.destroy() });
-        const row = uiMissionRow(this, GAME_WIDTH, rowY(i), next, M.rowW, { size: 28, fresh: true, runStats: this.runStats() });
+        const row = uiMissionRow(this, GAME_WIDTH, rowY(i), next, M.rowW, { size: 28, progressSize: M.progressSize, fresh: true, runStats: this.runStats() });
         note.add(row);
         this.tweens.add({
           targets: row, x: 0, delay: 200 + k * 140, duration: 300, ease: 'Back.Out',
@@ -393,21 +399,22 @@ class GameOverScene extends Phaser.Scene {
     const H = GO_NEWCARD.h;
     const sticky = this.add.container(goNewCardX(card.scaleX), GO_NEWCARD.y).setRotation(0.09);
     sticky.add(uiBoilImage(this, 0, 0, uiNoteTexture(this, W, H, { paper: 0xf3dc7a, tape: 'top' })));
-    const header = uiInkText(this, 0, -H / 2 + 26, ids.length > 1 ? ids.length + ' NEW CARDS!' : 'NEW CARD FOUND!', {
-      size: 25, color: uiColorHex(UI_CRAYON.red), stroke: null, rot: -0.04,
+    const header = uiInkText(this, 0, -H / 2 + 40, ids.length > 1 ? ids.length + ' NEW\nCARDS!' : 'NEW CARD\nFOUND!', {
+      size: GO_NEWCARD.headSize, color: uiColorHex(UI_CRAYON.red), stroke: null, rot: -0.04, lineSpacing: -10,
     });
     header.setScale(Math.min(1, (W - 16) / header.width));
     sticky.add(header);
+    const iconY = H / 2 - 34;   // card row under the two-line header
     if (ids.length === 1) {
       const c = cardById(ids[0]);
-      sticky.add(cardMakeMini(this, -52, 18, c.id, 0.56));
-      const name = uiInkText(this, -22, 18, c.name.split(' ').join('\n'), { size: 25, color: UI_INK.darkHex, stroke: null, ox: 0, rot: 0.02, lineSpacing: -6 });
+      sticky.add(cardMakeMini(this, -52, iconY, c.id, 0.56));
+      const name = uiInkText(this, -22, iconY, c.name.split(' ').join('\n'), { size: GO_NEWCARD.nameSize, color: UI_INK.darkHex, stroke: null, ox: 0, rot: 0.02, lineSpacing: -6 });
       name.setScale(Math.min(1, 100 / name.width));
       sticky.add(name);
     } else {
       const shown = ids.slice(0, 3);
-      shown.forEach((id, i) => sticky.add(cardMakeMini(this, (i - (shown.length - 1) / 2) * 44 - (ids.length > 3 ? 12 : 0), 18, id, 0.52)));
-      if (ids.length > shown.length) sticky.add(uiInkText(this, W / 2 - 20, 22, '+' + (ids.length - shown.length), { size: 24, color: UI_INK.darkHex, stroke: null }));
+      shown.forEach((id, i) => sticky.add(cardMakeMini(this, (i - (shown.length - 1) / 2) * 44 - (ids.length > 3 ? 12 : 0), iconY, id, 0.52)));
+      if (ids.length > shown.length) sticky.add(uiInkText(this, W / 2 - 20, iconY + 4, '+' + (ids.length - shown.length), { size: 24, color: UI_INK.darkHex, stroke: null }));
     }
     card.add(sticky);
     sticky.setScale(1.6).setAlpha(0);
