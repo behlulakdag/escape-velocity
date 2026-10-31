@@ -484,7 +484,7 @@ class GameOverScene extends Phaser.Scene {
     });
     // Top speed is not a row: it is the page's headline (showTopSpeed).
     // 'combo N' as in the HUD: the 'x' only ever means the score multiplier.
-    if (this.maxChain !== undefined) rows.push({ label: 'best combo', value: this.maxChain >= 1 ? this.maxChain + ' perfect' : '-' });
+    if (this.maxChain !== undefined) rows.push({ label: 'best combo', value: (this.maxChain >= 1 ? this.maxChain : 0) + ' perfect' });   // '0 perfect', not '-': a bare dash next to an x3 run read as a bug
     if (this.zoneIndex !== undefined) rows.push({ label: 'reached', value: uiZone(this.zoneIndex).name });
     if (this.seconds !== undefined) rows.push({ label: 'time', value: goFormatTime(this.seconds) });
     return rows;
