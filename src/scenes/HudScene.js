@@ -592,7 +592,7 @@ const HUD_STEP = {
   // friends to grab, not obstacles (a playtester dodged them).
   // The big word is cream ink with a fat dark outline (crayon yellow / green read poorly on the
   // navy wash at phone size); the crayon stays on the underline and 'grab the planet!'.
-  word: { holdSize: 124, letgoSize: 108, outline: 20, subSize: 48, subY: 108, sub2Size: 33, sub2Y: 152, lineY: 52 },
+  word: { holdSize: 124, letgoSize: 108, outline: 20, subSize: 48, subY: 108, sub2Size: 38, sub2Y: 152, lineY: 52 },
   // Round the drawn parts at scale 1 (checked in the hud tests and measured in the browser):
   // the hand with its ripples / lift dashes and cream halo, and the lettering.
   handBox: { l: -72, r: 124, t: -78, b: 226 },

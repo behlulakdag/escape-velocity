@@ -429,7 +429,7 @@ class CardScene extends Phaser.Scene {
     if (this.completesSet(card) && typeof SET_BONUSES !== 'undefined' && SET_BONUSES[card.family]) {
       const ry = h / 2 + 8;
       const note = uiBoilImage(this, 0, 0, 'cd_setnote2');
-      const ribTop = uiInkText(this, -CARD_SET_SCRAP.w / 2 + 14, -17, '+1 set', { size: 22, color: UI_INK.pencilDarkHex, stroke: null, ox: 0, rot: -0.04, boil: false });
+      const ribTop = uiInkText(this, -CARD_SET_SCRAP.w / 2 + 12, -19, '+1 set', { size: 26, color: UI_INK.pencilDarkHex, stroke: null, ox: 0, rot: -0.04, boil: false });
       const ribName = uiInkText(this, 4, 6, SET_BONUSES[card.family].name.toLowerCase(), { size: 26, color: cardCrayonInk(card.family), stroke: null, rot: -0.02, boil: false });
       ribName.setScale(Math.min(1, (CARD_SET_SCRAP.w - 24) / ribName.width));
       const scribble = uiBoilImage(this, 6, 22, 'cd_setscribble').setTint(cardCrayon(card.family)).setScale(Math.min(1, (ribName.displayWidth + 16) / 170), 1);
