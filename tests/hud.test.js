@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE, HUD_PANEL_UNDER, hudCornerFade, HUD_CARD_FLASH, hudCardFlashAllowed, hudCanPause, HUD_PAUSE_BUTTON, PAUSE, pauseFullscreenSupported, pauseLayout, pauseCountdownDigit, pauseSoundLabel, HUD_ORBIT_DANGER, hudOrbitDangerLevel, hudNovaWarnTarget, HUD_GRAVITY, hudGravityLines, hudDashSegments, HUD_FIRST_NOTE, hudNoteLines, hudFirstNotePlace, HUD_PROC, hudProcSpot, hudBoxDistance, hudDashCurve, hudProcIconAllowed, hudMachStampStale, hudCloserMayStamp, HUD_CLOSER })', context);
+  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE, HUD_PANEL_UNDER, hudCornerFade, HUD_CARD_FLASH, hudCardFlashAllowed, hudCanPause, HUD_PAUSE_BUTTON, PAUSE, pauseFullscreenSupported, pauseLayout, pauseCountdownDigit, pauseSoundLabel, HUD_ORBIT_DANGER, hudOrbitDangerLevel, hudNovaWarnTarget, HUD_GRAVITY, hudGravityLines, hudDashSegments, HUD_FIRST_NOTE, hudNoteLines, hudFirstNotePlace, HUD_PROC, hudProcSpot, hudBoxDistance, hudDashCurve, hudProcIconAllowed, hudMachStampStale, hudCloserMayStamp, HUD_CLOSER, HUD_START_BANNER, hudStartBannerY, hudStartBannerHit })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -436,10 +436,10 @@ test("off-screen warning: the '!!' sits above the km/s readout and the multiplie
   assert.strictEqual(hud.hudNovaWarnX(166, halfW), 166);
 });
 
-test('corner blocks never fade below 0.85 for a planet; only the comet itself right under one dims it', () => {
+test('corner blocks never fade for a planet; only the comet itself right under one dims it', () => {
   const U = hud.HUD_PANEL_UNDER;
   assert.strictEqual(hud.hudCornerFade(false, false), 1);
-  assert.ok(hud.hudCornerFade(false, true) >= 0.85, 'planet under');
+  assert.strictEqual(hud.hudCornerFade(false, true), 1, 'planet under: stays fully readable');
   assert.ok(U.floor >= 0.85 && U.planet >= 0.85);
   assert.ok(hud.hudCornerFade(true, true) < 0.85, 'the comet behind the block stays visible');
   // The comet only counts when it is really on the block (not merely sinking toward the bottom).
@@ -842,7 +842,7 @@ test('card name pops map to their card (written at most twice a run, then the ic
 
 test('paper scraps sit behind the km/s + MACH block and the x-loop, torn but bounded', () => {
   const S = hud.HUD_SCRAP;
-  assert.ok(S.alpha >= 0.8 && S.alpha <= 0.9, '~85% opaque');
+  assert.strictEqual(S.alpha, 1, 'opaque paper: planets passing behind never show through');
   const sp = S.speed;
   // The scrap covers the number, the underline and the MACH line.
   assert.ok(sp.y - sp.h / 2 < hud.HUD_SPEED.y - 20 && sp.y + sp.h / 2 > hud.HUD_SPEED.lineY + hud.HUD_MACH.dy + 10);
@@ -1022,4 +1022,24 @@ test('tutorial words: cream ink with a fat dark outline, grab line well over the
   assert.ok(W.subSize >= 48 && W.subSize <= 56, '~1.33-1.5x the old 36 px');
   assert.ok(W.sub2Size >= 30);
   assert.ok(W.subY - W.subSize / 2 > W.lineY, 'sub line under the underline');
+});
+
+test('run-start banner: below the comet, clear of the comet, the planets and the bottom corner blocks; short', () => {
+  const S = hud.HUD_START_BANNER;
+  // Typical returning run: comet resting at ~775, first planet coming down from above.
+  const y = hud.hudStartBannerY(775, [{ y: 230, r: 120 }]);
+  assert.ok(y > 775 + S.half + S.cometPad - 1, 'under the comet: ' + y);
+  assert.ok(y + 49 < hud.HUD_PANEL.top && y + 49 < hud.HUD_BADGE_PANEL.top, 'title above the bottom corner blocks');
+  assert.ok(S.holdMs + S.fadeMs <= 1200, 'short');
+  // A planet already in the band below: the banner goes above the comet instead.
+  const up = hud.hudStartBannerY(775, [{ y: 950, r: 80 }]);
+  assert.ok(up < 775 - S.half - S.cometPad + 1 && !hud.hudStartBannerHit(up, [{ y: 950, r: 80 }]), 'above: ' + up);
+  // Comet low on the screen: never on top of it.
+  const low = hud.hudStartBannerY(1000, []);
+  assert.ok(Math.abs(low - 1000) >= S.half + S.cometPad);
+  assert.strictEqual(hud.hudStartBannerY(NaN, []), hud.HUD_BANNER.y, 'no comet: the old spot');
+  // A planet sliding into the band makes the banner clear out; junk is ignored.
+  assert.strictEqual(hud.hudStartBannerHit(950, [{ y: 700, r: 80 }]), false);
+  assert.strictEqual(hud.hudStartBannerHit(950, [{ y: 800, r: 80 }]), true);
+  assert.strictEqual(hud.hudStartBannerHit(950, [null, {}, { y: NaN, r: 5 }]), false);
 });

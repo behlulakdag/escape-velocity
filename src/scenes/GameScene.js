@@ -182,6 +182,7 @@ class GameScene extends Phaser.Scene {
     // Catch ring (drawCatchRing): 0 before the first catch, 1 orbiting, 2 teach catching the next planet, 3 done.
     this.hintStage = 0;
     this.startBannerShown = false;
+    this.startBannerWait = 0;   // s since launch while the start banner waits for the comet to settle
     this.events.once('shutdown', () => this.scene.stop('Hud'));
     // Menu / GameOver draw with the first page's ink, whatever page this run ended on.
     this.events.once('shutdown', () => ART.setPage(0));
@@ -1549,6 +1550,15 @@ class GameScene extends Phaser.Scene {
 
   // ---------- loop ----------
 
+  // After RETRY (no intro) the comet launches from low on the screen and the camera catches up
+  // over ~0.4 s: the start banner waits until the comet is near its resting spot (~0.62 of the
+  // screen height), so it is never placed where the comet is about to fly through.
+  startBannerReady(dt) {
+    this.startBannerWait += dt;
+    const cometY = this.worldToScreen(this.comet.x, this.comet.y).y;
+    return this.startBannerWait >= GameScene.START_BANNER_MAX_WAIT || cometY <= GAME_HEIGHT * 0.62 + 30;
+  }
+
   update(time, delta) {
     const realDt = Math.min(delta / 1000, 0.05);
     if (this.isOver) {
@@ -1558,9 +1568,11 @@ class GameScene extends Phaser.Scene {
       return;
     }
     if (this.introActive) return this.updateIntro(realDt);
-    if (!this.startBannerShown && this.hud.scoreText) {
+    if (!this.startBannerShown && this.hud.scoreText && this.startBannerReady(realDt)) {
       this.startBannerShown = true;
-      this.hudCall('showBanner', 'ESCAPE THE SUPERNOVA!', '', { duration: 1500 });
+      // Placed by the HUD clear of the comet and the first planet, and short (~1 s).
+      const timing = typeof HUD_START_BANNER !== 'undefined' ? HUD_START_BANNER : { holdMs: 750, fadeMs: 250 };
+      this.hudCall('showBanner', 'ESCAPE THE SUPERNOVA!', '', { duration: timing.holdMs, fadeMs: timing.fadeMs, place: 'start' });
     }
     this.updateGuided(realDt);
     this.updateFeelTimers(realDt);
@@ -3347,6 +3359,7 @@ GameScene.SLIDE_RUMBLE = 0.005;       // share of the screen width the camera ji
 GameScene.SLIDE_TIME = 0.5;
 GameScene.CLOSE_ORBIT_AT = 0.7;      // orbitCloseness from which the close-orbit bonus counts (CLOSE ORBIT!, CLOSER = FASTER)
 GameScene.CLOSER_AFTER_STAMP = 1400; // ms after another stamp before CLOSER = FASTER may show
+GameScene.START_BANNER_MAX_WAIT = 0.6; // s after launch the start banner shows even if the comet is still low
 GameScene.CLOSER_AFTER_BANNER = 2600; // ms after a zone banner went up before CLOSER = FASTER may show
 GameScene.CLOSER_GLOW_TIME = 1.6;    // s the first close orbit's glow is extra bright
 GameScene.AERO_PROC_AT = 1;          // s into a free flight when Aerodynamic's proc doodle shows (once per flight)

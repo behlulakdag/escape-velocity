@@ -163,6 +163,35 @@ const HUD_MILESTONE = {
 // fadeMs: hideBanner() fade; clearMs: the card header's hold-back, a little longer than the fade.
 const HUD_BANNER = { y: 400, fadeMs: 90, clearMs: 120 };
 
+// Run-start 'ESCAPE THE SUPERNOVA!' banner. At y 400 it sat right on the first planet. Planets
+// sweep DOWN the screen at ~600 px/s as the comet climbs, so the band below the comet is the
+// last one the first grab target reaches (it gets there only after the comet has passed it).
+// below: title center under the comet; maxY: title bottom stays above the bottom corner blocks;
+// half: half the title band (~98 px tall at its fitted scale) plus a little air; cometPad: the
+// comet's body and the start of its tail; hitPad: the banner starts its quick fade this far
+// before a planet reaches it (hudStartBannerHit). holdMs + fadeMs: 1 s, gone before the first target
+// slides into that band.
+const HUD_START_BANNER = { below: 175, minY: 300, maxY: 950, half: 56, cometPad: 70, hitPad: 30, holdMs: 750, fadeMs: 250 };
+
+// Pure helper (tested): is any circle {y, r} within hitPad of the start banner's title band?
+function hudStartBannerHit(titleY, circles) {
+  const S = HUD_START_BANNER;
+  return (circles || []).some((b) => b && typeof b.y === 'number' && isFinite(b.y) && Math.abs(b.y - titleY) < S.half + S.hitPad + (b.r || 0));
+}
+
+// Pure helper (tested): run-start banner title y. cometY: comet screen y; bodies: planets as
+// screen circles {y, r}. Below the comet when there is room, else above it, else the old spot;
+// the first candidate that is clear of the comet and of every planet wins.
+function hudStartBannerY(cometY, bodies) {
+  const S = HUD_START_BANNER;
+  if (typeof cometY !== 'number' || !isFinite(cometY)) return HUD_BANNER.y;
+  const candidates = [Math.min(S.maxY, cometY + S.below), Math.max(S.minY, cometY - S.below), HUD_BANNER.y];
+  const clearOfComet = (y) => Math.abs(y - cometY) >= S.half + S.cometPad;
+  return candidates.find((y) => clearOfComet(y) && !hudStartBannerHit(y, bodies))
+    || candidates.find(clearOfComet)
+    || HUD_BANNER.y;
+}
+
 // Pure helper (tested): the next queue after a pop arrives while a banner is up.
 // Same label replaces its older copy; the queue keeps the newest POP_WAIT.max entries,
 // dropping the oldest low/medium one first (high pops are only dropped when all are high).
@@ -347,11 +376,11 @@ const HUD_PANEL = { left: 24, right: 320, top: HUD_SPEED.y - 56, bottom: HUD_SPE
 const HUD_BADGE = { x: GAME_WIDTH - 86, y: HUD_SPEED.y + 6, size: 40, scaleX: 0.5, scaleY: 0.62 };
 const HUD_BADGE_PANEL = { left: HUD_BADGE.x - 62, right: HUD_BADGE.x + 62, top: HUD_BADGE.y - 62, bottom: HUD_BADGE.y + 62 };
 // Corner blocks' alpha while the comet (or a planet) is under them.
-// planet: only a light step back, never below floor: the km/s number, MACH and the x-loop must
-// always read (planets and the rising supernova used to grey them out). comet: the hero itself
+// planet: no step back at all. The blocks sit on opaque paper and planets simply pass behind
+// them; a judge read the old 85% dip (on an 86% scrap) as a glitch. comet: the hero itself
 // right under a block (cometPad: only when it really overlaps, not merely sinking toward the
-// bottom as the nova rises) is the one case that may step back further, so it is never hidden.
-const HUD_PANEL_UNDER = { comet: 0.3, planet: 0.85, floor: 0.85, cometPad: 24, planetPad: 4 };
+// bottom as the nova rises) is the one case that may step back, so it is never hidden.
+const HUD_PANEL_UNDER = { comet: 0.3, planet: 1, floor: 0.85, cometPad: 24, planetPad: 4 };
 
 // Pure helper (tested): a corner block's target alpha. cometUnder / planetUnder: booleans.
 function hudCornerFade(cometUnder, planetUnder) {
@@ -361,11 +390,11 @@ function hudCornerFade(cometUnder, planetUnder) {
 }
 // Torn cream-paper scraps taped behind the km/s + MACH block and the x-loop, so the numbers
 // always read (planets, orbit rings and the supernova used to show through). w x h: the paper;
-// x, y: its center; rot: its tilt. alpha ~85%: the page still shows faintly through.
+// x, y: its center; rot: its tilt. alpha 1: opaque paper, so nothing passing behind shows through.
 const HUD_SCRAP = {
   speed: { x: 168, y: HUD_SPEED.y + 16, w: 274, h: 134, rot: 0.025 },
   badge: { x: HUD_BADGE.x, y: HUD_BADGE.y + 2, w: 112, h: 118, rot: -0.06 },
-  alpha: 0.86, pad: 20, tear: 7,
+  alpha: 1, pad: 20, tear: 7,
 };
 
 // Pure helper (tested): outline of a torn scrap in a (w + 2 pad) x (h + 2 pad) canvas, clockwise
@@ -1138,10 +1167,9 @@ function hudCirclesUnder(rect, circles, pad) {
 
 // Score note (top-left) bounds, and its alpha while something flies under it.
 // rect: the whole note texture (kept clear by the tutorial layout); paper: the paper actually
-// drawn (texture corners ~20..272 x 22..164 round the note at 160, 142). The note only steps
-// back when a planet's BODY (rings left out: they are flat ellipses) or the comet is really
-// under the paper; the old test (whole texture, ring-grown radius, 6 px pad) greyed it out with
-// nothing visibly under it.
+// drawn (texture corners ~20..272 x 22..164 round the note at 160, 142). The note is opaque
+// paper and stays at full alpha while planets pass behind it (fading read as a glitch); only
+// the comet itself really under the paper steps it back to `under`, so the hero never hides.
 const HUD_NOTE = { rect: { left: 15, right: 305, top: 52, bottom: 236 }, paper: { left: 33, right: 289, top: 72, bottom: 218 }, under: 0.5, pad: 6, ease: 8 };
 
 // Set bonus: short, high, never in the lower third or near the bottom speed band.
@@ -2309,6 +2337,7 @@ class HudScene extends Phaser.Scene {
     this.updateNovaNear(dt);
     this.updateNovaWarning(dt);
     this.updateDeclutter(dt);
+    this.updateStartBanner();
     this.updateSpeedReadout(time, dt);
     this.updatePageInk();
     this.updatePops();
@@ -2570,8 +2599,8 @@ class HudScene extends Phaser.Scene {
     return out;
   }
 
-  // The score note and the two bottom-corner blocks step back while a planet / black hole / the
-  // comet is under them, so nothing that matters ever hides behind the HUD.
+  // The score note and the two bottom-corner blocks step back only while the comet is under
+  // them (planets pass behind the opaque paper); the card strip still steps back for planets.
   updateDeclutter(dt) {
     const bodies = this.screenBodies();
     const c = this.comet;
@@ -2581,7 +2610,7 @@ class HudScene extends Phaser.Scene {
     this.panelFadeTarget = under(HUD_PANEL);
     this.badgeFadeTarget = under(HUD_BADGE_PANEL);
     const cores = bodies.map(b => ({ x: b.x, y: b.y, r: b.core !== undefined ? b.core : b.r }));
-    const noteTarget = hudCirclesUnder(HUD_NOTE.paper, cores.concat(cometCircle), 0) ? HUD_NOTE.under : 1;
+    const noteTarget = hudCirclesUnder(HUD_NOTE.paper, cometCircle, 0) ? HUD_NOTE.under : 1;
     this.noteFade += (noteTarget - this.noteFade) * Math.min(1, dt * HUD_NOTE.ease);
     if (this.note) this.note.setAlpha(this.noteFade);
     // Owned-card strip (top band, out of the play field): like the note, it only steps back
@@ -3060,7 +3089,8 @@ class HudScene extends Phaser.Scene {
     };
   }
 
-  // opts.duration: ms fully visible before the fade (default 1400). A set bonus on screen is
+  // opts.duration: ms fully visible before the fade (default 1400); opts.fadeMs: fade (default
+  // 400); opts.place 'start': the run-start spot (hudStartBannerY). A set bonus on screen is
   // hurried off first, so the two never overlap (the zone banner keeps its timing for the pick).
   showBanner(title, subtitle, opts) {
     if (this.stepWaiting()) { this.stepBanner = [title, subtitle, opts]; return; }
@@ -3081,8 +3111,8 @@ class HudScene extends Phaser.Scene {
     const hold = opts && opts.duration !== undefined ? opts.duration : 1400;
     const parts = this.bannerParts();
     this.tweens.killTweensOf(parts);
-    // Pushed down under the owned-card row when it is shown.
-    const y = HUD_BANNER.y;
+    const y = opts && opts.place === 'start' ? this.startBannerY() : HUD_BANNER.y;
+    this.startBannerOn = !!(opts && opts.place === 'start');
     this.bannerText.setY(y);
     this.bannerShadow.setY(y + 7);
     this.bannerLine.setY(y + 52);
@@ -3105,7 +3135,30 @@ class HudScene extends Phaser.Scene {
       const half = (p.height * p.scaleY) / 2;
       if (p.y + half > band.top && p.y - half < band.bottom) this.removePop(p);
     }
-    this.tweens.add({ targets: parts, alpha: 0, delay: hold, duration: 400 });
+    this.tweens.add({ targets: parts, alpha: 0, delay: hold, duration: opts && opts.fadeMs !== undefined ? opts.fadeMs : 400 });
+  }
+
+  // The run-start banner clears out (hideBanner's quick fade) the moment a planet or the comet
+  // reaches its band: planets sweep down fast after a RETRY, and the grab target is never under text.
+  updateStartBanner() {
+    if (!this.startBannerOn || !this.bannerText) return;
+    if (this.bannerText.alpha < 0.05) { this.startBannerOn = false; return; }
+    const c = this.comet;
+    const circles = this.screenBodies().concat(c ? [{ x: c.x, y: c.y, r: HUD_START_BANNER.cometPad - HUD_START_BANNER.hitPad }] : []);
+    if (hudStartBannerHit(this.bannerText.y, circles)) {
+      this.startBannerOn = false;
+      this.hideBanner();
+    }
+  }
+
+  // Run-start banner y from the comet and the planets on screen right now (bodies with rings).
+  // The banner goes up on the run's first frame, before setCometScreen has run: the comet is
+  // read from the Game scene then.
+  startBannerY() {
+    let cometY = this.comet ? this.comet.y : NaN;
+    const game = this.scene.get('Game');
+    if (!this.comet && game && game.comet && game.worldToScreen) cometY = game.worldToScreen(game.comet.x, game.comet.y).y;
+    return hudStartBannerY(cometY, this.screenBodies());
   }
 
   // The card pick is opening: the banner clears out fast so the card header never overlaps it.
