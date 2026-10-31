@@ -4,6 +4,8 @@
 
 **Hold to grab a planet. Let go to fling. Outrun the supernova.**
 
+It starts on navy paper at 60 km/s, with one planet to grab. Then the page turns. Teal. Maroon. A black page full of streaks at 300 km/s. Purple hyperspace. The cream ESCAPE VELOCITY page at 500. Kraft-paper LIGHTSPEED, a green wormhole, a blueprint EVENT HORIZON, graph-paper BIG BANG... and BEYOND, at 800 km/s, with a very grumpy supernova still on your tail.
+
 **Drawn like a sketchbook, not generated:** gel-pen ink, crayon hatching and a new paper page for every zone.
 
 **Speed is your life, your score and your way out.** The faster you go, the faster you gain - experts break 600-800 km/s.
