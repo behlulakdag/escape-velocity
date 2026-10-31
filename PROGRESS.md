@@ -84,3 +84,12 @@
 - [x] itch description rewritten (no duplicates, one-line controls pitch, planets-are-friends how-to, AI disclosure as one credits line).
 - [ ] Oct 31 morning: owner phone test, recapture itch screenshots/GIF from the final build, last bug fixes only. Feature freeze 12:00, nothing after ~15:00.
 - Post-jam ideas (owner's friends): shop backgrounds, a mission/level mode, Play Store release, personal top-5 list, language support (Turkish first; auto-detect phone language). Not for the jam: judges play in English and the hand-lettered layouts are fitted to English text.
+
+## Oct 31 (deadline day)
+- [x] Friends playtested on phones: most liked it, solved it in a few tries, no bugs found; art style praised.
+- [x] Fixes from play: supernova returns at full speed right after the tutorial; no auto-release of orbits; idle after tutorial dies ~14 s; asteroids don't use the Heat Shield; shield bubble only near planets; PAUSED lettering; '0 perfect' instead of '-'.
+- [x] itch: 8 new screenshots/GIF from the final build, pause line in Controls, devlog 'How we made Escape Velocity in 48 hours' published.
+- [x] Final read-only regression (live build + repo): no blockers, zero console errors, works with storage blocked.
+- [x] Readability pass: bigger card labels/descriptions, game over small texts, start banner off the first planet, opaque HUD notes. QA: no blockers, 239 tests pass. Strict judge at 60 fps: 4.1 / 4.4 / 4.4. Deployed build #2259378.
+- Remaining critic notes (not done): '7 NEW CARDS!' counts offered cards, NEW BEST stamp on the score oval, busy returning menu, dark late-page supernova outline, zone banner contrast on brown paper, card countdown has no label.
+- Hard stop for changes 15:00; deadline 18:00.
