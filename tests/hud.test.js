@@ -13,7 +13,7 @@ function loadBrowserScripts() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
   // Top-level const/let bindings are not context properties; read them out through an expression.
-  return vm.runInContext('({ popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE, HUD_PANEL_UNDER, hudCornerFade, HUD_CARD_FLASH, hudCardFlashAllowed, hudCanPause, HUD_PAUSE_BUTTON, PAUSE, pauseFullscreenSupported, pauseLayout, pauseCountdownDigit, pauseSoundLabel, HUD_ORBIT_DANGER, hudOrbitDangerLevel, hudNovaWarnTarget, HUD_GRAVITY, hudGravityLines, hudDashSegments, HUD_FIRST_NOTE, hudNoteLines, hudFirstNotePlace, HUD_PROC, hudProcSpot, hudBoxDistance, hudDashCurve, hudProcIconAllowed, hudMachStampStale, hudCloserMayStamp, HUD_CLOSER, HUD_START_BANNER, hudStartBannerY, hudStartBannerHit })', context);
+  return vm.runInContext('({ hudMultStampY, HUD_MULT_STAMP, popPriority, POP_HIGH, POP_MEDIUM, POP_LOW, hudBoxDistance, cardGroupedOrder, hudQueueWaitingPop, POP_WAIT, HUD_MILESTONE, HUD_BANNER, HUD_CARDS, hudSpeedSnap, hudSpeedEase, HUD_SNAP, hudMomentumStyle, HUD_MOMENTUM, UI_INK, UI_CRAYON, hudNovaNear, HUD_NOVA, hudMachNumber, hudMachTierLevel, HUD_MACH, HUD_SPEED, HUD_PANEL, HUD_SAFE_BOTTOM, POP, hudColorBrightness, hudPageIsLight, hudZoneForPage, HUD_HAND, hudHandPoints, HUD_NOVA_WARN, hudNovaWarnLevel, hudNovaWarnHz, hudCirclesUnder, HUD_NOTE, HUD_SETBONUS, hudSetBonusY, HUD_BADGE_PANEL, HUD_HALO, hudNovaWarnX, hudRectGap, hudRectsOverlap, HUD_STEP, hudSpotRadius, hudStepRect, hudStepHudRects, hudStepArrowCircles, hudStepPlace, hudStepSpotClear, hudNiceSpot, hudStepFade, hudBodyRadius, hudStepLayout, hudStepLayoutClear, hudStepScene, hudStepScan, hudStepArrowPath, hudStepArrowPoint, HUD_HAND_OPEN, hudRepeatAllowed, hudPopKind, hudMergePopLabel, HUD_REPEAT, hudCardStripSlots, hudCardStripRect, HUD_POP_GATE, hudIsLossPop, hudPopGate, hudPopGateRecord, hudCardIdForPop, HUD_SCRAP, hudTornScrapPoints, HUD_BADGE, HUD_PANEL_UNDER, hudCornerFade, HUD_CARD_FLASH, hudCardFlashAllowed, hudCanPause, HUD_PAUSE_BUTTON, PAUSE, pauseFullscreenSupported, pauseLayout, pauseCountdownDigit, pauseSoundLabel, HUD_ORBIT_DANGER, hudOrbitDangerLevel, hudNovaWarnTarget, HUD_GRAVITY, hudGravityLines, hudDashSegments, HUD_FIRST_NOTE, hudNoteLines, hudFirstNotePlace, HUD_PROC, hudProcSpot, hudBoxDistance, hudDashCurve, hudProcIconAllowed, hudMachStampStale, hudCloserMayStamp, HUD_CLOSER, HUD_START_BANNER, hudStartBannerY, hudStartBannerHit })', context);
 }
 
 const hud = loadBrowserScripts();
@@ -1042,4 +1042,16 @@ test('run-start banner: below the comet, clear of the comet, the planets and the
   assert.strictEqual(hud.hudStartBannerHit(950, [{ y: 700, r: 80 }]), false);
   assert.strictEqual(hud.hudStartBannerHit(950, [{ y: 800, r: 80 }]), true);
   assert.strictEqual(hud.hudStartBannerHit(950, [null, {}, { y: NaN, r: 5 }]), false);
+});
+
+test('multiplier stamp keeps clear of the comet and of a MACH/milestone stamp', () => {
+  const S = hud.HUD_MULT_STAMP;
+  assert.strictEqual(hud.hudMultStampY(null, null), S.y);
+  assert.strictEqual(hud.hudMultStampY(S.y + 20, null), S.dodgeY);
+  // A MACH 500! stamp on the middle line: the x3 goes elsewhere, never on top of it.
+  const mach = { y: S.y, halfH: 70 };
+  const y = hud.hudMultStampY(1100, mach);
+  assert.ok(Math.abs(y - mach.y) >= mach.halfH + S.stampHalfH, 'clear of the milestone');
+  // Comet on the lower line and the milestone in the middle: the upper line.
+  assert.strictEqual(hud.hudMultStampY(S.dodgeY, mach), S.upY);
 });

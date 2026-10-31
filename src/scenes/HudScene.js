@@ -376,7 +376,20 @@ const HUD_PANEL = { left: 24, right: 320, top: HUD_SPEED.y - 56, bottom: HUD_SPE
 const HUD_BADGE = { x: GAME_WIDTH - 86, y: HUD_SPEED.y + 6, size: 40, scaleX: 0.5, scaleY: 0.62 };
 // Multiplier stamp: the first time a run reaches x2..x5 the number slams down big in the middle of the screen,
 // holds a beat, then shrinks and flies into the multiplier note bottom-right (ms; y is the screen center line).
-const HUD_MULT_STAMP = { size: 150, y: 540, dodgeY: 760, cometDodge: 200, inMs: 220, holdMs: 520, flyMs: 380, endScale: 0.28 };
+const HUD_MULT_STAMP = { size: 150, y: 540, dodgeY: 760, upY: 330, lowY: 920, stampHalfH: 80, cometDodge: 200, inMs: 220, holdMs: 520, flyMs: 380, endScale: 0.28 };
+// Where the multiplier stamp lands: the middle line, unless the comet or a MACH/milestone stamp (m: {y, halfH})
+// is there; then the lower line, then the upper one (a MACH 500! under an x3 read as 'MAx3500!').
+function hudMultStampY(cometY, m) {
+  const S = HUD_MULT_STAMP;
+  // Clearance of a line: how far it is from overlapping the comet or the other stamp (negative = overlap).
+  const clear = (y) => Math.min(
+    cometY == null ? Infinity : Math.abs(cometY - y) - S.cometDodge,
+    m ? Math.abs(m.y - y) - ((m.halfH || 60) + S.stampHalfH) : Infinity);
+  const lines = [S.y, S.dodgeY, S.upY, S.lowY];
+  const firstFree = lines.find((y) => clear(y) >= 0);
+  if (firstFree !== undefined) return firstFree;
+  return lines.reduce((best, y) => (clear(y) > clear(best) ? y : best), lines[0]);
+}
 const HUD_BADGE_PANEL = { left: HUD_BADGE.x - 62, right: HUD_BADGE.x + 62, top: HUD_BADGE.y - 62, bottom: HUD_BADGE.y + 62 };
 // Corner blocks' alpha while the comet (or a planet) is under them.
 // planet: no step back at all. The blocks sit on opaque paper and planets simply pass behind
@@ -2586,8 +2599,7 @@ class HudScene extends Phaser.Scene {
     if (this.bigMomentBusy()) { this.bump(this.badge, 1.5); return; }
     const S = HUD_MULT_STAMP;
     if (this.multStamp) { this.tweens.killTweensOf(this.multStamp); this.multStamp.destroy(); }
-    const nearComet = this.comet && Math.abs(this.comet.y - S.y) < S.cometDodge;
-    const y = nearComet ? S.dodgeY : S.y;
+    const y = hudMultStampY(this.comet ? this.comet.y : null, this.milestone && this.milestone.active ? this.milestone : null);
     const stamp = uiTitleText(this, GAME_WIDTH / 2, y, 'x' + level, {
       size: S.size, color: UI_INK.creamHex, shadowColor: uiColorHex(this.levelTint(level)), rot: -0.08,
     }).setScale(0.2).setAlpha(0);
