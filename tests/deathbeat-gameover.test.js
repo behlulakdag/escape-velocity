@@ -11,7 +11,7 @@ function loadBrowserScripts() {
   for (const file of ['src/config.js', 'src/art.js', 'src/scenes/GameOverScene.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context, { filename: file });
   }
-  return vm.runInContext('({ deathJawsPose, DEATH_JAWS, goStripSlots, goNewCardX, goBuildLabelSpan, GO_STRIP, GO_NEWCARD, GAME_WIDTH })', context);
+  return vm.runInContext('({ goDeathLine, GO_DEATH_LINES, deathJawsPose, DEATH_JAWS, goStripSlots, goNewCardX, goBuildLabelSpan, GO_STRIP, GO_NEWCARD, GAME_WIDTH })', context);
 }
 
 const m = loadBrowserScripts();
@@ -93,4 +93,19 @@ test("rotated 'build:' sits on the paper, left of every card name, for 1..12 car
     const firstNameLeft = s.first - s.labelMaxW / 2 + m.GAME_WIDTH / 2;
     assert.ok(firstNameLeft >= span.right + 4, 'clear of the first card name, n=' + n);
   }
+});
+
+test('supernova deaths get a varied headline, never the same twice in a row', () => {
+  assert.strictEqual(m.goDeathLine('GAME OVER', 0.5, null), 'GAME OVER');
+  const seen = new Set();
+  let prev = null;
+  for (let i = 0; i < 200; i++) {
+    const line = m.goDeathLine('SUPERNOVA!', (i * 0.137) % 1, prev);
+    assert.notStrictEqual(line, prev);
+    assert.ok(m.GO_DEATH_LINES.includes(line));
+    seen.add(line);
+    prev = line;
+  }
+  assert.ok(seen.size >= 6, 'lines vary');
+  assert.ok(m.GO_DEATH_LINES.every((l) => l.length <= 12), 'short enough for the headline');
 });

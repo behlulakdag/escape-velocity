@@ -100,6 +100,19 @@ function goLayout(hasBuild, hasMeta) {
 // Mission rows the game over note starts with, and what each becomes: the missions finished this
 // run first (crossed out, then replaced by the next from the pool), then the ones still going.
 // progress: PROGRESS.endRun() result (or null); active: PROGRESS.activeMissions() after it.
+// Supernova deaths get a different crayon headline each time (owner: the same 'SUPERNOVA!' every run got
+// old). Short on purpose: the headline is written big across the top of the page.
+const GO_DEATH_LINES = ['SUPERNOVA!', 'TOASTED!', 'NOM NOM!', 'TOO SLOW!', 'CRISPY!', 'EATEN!', 'WELL DONE.', 'GULP!', 'SNACK TIME!', 'BURNT!'];
+
+// The headline for a death: other reasons stay as they are; a supernova death picks a line (rnd in [0,1))
+// that is never the same as the previous one.
+function goDeathLine(reason, rnd, previous) {
+  if (reason !== 'SUPERNOVA!') return reason;
+  const pool = GO_DEATH_LINES.filter((l) => l !== previous);
+  return pool[Math.min(pool.length - 1, Math.floor((rnd || 0) * pool.length))];
+}
+let goLastDeathLine = null;
+
 function goMissionPlan(progress, active) {
   const res = progress || {};
   const completed = Array.isArray(res.completed) ? res.completed : [];
@@ -129,7 +142,8 @@ class GameOverScene extends Phaser.Scene {
   init(data) {
     data = data || {};
     this.finalScore = data.score || 0;
-    this.reason = data.reason || 'GAME OVER';
+    this.reason = goDeathLine(data.reason || 'GAME OVER', Math.random(), goLastDeathLine);
+    goLastDeathLine = this.reason;
     this.altitude = data.altitude || 0;
     this.newBestAltitude = !!data.newBestAltitude;
     this.bestAltitude = Math.max(data.bestAltitude || 0, this.altitude);
@@ -167,8 +181,10 @@ class GameOverScene extends Phaser.Scene {
     const pencil = UI_INK.pencilDarkHex;
     const top = -GO_CARD.h / 2;
     const reason = uiInkText(this, 0, top + 62, this.reason, { size: 74, color: uiColorHex(UI_CRAYON.red), stroke: '#6b1a12', strokeW: 4, rot: -0.05 });
+    // Longer lines are squeezed to the page width instead of running off it.
+    const reasonScale = Math.min(1, (GO_CARD.w - 90) / Math.max(1, reason.width));
     reason.setScale(0);
-    this.tweens.add({ targets: reason, scale: 1, duration: 380, delay: 120, ease: 'Back.Out' });
+    this.tweens.add({ targets: reason, scale: reasonScale, duration: 380, delay: 120, ease: 'Back.Out' });
     card.add(reason);
     card.add(uiInkText(this, -232, top + 150, 'score:', { size: 30, color: pencil, stroke: null, rot: -0.12, ox: 0 }));
     const scoreText = uiInkText(this, 0, top + 190, '0', { size: 112, color: dark, stroke: null, rot: -0.02 });
