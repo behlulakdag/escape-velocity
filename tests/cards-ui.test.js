@@ -94,3 +94,24 @@ test('the dealt row keeps a >= 16 css px gutter on 360 and 375 px wide phones', 
     assert.ok(g >= 16, viewW + ' px wide: ' + g.toFixed(1));
   }
 });
+
+test('card face lettering is readable on a 720 wide game (>= 22 game px)', () => {
+  const T = ui.CARD_TEXT;
+  const gamePx = (size) => size * ui.CARD_UI.rowScale;
+  assert.ok(gamePx(T.tagSize) >= 22, 'family / rarity: ' + gamePx(T.tagSize));
+  assert.ok(gamePx(T.descSize) >= 26, 'description: ' + gamePx(T.descSize));
+  // The description stops above the card bottom (y = 190) and above the '+1 set' scrap's tape.
+  assert.ok(T.descBottom <= ui.CARD_UI.height / 2 - 8);
+  assert.ok(T.descBottomScrap < T.descBottom && T.descBottomScrap <= 150);
+});
+
+test('shrink-to-fit never enlarges and always fits the box', () => {
+  assert.strictEqual(ui.cardFitScale(100, 30, 190, 70), 1);
+  assert.strictEqual(ui.cardFitScale(380, 30, 190, 70), 0.5);
+  assert.strictEqual(ui.cardFitScale(150, 140, 190, 70), 0.5);
+  assert.strictEqual(ui.cardFitScale(0, 0, 190, 70), 1);
+  for (const [w, h] of [[240, 105], [204, 36], [190, 70], [400, 300]]) {
+    const s = ui.cardFitScale(w, h, 190, 96);
+    assert.ok(w * s <= 190 + 1e-9 && h * s <= 96 + 1e-9);
+  }
+});

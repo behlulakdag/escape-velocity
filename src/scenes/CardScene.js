@@ -64,6 +64,29 @@ function cardSafeX(x, scale) {
   return Phaser.Math.Clamp(x, half, GAME_WIDTH - half);
 }
 
+// Card face lettering, in card px (the row is drawn at CARD_UI.rowScale, so game px = size *
+// 0.88). The card spans y = -190..190; the '+1 set' scrap paper starts at about y = 166.
+const CARD_TEXT = {
+  tagSize: 27,          // family / rarity words (~24 game px)
+  tagGap: 10,           // min px between the two words
+  nameSize: 32,
+  nameTop: 10,
+  nameMaxH: 70,         // two lines of name
+  nameMinOneLine: 0.74, // narrowest squeeze a one-line name may take before it wraps instead
+  sideMargin: 12,
+  descSize: 30,         // ~26 game px before any shrink-to-fit
+  descLineSpacing: -3,  // Lilita has short descenders: tighter lines buy a third line
+  descGap: 5,
+  descBottom: 178,      // lowest ink of the description on a plain card
+  descBottomScrap: 148, // ... and above the tape strip of the "+1 set" scrap (its tip reaches y ~ 144 at x ~ -58)
+};
+
+// Uniform scale that fits a w x h block inside maxW x maxH, never enlarging it.
+function cardFitScale(w, h, maxW, maxH) {
+  if (!(w > 0) || !(h > 0)) return 1;
+  return Math.min(1, maxW / w, maxH / h);
+}
+
 // Exit animation length (ms) before the pick is reported to the game.
 const EXIT_MS = 360;
 
@@ -402,20 +425,31 @@ class CardScene extends Phaser.Scene {
     parts.push(uiBoilImage(this, 4, iconY + 4, 'cd_patch').setTint(crayon));
     parts.push(uiBoilImage(this, 0, iconY, cardIconTexture(this, card.icon, card.family)).setScale(1.05));
 
-    // Family + rarity, scribbled small under the icon.
+    // Family + rarity, scribbled under the icon. Both words share one line, so a long pair
+    // ('flight' + 'legendary!') shrinks together instead of running past the card edge.
     const family = (CARD_FAMILIES[card.family] && CARD_FAMILIES[card.family].name.toLowerCase()) || card.family;
     const word = CARD_RARITY_WORD[card.rarity] || CARD_RARITY_WORD.common;
-    const tagFamily = uiInkText(this, -w / 2 + 14, -h / 2 + 182, family, { size: 21, color: cardCrayonInk(card.family), stroke: null, ox: 0, rot: -0.03, boil: false });
-    const tagRarity = uiInkText(this, w / 2 - 14, -h / 2 + 182, word.text, { size: 21, color: word.color, stroke: null, ox: 1, rot: 0.03, boil: false });
+    const tagFamily = uiInkText(this, -w / 2 + 12, -h / 2 + 182, family, { size: CARD_TEXT.tagSize, color: cardCrayonInk(card.family), stroke: null, ox: 0, rot: -0.03, boil: false });
+    const tagRarity = uiInkText(this, w / 2 - 12, -h / 2 + 182, word.text, { size: CARD_TEXT.tagSize, color: word.color, stroke: null, ox: 1, rot: 0.03, boil: false });
+    const tagScale = cardFitScale(tagFamily.width + CARD_TEXT.tagGap + tagRarity.width, 1, w - 24, 1);
+    tagFamily.setScale(tagScale);
+    tagRarity.setScale(tagScale);
     parts.push(tagFamily, tagRarity);
 
-    const textW = w - 30;
-    const name = uiInkText(this, 0, 42, card.name.toUpperCase(), { size: 32, color: UI_INK.darkHex, stroke: null, rot: -0.015, boil: false });
-    name.setWordWrapWidth(textW).setAlign('center');
-    name.setScale(Math.min(1, textW / name.width, 66 / name.height));
-    const desc = uiInkText(this, 0, 124, card.desc, { size: 25, color: UI_INK.pencilDarkHex, stroke: null, rot: 0.01, boil: false, lineSpacing: 4 });
+    // Name and description stack top-down under the labels; the description gets whatever room
+    // is left above the card bottom (or above the '+1 set' scrap) and wraps, shrinking only when
+    // a long one still does not fit.
+    const textW = w - CARD_TEXT.sideMargin * 2;
+    const name = uiInkText(this, 0, CARD_TEXT.nameTop, card.name.toUpperCase(), { size: CARD_TEXT.nameSize, color: UI_INK.darkHex, stroke: null, oy: 0, rot: -0.015, boil: false });
+    // One line when it only needs a light squeeze (keeps room for the description), else wrap.
+    if (cardFitScale(name.width, 1, textW, 1) < CARD_TEXT.nameMinOneLine) name.setWordWrapWidth(textW).setAlign('center');
+    name.setScale(cardFitScale(name.width, name.height, textW, CARD_TEXT.nameMaxH));
+    const descTop = CARD_TEXT.nameTop + name.displayHeight + CARD_TEXT.descGap;
+    const hasScrap = this.completesSet(card) && typeof SET_BONUSES !== 'undefined' && !!SET_BONUSES[card.family];
+    const descBottom = hasScrap ? CARD_TEXT.descBottomScrap : CARD_TEXT.descBottom;
+    const desc = uiInkText(this, 0, descTop, card.desc, { size: CARD_TEXT.descSize, color: UI_INK.pencilDarkHex, stroke: null, oy: 0, rot: 0.01, boil: false, lineSpacing: CARD_TEXT.descLineSpacing });
     desc.setWordWrapWidth(textW).setAlign('center');
-    desc.setScale(Math.min(1, textW / desc.width, 84 / desc.height));
+    desc.setScale(cardFitScale(desc.width, desc.height, textW, descBottom - descTop));
     parts.push(name, desc);
 
     // Legendary: a few doodled gold stars stuck around the border.
@@ -426,7 +460,7 @@ class CardScene extends Phaser.Scene {
     }
 
     // "+1 SET" scrap torn from a notebook and taped crooked over the bottom edge.
-    if (this.completesSet(card) && typeof SET_BONUSES !== 'undefined' && SET_BONUSES[card.family]) {
+    if (hasScrap) {
       const ry = h / 2 + 8;
       const note = uiBoilImage(this, 0, 0, 'cd_setnote2');
       const ribTop = uiInkText(this, -CARD_SET_SCRAP.w / 2 + 12, -19, '+1 set', { size: 26, color: UI_INK.pencilDarkHex, stroke: null, ox: 0, rot: -0.04, boil: false });
@@ -652,5 +686,5 @@ class CardScene extends Phaser.Scene {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { CARD_UI, CARD_SET_SCRAP, cardTornEdge, cardSetScrapOutline, cardRowGutterCss, cardCountdownLeft, cardPressCounts, cardReleasePick, cardAutoPickDue };
+  module.exports = { CARD_UI, CARD_TEXT, cardFitScale, CARD_SET_SCRAP, cardTornEdge, cardSetScrapOutline, cardRowGutterCss, cardCountdownLeft, cardPressCounts, cardReleasePick, cardAutoPickDue };
 }
